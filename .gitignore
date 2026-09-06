@@ -1,0 +1,11 @@
+.agents/
+.github/
+.specify/
+.vscode/
+
+build/
+
+doc/
+specs/
+skills-*
+

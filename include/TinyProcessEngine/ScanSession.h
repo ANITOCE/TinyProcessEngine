@@ -1,0 +1,65 @@
+#ifndef TPE_SCAN_SESSION_H_
+#define TPE_SCAN_SESSION_H_
+
+#include "Platform.h"
+#include "ScanTypes.h"
+#include "ValueType.h"
+
+#include <memory>
+#include <vector>
+#include <filesystem>
+#include <optional>
+
+// ============================================================
+// SessionState — 扫描会话状态
+// ============================================================
+enum class SessionState {
+    Idle,       // 无活动扫描
+    Scanning,   // 扫描执行中
+    Ready,      // 有可用结果集
+};
+
+// ============================================================
+// ScanSession — 管理一次完整搜索会话的生命周期
+// ============================================================
+class ScanSession {
+public:
+    explicit ScanSession(std::shared_ptr<PlatformProcess> process);
+
+    // ── 会话生命周期 ──
+    void beginScan(const ValueType& type, ScanOptions options = {});
+    void commitFirstScan(std::vector<ScanRecord> results);
+    void commitNextScan(ScanCondition condition, std::vector<ScanRecord> results);
+    void undo();
+    void close();
+
+    // ── 查询 ──
+    SessionState state() const { return m_state; }
+    uint32_t round() const { return m_round; }
+    uint64_t resultCount() const;
+    const ValueType* valueType() const { return m_valueType; }
+    ScanCondition lastCondition() const { return m_condition; }
+    bool canUndo() const;
+    bool isDiskBacked() const;
+
+    // ── 结果访问 ──
+    std::optional<ScanRecord> resultAt(uint64_t index) const;
+    void exportTo(const std::filesystem::path& path, std::string_view format) const;
+
+    // ── 直接内存操作 ──
+    Result<tpe::Memory, PlatformError> readMemory(tpe::Address addr, tpe::Size size) const;
+    Result<void, PlatformError> writeMemory(tpe::Address addr, const tpe::Memory& data) const;
+
+private:
+    std::shared_ptr<PlatformProcess> m_process;
+    SessionState m_state = SessionState::Idle;
+    uint32_t m_round = 0;
+    ScanCondition m_condition = ScanCondition::ExactValue;
+    const ValueType* m_valueType = nullptr;
+
+    // ResultStorage will be added in Phase 2 (T005-T009)
+    std::vector<ScanRecord> m_results;           // temporary in-memory storage
+    std::optional<std::vector<ScanRecord>> m_prevResults;  // for single-level undo
+};
+
+#endif // TPE_SCAN_SESSION_H_

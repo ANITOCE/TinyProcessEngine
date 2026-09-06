@@ -1,0 +1,20 @@
+# Linux 平台编译依赖检测
+include(CheckIncludeFileCXX)
+
+check_include_file_cxx(sys/uio.h    HAVE_SYS_UIO_H)
+check_include_file_cxx(sys/ptrace.h HAVE_SYS_PTRACE_H)
+check_include_file_cxx(sys/wait.h   HAVE_SYS_WAIT_H)
+check_include_file_cxx(unistd.h     HAVE_UNISTD_H)
+
+if(NOT HAVE_SYS_UIO_H)
+    message(FATAL_ERROR "Linux build requires <sys/uio.h> (process_vm_readv/writev). Please install kernel headers: sudo apt install linux-headers-$(uname -r)")
+endif()
+if(NOT HAVE_SYS_PTRACE_H)
+    message(FATAL_ERROR "Linux build requires <sys/ptrace.h> (ptrace). Please install kernel headers: sudo apt install linux-headers-$(uname -r)")
+endif()
+if(NOT HAVE_SYS_WAIT_H)
+    message(FATAL_ERROR "Linux build requires <sys/wait.h> (waitpid). Please install kernel headers: sudo apt install linux-headers-$(uname -r)")
+endif()
+if(NOT HAVE_UNISTD_H)
+    message(FATAL_ERROR "Linux build requires <unistd.h>. Please install kernel headers.")
+endif()
