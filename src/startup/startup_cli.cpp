@@ -3,37 +3,20 @@
 #include "CliParser.h"
 #include "Platform.h"
 #include "ProcessEngine.h"
+#include "ReplState.h"
+#include "ValueFormatter.h"
 
+#include <algorithm>
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 
 namespace tpe::app {
 
 namespace {
-
-/// 最小 REPL 骨架(US1):状态提示符 + exit / EOF / 未知命令。
-/// 完整命令集、ReplState 与 REPL 帮助在 US2 按契约 C-R1–C-R7 落地。
-int runReplSkeleton(const std::string& processName)
-{
-    const std::string prompt = processName + "-equal-i32> ";
-    std::cout << prompt << std::flush;
-
-    std::string line;
-    while (std::getline(std::cin, line)) {
-        if (line == "exit") {
-            return tpe::cli::kExitOk;
-        }
-        if (!line.empty()) {
-            // 临时行为:US2 按契约 C-R6 改为“未知命令 → 显示 REPL 帮助”。
-            std::cout << "Unknown command." << std::endl;
-        }
-        std::cout << prompt << std::flush;
-    }
-    return tpe::cli::kExitOk; // stdin EOF(实现默认):视为正常退出
-}
 
 /// 提示符展示用进程名:优先取进程列表中的真实名称。
 /// (平台层 open() 以占位名构造进程对象,故不以它作为唯一来源。)
@@ -45,6 +28,198 @@ std::string promptProcessName(ProcessEngine& engine, Pid_t pid,
         return *listed;
     }
     return process ? process->getProcessName() : std::string();
+}
+
+/// 用法/失败提示(契约:含 Usage、不执行、不改变会话状态、不退出 REPL)。
+void printMessage(const std::string& message)
+{
+    std::cout << message << std::endl;
+}
+
+std::string invalidValueMessage(const tpe::cli::CliValueType& vt, const std::string& reason,
+                                const std::string& usage)
+{
+    return "Invalid value for " + std::string(vt.shortName) + ": " + reason + "\n" + usage;
+}
+
+constexpr const char* kNewScanUsage = "Usage: new-scan [--equal] [<value-type>] <value>";
+constexpr const char* kNextScanUsage =
+    "Usage: next-scan [--equal] [<value-type>] <value> | next-scan "
+    "[--greater|--less|--changed|--unchanged] [<value-type>]";
+constexpr const char* kListUsage = "Usage: list [<page>] | list --all";
+constexpr const char* kNoResultsHint = "No scan results available. Run 'new-scan' first.";
+
+/// new-scan(契约 C-R1):默认 equal + 当前类型;成功不打印输出,仅更新提示符状态。
+void executeNewScan(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& state,
+                    ProcessEngine& engine)
+{
+    const tpe::cli::CliValueType& vt =
+        command.valueType != nullptr ? *command.valueType : *state.valueType;
+
+    std::string reason;
+    const std::optional<tpe::Memory> pattern = vt.type->parse(command.value, reason);
+    if (!pattern.has_value()) {
+        printMessage(invalidValueMessage(vt, reason, kNewScanUsage));
+        return; // 不执行、不改变会话状态
+    }
+
+    const uint64_t total = engine.searchMemory(*vt.type, *pattern);
+    state.onValueScan(tpe::cli::ReplScanType::Equal, vt, command.value, total);
+}
+
+/// next-scan(契约 C-R2):条件 → ScanCondition;无结果时明确提示、不执行、不改变状态。
+void executeNextScan(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& state,
+                     ProcessEngine& engine)
+{
+    ScanSession* session = engine.session();
+    if (session == nullptr || session->state() != SessionState::Ready) {
+        printMessage(std::string(kNoResultsHint) + "\n" + kNextScanUsage);
+        return;
+    }
+
+    const tpe::cli::CliValueType& vt =
+        command.valueType != nullptr ? *command.valueType : *state.valueType;
+
+    std::optional<tpe::Memory> newValue;
+    if (command.hasValue) {
+        std::string reason;
+        newValue = vt.type->parse(command.value, reason);
+        if (!newValue.has_value()) {
+            printMessage(invalidValueMessage(vt, reason, kNextScanUsage));
+            return;
+        }
+    }
+
+    const std::optional<ScanCondition> condition = tpe::cli::toScanCondition(command.scanType);
+    if (!condition.has_value()) {
+        return; // `--unknown` 已由解析层拒绝,此分支不可达(防御)
+    }
+
+    const uint64_t total = engine.nextScan(*condition, *vt.type, newValue);
+    if (command.scanType == tpe::cli::ReplScanType::Equal) {
+        state.onValueScan(command.scanType, vt, command.value, total);
+    } else {
+        state.onValuelessScan(command.scanType, vt, total);
+    }
+}
+
+/// list(契约 C-R3):`--all` 上限 10000 与截断提示;分页 20/页;越界/空结果明确提示。
+void executeList(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& state,
+                 ProcessEngine& engine)
+{
+    const ScanSession* session = engine.session();
+    if (session == nullptr || session->state() != SessionState::Ready) {
+        printMessage(std::string(kNoResultsHint) + "\n" + kListUsage);
+        return;
+    }
+
+    const uint64_t total = session->resultCount();
+    if (total == 0) {
+        printMessage("No matches to display."); // 空结果明确提示;不改变会话状态
+        return;
+    }
+
+    std::ostringstream out;
+    if (command.listAll) {
+        out << tpe::cli::formatMatchesTotal(total) << "\n";
+        const uint64_t shown = (std::min)(total, tpe::cli::kListDisplayCap);
+        for (uint64_t index = 0; index < shown; ++index) {
+            const std::optional<ScanRecord> record = session->resultAt(index);
+            if (record.has_value()) {
+                out << tpe::cli::formatListEntry(*record, *state.valueType) << "\n";
+            }
+        }
+        if (total > shown) {
+            out << tpe::cli::formatTruncationNotice(total - shown) << "\n";
+        }
+        std::cout << out.str() << std::flush;
+        return;
+    }
+
+    if (!state.isPageInRange(command.page)) {
+        printMessage("Page " + std::to_string(command.page) +
+                     " is out of range (total pages: " + std::to_string(state.pageCount()) +
+                     ").\n" + kListUsage);
+        return; // 用法提示;不改变会话状态
+    }
+
+    const uint64_t first = static_cast<uint64_t>(command.page - 1) * tpe::cli::kReplPageSize;
+    const uint64_t last = (std::min)(first + tpe::cli::kReplPageSize, total);
+    for (uint64_t index = first; index < last; ++index) {
+        const std::optional<ScanRecord> record = session->resultAt(index);
+        if (record.has_value()) {
+            out << tpe::cli::formatListEntry(*record, *state.valueType) << "\n";
+        }
+    }
+    std::cout << out.str() << std::flush;
+}
+
+/// undo(契约 C-R5):无轮次 → 明确提示、状态不变。
+void executeUndo(tpe::cli::ReplState& state, ProcessEngine& engine)
+{
+    ScanSession* session = engine.session();
+    if (session == nullptr || !session->canUndo()) {
+        printMessage(std::string("Nothing to undo (no previous scan round).") + "\n" +
+                     "Usage: undo");
+        return;
+    }
+    session->undo();
+    state.onUndo(session->resultCount());
+}
+
+/// 执行已识别命令(契约 C-R1–C-R5)。
+void executeReplCommand(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& state,
+                        ProcessEngine& engine)
+{
+    switch (command.kind) {
+    case tpe::cli::ReplCommandKind::NewScan:
+        executeNewScan(command, state, engine);
+        break;
+    case tpe::cli::ReplCommandKind::NextScan:
+        executeNextScan(command, state, engine);
+        break;
+    case tpe::cli::ReplCommandKind::List:
+        executeList(command, state, engine);
+        break;
+    case tpe::cli::ReplCommandKind::Undo:
+        executeUndo(state, engine);
+        break;
+    default:
+        break; // planReplOutcome 不会把其它 kind 归为 Execute
+    }
+}
+
+/// REPL 主循环(US2;契约 C-R1–C-R6):提示符 → 读行 → 处置。
+/// 空输入无输出;未知命令显示帮助;错误不改变状态、不退出(FR-021);`exit`/EOF 退出码 0。
+int runRepl(ProcessEngine& engine, const std::string& processName)
+{
+    tpe::cli::ReplState state(processName);
+
+    for (;;) {
+        std::cout << state.prompt() << std::flush;
+
+        std::string line;
+        if (!std::getline(std::cin, line)) {
+            return tpe::cli::kExitOk; // stdin EOF:按正常退出处理(实现默认)
+        }
+
+        const tpe::cli::ReplCommand command = tpe::cli::parseReplCommand(line);
+        switch (tpe::cli::planReplOutcome(command)) {
+        case tpe::cli::ReplOutcome::Noop:
+            break; // 空输入:不打印任何内容,仅重新显示提示符
+        case tpe::cli::ReplOutcome::ShowHelp:
+            std::cout << tpe::cli::replHelpText() << std::flush;
+            break;
+        case tpe::cli::ReplOutcome::UsageError:
+            printMessage(command.error); // 含 Usage 提示;不执行、不改变状态
+            break;
+        case tpe::cli::ReplOutcome::Exit:
+            return tpe::cli::kExitOk;
+        case tpe::cli::ReplOutcome::Execute:
+            executeReplCommand(command, state, engine);
+            break;
+        }
+    }
 }
 
 } // namespace
@@ -82,7 +257,7 @@ int runCli(const std::vector<std::string>& args)
             // ProcessEngine::openProcess 已向 stderr 输出失败原因(契约 C-T3);不进入 REPL
             return tpe::cli::kExitRuntimeError;
         }
-        return runReplSkeleton(promptProcessName(engine, command.pid, process));
+        return runRepl(engine, promptProcessName(engine, command.pid, process));
     }
 
     default:
