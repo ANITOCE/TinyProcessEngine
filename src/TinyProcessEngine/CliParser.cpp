@@ -384,16 +384,25 @@ ReplCommand parseScanCommand(const std::string& line, const CliParseResult& pars
         case ReplScanType::Unchanged:
             return replError(kind, "Unknown option: --" + std::string(scanTypeName(command.scanType)));
         case ReplScanType::Unknown:
+            // §11.5:--unknown 不传值;带值属未定义情形 → 按不传值旗标的严格策略拒绝
+            if (command.hasValue) {
+                return replError(kind, "Unexpected argument: " + command.value);
+            }
+            command.placeholder = true; // C-R7:占位,仅切换 scan-type(不执行扫描)
+            break;
         case ReplScanType::Greater:
         case ReplScanType::Less:
-            // 占位功能属 US4(C-R7 / T030–T034);当前明确拒绝(不执行、状态不变)
-            return replError(kind, "new-scan --" + std::string(scanTypeName(command.scanType)) +
-                                       " is not implemented yet.");
-        default:
+            // §11.5:new-scan 的 --greater / --less 值必传;缺值 → 用法错误(不执行、不切换)
+            if (!command.hasValue) {
+                return replError(kind, "Missing value for new-scan.");
+            }
+            command.placeholder = true; // 占位:值仅用于语法识别,不解析、不执行扫描
             break;
-        }
-        if (!command.hasValue) {
-            return replError(kind, "Missing value for new-scan.");
+        default: // Equal(已实现)
+            if (!command.hasValue) {
+                return replError(kind, "Missing value for new-scan.");
+            }
+            break;
         }
     } else {
         if (command.scanType == ReplScanType::Unknown) {
@@ -565,6 +574,8 @@ ReplOutcome planReplOutcome(const ReplCommand& command)
     case ReplCommandKind::Exit:
         return ReplOutcome::Exit;
     case ReplCommandKind::NewScan:
+        // 占位命令(US4 / C-R7):打印固定文案、仅切换提示符 scan-type
+        return command.placeholder ? ReplOutcome::Placeholder : ReplOutcome::Execute;
     case ReplCommandKind::NextScan:
     case ReplCommandKind::List:
     case ReplCommandKind::Write:
@@ -634,7 +645,8 @@ std::string_view replHelpText()
 
 std::string_view replPlaceholderText()
 {
-    return {}; // 红阶段 stub(T032 绿阶段填入 §11.8 固定文案)
+    // §11.8 / FR-020:逐字固定,不得本地化或改写
+    return "This feature is not implemented yet.";
 }
 
 } // namespace tpe::cli
