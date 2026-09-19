@@ -46,6 +46,9 @@ struct SimpleValueType : public ValueType
 
     tpe::Memory askValue() const override;
 
+    /// 固定宽度类型:内存宽度即 sizeof(T)。
+    std::size_t byteWidth() const override { return sizeof(T); }
+
     /// 通用非交互解析:整数按 int64 解析后按 T 范围与 isValid 校验;
     /// 浮点等其它类型按 T 直接解析;两者都必须完整消费输入文本。
     std::optional<tpe::Memory> parse(std::string_view text, std::string &error) const override;
@@ -105,6 +108,9 @@ struct Double : SimpleValueType<double>
 struct String : SimpleValueType<std::string>
 {
     String() : SimpleValueType{"string"} {}
+
+    /// string 为变长:宽度由具体值决定(0 = 变长标记)。
+    std::size_t byteWidth() const override { return 0; }
 
     std::istream &read(std::istream &in, std::string &value) const override
     {
