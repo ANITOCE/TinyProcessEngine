@@ -8,6 +8,8 @@
 #include <memory>
 #include <array>
 #include <vector>
+#include <optional>
+#include <string_view>
 
 #include "MemoryPage.h"
 #include "HelpFunction.h"
@@ -20,6 +22,11 @@ struct ValueType
 
     ValueType(const std::string &name) : name{name} {}
     virtual tpe::Memory askValue() const = 0;
+
+    /// 非交互解析:text → 内存表示(小端);失败时写入英文 error 并返回 nullopt。
+    /// 由 `SimpleValueType<T>` 提供通用实现(见本头文件);本 Phase 的 7 个 CLI 类型必须可用。
+    virtual std::optional<tpe::Memory> parse(std::string_view text, std::string &error) const;
+
     virtual ~ValueType() = default;
 };
 

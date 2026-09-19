@@ -29,6 +29,7 @@ add_executable(tpe_tests
   test_scanner.cpp
   test_session.cpp
   test_cli_parser.cpp
+  test_value_parser.cpp
 )
 
 target_link_libraries(tpe_tests PRIVATE
