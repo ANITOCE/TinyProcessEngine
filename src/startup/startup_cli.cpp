@@ -47,6 +47,7 @@ constexpr const char* kNextScanUsage =
     "Usage: next-scan [--equal] [<value-type>] <value> | next-scan "
     "[--greater|--less|--changed|--unchanged] [<value-type>]";
 constexpr const char* kListUsage = "Usage: list [<page>] | list --all";
+constexpr const char* kWriteUsage = "Usage: write <address> <new-value>";
 constexpr const char* kNoResultsHint = "No scan results available. Run 'new-scan' first.";
 
 /// new-scan(契约 C-R1):默认 equal + 当前类型;成功不打印输出,仅更新提示符状态。
@@ -167,6 +168,44 @@ void executeUndo(tpe::cli::ReplState& state, ProcessEngine& engine)
     state.onUndo(session->resultCount());
 }
 
+/// write(契约 C-R4;FR-019 / P7 裁决):解析失败或运行期失败(地址越界 / 目标页不可写)
+/// → 打印明确错误、不执行写入、不改变会话状态、不退出 REPL;
+/// 成功 → 一行提示;不更新 `list` 快照值(实时重读属开发指南 Phase 07)。
+void executeWrite(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& state,
+                  ProcessEngine& engine)
+{
+    ScanSession* session = engine.session();
+    if (session == nullptr) {
+        printMessage(std::string(kNoResultsHint) + "\n" + kWriteUsage);
+        return;
+    }
+
+    const tpe::cli::CliValueType& vt = *state.valueType;
+
+    std::string reason;
+    const std::optional<std::string> text =
+        tpe::cli::extractWriteValueText(command, vt, reason);
+    if (!text.has_value()) {
+        printMessage(reason + "\n" + kWriteUsage);
+        return; // 不执行、不改变会话状态
+    }
+
+    const std::optional<tpe::Memory> data = vt.type->parse(*text, reason);
+    if (!data.has_value()) {
+        printMessage(invalidValueMessage(vt, reason, kWriteUsage));
+        return; // 不执行、不改变会话状态
+    }
+
+    const Result<void, PlatformError> written = session->writeMemory(command.address, *data);
+    if (!written.has_value()) {
+        // P7 裁决:运行期失败 → 明确错误、不退出、状态保持在该命令之前
+        printMessage("Failed to write memory at " + tpe::cli::formatAddress(command.address) +
+                     ": " + written.error().message);
+        return;
+    }
+    printMessage("Wrote " + *text + " to " + tpe::cli::formatAddress(command.address) + ".");
+}
+
 /// 执行已识别命令(契约 C-R1–C-R5)。
 void executeReplCommand(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& state,
                         ProcessEngine& engine)
@@ -180,6 +219,9 @@ void executeReplCommand(const tpe::cli::ReplCommand& command, tpe::cli::ReplStat
         break;
     case tpe::cli::ReplCommandKind::List:
         executeList(command, state, engine);
+        break;
+    case tpe::cli::ReplCommandKind::Write:
+        executeWrite(command, state, engine);
         break;
     case tpe::cli::ReplCommandKind::Undo:
         executeUndo(state, engine);
