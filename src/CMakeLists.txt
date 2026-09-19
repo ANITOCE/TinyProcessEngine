@@ -22,6 +22,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
     ${CMAKE_SOURCE_DIR}/include # 项目根目录的include文件夹
     ${CMAKE_SOURCE_DIR}/include/Platform
     ${CMAKE_SOURCE_DIR}/include/TinyProcessEngine
+    ${CMAKE_CURRENT_SOURCE_DIR}/startup # startup 分层头文件(入口 main.cpp 引用)
 )
 
 # 使用 target_compile_features 指定 C++17 支持
