@@ -64,6 +64,38 @@ bool parsePidText(std::string_view text, Pid_t& pid)
     return true;
 }
 
+/// 十六进制地址解析(契约 C-R4):`0x` / `0X` 前缀可省;至少 1 位 hex 数字;
+/// 大小写不敏感;必须不超出 tpe::Address 上限(溢出在累乘前检测)。
+bool parseHexAddress(std::string_view text, tpe::Address& address)
+{
+    if (text.size() >= 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+        text.remove_prefix(2);
+    }
+    if (text.empty()) {
+        return false;
+    }
+    constexpr unsigned long long kMaxAddress = (std::numeric_limits<tpe::Address>::max)();
+    unsigned long long value = 0;
+    for (const char ch : text) {
+        unsigned digit = 0;
+        if (ch >= '0' && ch <= '9') {
+            digit = static_cast<unsigned>(ch - '0');
+        } else if (ch >= 'a' && ch <= 'f') {
+            digit = static_cast<unsigned>(ch - 'a' + 10);
+        } else if (ch >= 'A' && ch <= 'F') {
+            digit = static_cast<unsigned>(ch - 'A' + 10);
+        } else {
+            return false;
+        }
+        if (value > (kMaxAddress - digit) / 16) {
+            return false;
+        }
+        value = value * 16 + digit;
+    }
+    address = static_cast<tpe::Address>(value);
+    return true;
+}
+
 } // namespace
 
 std::vector<std::string> CliParseResult::flags() const
@@ -437,6 +469,40 @@ ReplCommand parseListCommand(const CliParseResult& parsed)
     return command;
 }
 
+/// write 解析(契约 C-R4):第一个位置参数 = 十六进制地址(`0x` 前缀可省);
+/// 其后剩余整行 = 值原文(前导空白去除;是否单 token 依当前数值类型在执行时判定)。
+ReplCommand parseWriteCommand(const std::string& line, const CliParseResult& parsed)
+{
+    constexpr ReplCommandKind kKind = ReplCommandKind::Write;
+    ReplCommand command;
+    command.kind = kKind;
+
+    if (parsed.tokens.size() < 2) {
+        return replError(kKind, "Missing address for write.");
+    }
+    const CliToken& addressToken = parsed.tokens[1];
+    if (addressToken.isFlag) {
+        // write 语法无旗标(值类型由 REPL 当前 `value-type` 决定)
+        return replError(kKind, "Unknown option: " + addressToken.text);
+    }
+
+    tpe::Address address = 0;
+    if (!parseHexAddress(addressToken.text, address)) {
+        return replError(kKind, "Invalid address: " + addressToken.text +
+                                     " (expected a hexadecimal address).");
+    }
+    command.address = address;
+
+    const std::string remainder = line.substr(addressToken.end);
+    const std::size_t start = remainder.find_first_not_of(" \t\r\n\v\f");
+    if (start == std::string::npos) {
+        return replError(kKind, "Missing value for write.");
+    }
+    command.value = remainder.substr(start);
+    command.hasValue = true;
+    return command;
+}
+
 } // namespace
 
 ReplCommand parseReplCommand(const std::string& line)
@@ -477,10 +543,7 @@ ReplCommand parseReplCommand(const std::string& line)
         return parseListCommand(parsed);
     }
     if (name == "write") {
-        // US3 T026 红:解析未实现(占位);T027 补全地址/值解析
-        ReplCommand command;
-        command.kind = ReplCommandKind::Write;
-        return command;
+        return parseWriteCommand(line, parsed);
     }
 
     ReplCommand command; // 未知命令
@@ -511,11 +574,25 @@ ReplOutcome planReplOutcome(const ReplCommand& command)
     return ReplOutcome::ShowHelp;
 }
 
-std::optional<std::string> extractWriteValueText(const ReplCommand&, const CliValueType&,
-                                                 std::string&)
+std::optional<std::string> extractWriteValueText(const ReplCommand& command,
+                                                 const CliValueType& valueType,
+                                                 std::string& error)
 {
-    // US3 T026 红:占位实现(尚未实现)→ 新用例应断言失败
-    return std::nullopt;
+    if (valueType.kind == CliValueKind::String) {
+        return command.value; // 地址后剩余整行原样(允许空格;P2 定稿)
+    }
+
+    // 非 string:必须恰为单个 token(多余 token → 用法错误、不执行)
+    const CliParseResult parsed = CliParser::parse(command.value);
+    if (parsed.tokens.empty()) {
+        error = "Missing value for write.";
+        return std::nullopt;
+    }
+    if (parsed.tokens.size() > 1) {
+        error = "Unexpected argument: " + parsed.tokens[1].text;
+        return std::nullopt;
+    }
+    return parsed.tokens[0].text; // 去除了尾随空白(同 new-scan/next-scan 的单 token 规则)
 }
 
 std::optional<ScanCondition> toScanCondition(ReplScanType type)
