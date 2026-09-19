@@ -107,6 +107,10 @@ struct ReplCommand {
     std::string value;                           // 值原文(--string 取旗标后剩余整行)
     bool hasValue = false;
 
+    // new-scan 占位(US4;C-R7 / FR-020):--unknown / --greater / --less 语法可识别,
+    // 仅切换提示符 scan-type(可选 value-type),不执行扫描。
+    bool placeholder = false;
+
     // list
     bool listAll = false; // list --all
     unsigned page = 1;    // list 页码(默认第 1 页)
@@ -131,11 +135,12 @@ std::optional<std::string> extractWriteValueText(const ReplCommand& command,
 
 /// 一行输入的顶层处置决策(FR-021;I/O 由 startup_cli 执行)。
 enum class ReplOutcome {
-    Noop,       // 空输入:不打印任何内容,仅刷新提示符
-    ShowHelp,   // help / 未知命令:打印 REPL 帮助、不退出
-    UsageError, // 用法错误:打印 error、不执行、不退出
-    Exit,       // exit:退出 REPL(进程退出码 0)
-    Execute,    // 已识别命令:交给主循环执行
+    Noop,        // 空输入:不打印任何内容,仅刷新提示符
+    ShowHelp,    // help / 未知命令:打印 REPL 帮助、不退出
+    UsageError,  // 用法错误:打印 error、不执行、不退出
+    Placeholder, // 占位命令(US4):打印固定文案、仅切换提示符 scan-type(不执行扫描)
+    Exit,        // exit:退出 REPL(进程退出码 0)
+    Execute,     // 已识别命令:交给主循环执行
 };
 
 /// 根据解析结果决定处置(纯逻辑;error 非空时优先 UsageError)。
@@ -148,5 +153,9 @@ std::optional<ScanCondition> toScanCondition(ReplScanType type);
 
 /// REPL 帮助文本(覆盖 7 条命令;契约 C-R6)。
 std::string_view replHelpText();
+
+/// 未实现功能占位提示文案(§11.8;FR-020 要求逐字固定):
+/// "This feature is not implemented yet."
+std::string_view replPlaceholderText();
 
 } // namespace tpe::cli

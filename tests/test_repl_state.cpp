@@ -231,3 +231,69 @@ TEST(ReplOutcomePlan, RecognizedCommandsExecute)
         EXPECT_EQ(tpe::cli::planReplOutcome(command), ReplOutcome::Execute);
     }
 }
+
+// ---------------------------------------------------------------------------
+// 占位命令(US4 T030;FR-020 / C-R7 / SC-006)
+// ---------------------------------------------------------------------------
+
+TEST(ReplPlaceholder, FixedMessageIsContractText)
+{
+    // §11.8 / FR-020:占位提示逐字固定
+    EXPECT_EQ(tpe::cli::replPlaceholderText(), "This feature is not implemented yet.");
+}
+
+TEST(ReplPlaceholder, PlansPlaceholderOutcomeForThreeScanTypes)
+{
+    // 3 类占位命令 × 旗标组合:解析通过 → 处置决策为 Placeholder(打印固定文案)
+    for (const char* line : {"new-scan --unknown", "new-scan --unknown --i16",
+                             "new-scan --greater 100", "new-scan --greater --i64 42",
+                             "new-scan --less 100"}) {
+        const ReplCommand command = tpe::cli::parseReplCommand(line);
+        EXPECT_TRUE(command.error.empty()) << line;
+        EXPECT_TRUE(command.placeholder) << line;
+        EXPECT_EQ(tpe::cli::planReplOutcome(command), ReplOutcome::Placeholder) << line;
+    }
+}
+
+TEST(ReplPlaceholder, SwitchesScanTypeOnlyAndKeepsMatchesAndValue)
+{
+    // SC-006 / C-R7:占位不执行扫描;匹配集与 [<value>] 保持不变
+    ReplState state("test.exe");
+    state.onValueScan(ReplScanType::Equal, cliType("i32"), "100", 15234);
+
+    const struct {
+        const char* line;
+        const char* prompt;
+    } cases[] = {
+        {"new-scan --unknown", "test.exe-unknown-i32-100> "},
+        {"new-scan --unknown --i16", "test.exe-unknown-i16-100> "},
+        {"new-scan --greater 250 --i64", "test.exe-greater-i64-100> "}, // 250 不进入提示符
+        {"new-scan --less --i32 5", "test.exe-less-i32-100> "},
+    };
+    for (const auto& item : cases) {
+        const ReplCommand command = tpe::cli::parseReplCommand(item.line);
+        ASSERT_EQ(tpe::cli::planReplOutcome(command), ReplOutcome::Placeholder) << item.line;
+        state.onPlaceholder(command.scanType, command.valueType); // 主循环的纯状态处置
+        EXPECT_EQ(state.prompt(), item.prompt) << item.line;
+        EXPECT_EQ(state.matchesTotal, 15234u) << item.line;
+        EXPECT_EQ(state.lastValue, std::optional<std::string>("100")) << item.line;
+    }
+}
+
+TEST(ReplPlaceholder, MissingValueIsUsageErrorAndLeavesStateUntouched)
+{
+    // §11.5:new-scan 的 --greater / --less 值必传;缺值 → 用法错误、不执行、不切换
+    ReplState state("test.exe");
+    state.onValueScan(ReplScanType::Equal, cliType("i32"), "100", 7);
+
+    for (const char* line : {"new-scan --greater", "new-scan --less"}) {
+        const ReplCommand command = tpe::cli::parseReplCommand(line);
+        ASSERT_EQ(tpe::cli::planReplOutcome(command), ReplOutcome::UsageError) << line;
+        EXPECT_NE(command.error.find("Usage"), std::string::npos) << line;
+        EXPECT_NE(command.error.find("Missing value"), std::string::npos) << line;
+        EXPECT_FALSE(command.placeholder) << line;
+        // 主循环对 UsageError 只打印、不触碰状态
+        EXPECT_EQ(state.prompt(), "test.exe-equal-i32-100> ") << line;
+        EXPECT_EQ(state.matchesTotal, 7u) << line;
+    }
+}

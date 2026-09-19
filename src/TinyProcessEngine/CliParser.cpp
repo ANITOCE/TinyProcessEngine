@@ -632,4 +632,9 @@ std::string_view replHelpText()
         "The --string value takes the rest of the line (spaces allowed).\n";
 }
 
+std::string_view replPlaceholderText()
+{
+    return {}; // 红阶段 stub(T032 绿阶段填入 §11.8 固定文案)
+}
+
 } // namespace tpe::cli

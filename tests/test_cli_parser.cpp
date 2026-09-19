@@ -391,13 +391,63 @@ TEST(ReplCommandParse, NewScanRejectsConflictingOrUnknownFlags)
     EXPECT_FALSE(parseReplCommand("new-scan --changed").error.empty()); // new-scan 旗标表无此项
 }
 
-TEST(ReplCommandParse, NewScanPlaceholderFlagsDeferredToUs4)
+TEST(ReplCommandParse, NewScanPlaceholderScanTypesAreRecognized)
 {
-    // 占位功能属 US4(C-R7 / T030–T034):US2 阶段以“未实现”错误拒绝,
-    // US4 将改为:解析通过 + 占位提示 + 仅切换 scan-type(本测试届时替换)。
-    EXPECT_FALSE(parseReplCommand("new-scan --unknown").error.empty());
-    EXPECT_FALSE(parseReplCommand("new-scan --greater").error.empty());
-    EXPECT_FALSE(parseReplCommand("new-scan --less").error.empty());
+    // FR-020 / C-R7:--unknown / --greater / --less 语法可识别(不再以“未实现”错误拒绝)
+    const ReplCommand unknown = parseReplCommand("new-scan --unknown");
+    ASSERT_EQ(unknown.kind, ReplCommandKind::NewScan);
+    EXPECT_EQ(unknown.scanType, ReplScanType::Unknown);
+    EXPECT_TRUE(unknown.placeholder);
+    EXPECT_FALSE(unknown.hasValue);
+    EXPECT_TRUE(unknown.error.empty());
+
+    const ReplCommand greater = parseReplCommand("new-scan --greater 100");
+    ASSERT_EQ(greater.kind, ReplCommandKind::NewScan);
+    EXPECT_EQ(greater.scanType, ReplScanType::Greater);
+    EXPECT_TRUE(greater.placeholder);
+    EXPECT_TRUE(greater.hasValue); // 值仅用于语法识别;占位不解析、不执行
+    EXPECT_TRUE(greater.error.empty());
+
+    const ReplCommand less = parseReplCommand("new-scan --less 100");
+    EXPECT_EQ(less.scanType, ReplScanType::Less);
+    EXPECT_TRUE(less.placeholder);
+    EXPECT_TRUE(less.error.empty());
+}
+
+TEST(ReplCommandParse, NewScanPlaceholderAcceptsFlagCombinations)
+{
+    // CHK030 / Edge Cases:new-scan --unknown --i16 等旗标组合保持语法可识别
+    const ReplCommand withType = parseReplCommand("new-scan --unknown --i16");
+    ASSERT_EQ(withType.scanType, ReplScanType::Unknown);
+    ASSERT_NE(withType.valueType, nullptr);
+    EXPECT_EQ(withType.valueType->shortName, "i16");
+    EXPECT_TRUE(withType.placeholder);
+    EXPECT_TRUE(withType.error.empty());
+
+    const ReplCommand withValueAndType = parseReplCommand("new-scan --greater --i64 42");
+    ASSERT_EQ(withValueAndType.scanType, ReplScanType::Greater);
+    ASSERT_NE(withValueAndType.valueType, nullptr);
+    EXPECT_EQ(withValueAndType.valueType->shortName, "i64");
+    EXPECT_TRUE(withValueAndType.placeholder);
+    EXPECT_TRUE(withValueAndType.error.empty());
+}
+
+TEST(ReplCommandParse, NewScanPlaceholderValueRules)
+{
+    // §11.5:--greater / --less 值必传,缺值 → 用法错误(不执行、不切换 scan-type);
+    // --unknown 不传值(缺值不报错),带值属未定义情形 → 按严格策略拒绝(与 next-scan 一致)
+    for (const char* line : {"new-scan --greater", "new-scan --less"}) {
+        const ReplCommand command = parseReplCommand(line);
+        EXPECT_FALSE(command.error.empty()) << line;
+        EXPECT_NE(command.error.find("Missing value"), std::string::npos) << line;
+        EXPECT_NE(command.error.find("Usage"), std::string::npos) << line;
+        EXPECT_FALSE(command.placeholder) << line;
+    }
+
+    EXPECT_TRUE(parseReplCommand("new-scan --unknown").error.empty());
+    const ReplCommand unknownWithValue = parseReplCommand("new-scan --unknown 100");
+    EXPECT_FALSE(unknownWithValue.error.empty());
+    EXPECT_NE(unknownWithValue.error.find("Usage"), std::string::npos);
 }
 
 TEST(ReplCommandParse, NextScanDefaultsToEqualWithValue)
