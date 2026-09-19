@@ -4,8 +4,13 @@ add_subdirectory(TinyProcessEngine)
 
 # 定义源文件（建议后续明确列出各模块源文件）
 # file(GLOB_RECURSE SOURCES "*.cpp")
-# 定义目标
-add_executable(${PROJECT_NAME} main.cpp)
+# 定义目标（startup 启动分层见 specs/004-cli-interaction-refactor plan.md）
+add_executable(${PROJECT_NAME}
+    main.cpp
+    startup/startup.cpp
+    startup/startup_cli.cpp
+    startup/startup_gui.cpp
+)
 
 # 设置输出位置
 set_target_properties(${PROJECT_NAME} PROPERTIES
