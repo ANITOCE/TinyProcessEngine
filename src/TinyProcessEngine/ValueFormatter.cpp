@@ -102,22 +102,27 @@ std::string formatValue(const ScanRecord& record, const CliValueType& valueType)
 }
 
 // ---------------------------------------------------------------------------
-// list 渲染(红阶段 stub;T024 绿阶段实现)
+// list 渲染(契约 C-R3 / 规范 §11.6)
 // ---------------------------------------------------------------------------
 
-std::string formatListEntry(const ScanRecord&, const CliValueType&)
+std::string formatListEntry(const ScanRecord& record, const CliValueType& valueType)
 {
-    return {};
+    // "  " + 0x16位hex + " | " + 值(规范 §11.6 示例)
+    std::string out = "  ";
+    out += formatAddress(record.address);
+    out += " | ";
+    out += formatValue(record, valueType);
+    return out;
 }
 
-std::string formatMatchesTotal(std::uint64_t)
+std::string formatMatchesTotal(std::uint64_t total)
 {
-    return {};
+    return "Total: " + std::to_string(total) + " matches";
 }
 
-std::string formatTruncationNotice(std::uint64_t)
+std::string formatTruncationNotice(std::uint64_t hidden)
 {
-    return {};
+    return "... and " + std::to_string(hidden) + " more";
 }
 
 } // namespace tpe::cli
