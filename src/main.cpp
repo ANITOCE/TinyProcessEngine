@@ -306,7 +306,8 @@ int main(int argc, char *argv[])
             }
         }     
         else if (commandLine.exist("serch-process")) {
-            std::cout << engine.searchProcess(commandLine.get<Pid_t>("serch-process")) << std::endl;
+            const auto found = engine.searchProcess(commandLine.get<Pid_t>("serch-process"));
+            std::cout << (found.has_value() ? *found : "Not Found") << std::endl;
         }
 
         if(command == "exit") {

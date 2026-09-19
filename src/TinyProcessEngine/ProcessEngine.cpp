@@ -25,16 +25,16 @@ std::shared_ptr<PlatformProcess> ProcessEngine::openProcess(Pid_t pid)
     return m_currentProcess;
 }
 
-std::string ProcessEngine::searchProcess(Pid_t pid) const
+std::optional<std::string> ProcessEngine::searchProcess(Pid_t pid) const
 {
     for(auto process : m_os->ProcessList)
     {
         if (process->getPid() == pid)
         {
-            return "Pid: " + std::to_string(pid) + " ProcessName:" + process->getProcessName();
+            return process->getProcessName();
         }
     }
-    return "Not Found";
+    return std::nullopt;
 }
 
 uint64_t ProcessEngine::searchMemory(const ValueType& type)
