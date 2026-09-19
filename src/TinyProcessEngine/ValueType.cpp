@@ -18,7 +18,7 @@ namespace {
 
 std::optional<tpe::Memory> ValueType::parse(std::string_view, std::string &error) const
 {
-    error = "not implemented";
+    error = "value type '" + name + "' does not support text parsing";
     return std::nullopt;
 }
 
