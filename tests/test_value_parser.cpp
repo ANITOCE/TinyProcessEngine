@@ -1,11 +1,13 @@
 #include <gtest/gtest.h>
 
+#include <cassert>
 #include <cstdint>
 #include <initializer_list>
 #include <string>
 #include <vector>
 
 #include "CliValueType.h"
+#include "ValueFormatter.h"
 #include "ValueType.h"
 
 namespace {
@@ -294,4 +296,80 @@ TEST(CliValueType, EveryMappedValueTypeParsesText)
         const auto parsed = entry.type->parse("42", error);
         EXPECT_TRUE(parsed.has_value()) << entry.shortName << ": " << error;
     }
+}
+
+// ---------------------------------------------------------------------------
+// ValueFormatter — 地址与快照值格式化
+// ---------------------------------------------------------------------------
+
+namespace {
+
+ScanRecord recordWith(tpe::Address address, std::initializer_list<unsigned> snapshot)
+{
+    tpe::Memory memory;
+    memory.reserve(snapshot.size());
+    for (const unsigned value : snapshot) {
+        memory.push_back(static_cast<tpe::Byte>(value));
+    }
+    return ScanRecord{address, memory};
+}
+
+const tpe::cli::CliValueType& cliType(std::string_view name)
+{
+    const tpe::cli::CliValueType* entry = tpe::cli::findCliValueTypeByFlag(name);
+    assert(entry != nullptr);
+    return *entry;
+}
+
+} // namespace
+
+TEST(ValueFormatter, FormatsAddressAs16DigitUppercaseHex)
+{
+    EXPECT_EQ(tpe::cli::formatAddress(0x1C0A10), "0x00000000001C0A10");
+    EXPECT_EQ(tpe::cli::formatAddress(0), "0x0000000000000000");
+    EXPECT_EQ(tpe::cli::formatAddress(~static_cast<tpe::Address>(0)), "0xFFFFFFFFFFFFFFFF");
+}
+
+TEST(ValueFormatter, FormatsSignedIntegersAsDecimal)
+{
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0x2A, 0x00, 0x00, 0x00}), cliType("i32")), "42");
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0xFE, 0xFF, 0xFF, 0xFF}), cliType("i32")), "-2");
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0xFF, 0x7F}), cliType("i16")), "32767");
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0xFF, 0xFF}), cliType("i16")), "-1");
+    EXPECT_EQ(tpe::cli::formatValue(
+                  recordWith(0x1000, {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}), cliType("i64")),
+              "-1");
+    EXPECT_EQ(tpe::cli::formatValue(
+                  recordWith(0x1000, {0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00}), cliType("i64")),
+              "1099511627776");
+}
+
+TEST(ValueFormatter, FormatsUnsignedByteAsUnsignedDecimal)
+{
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0xC8}), cliType("u8")), "200");
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0xFF}), cliType("u8")), "255");
+}
+
+TEST(ValueFormatter, FormatsFloatingPointWithDefaultStreamFormatting)
+{
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0x00, 0x00, 0xC0, 0x3F}), cliType("float")), "1.5");
+    EXPECT_EQ(tpe::cli::formatValue(
+                  recordWith(0x1000, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x40}), cliType("double")),
+              "2.5");
+}
+
+TEST(ValueFormatter, FormatsStringAsRawBytes)
+{
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {'a', 'b', 'c'}), cliType("string")), "abc");
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {}), cliType("string")), "");
+}
+
+TEST(ValueFormatter, FallsBackToHexBytesOnSnapshotSizeMismatch)
+{
+    // i32 需要 4 字节,快照只有 2 字节 → 十六进制字节串(内存序,空格分隔)
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0x10, 0x0A}), cliType("i32")), "10 0A");
+    // u8 需要 1 字节,快照 4 字节 → 同样回退
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0xC8, 0x00, 0x00, 0x00}), cliType("u8")), "C8 00 00 00");
+    // 空快照与非零宽度不匹配 → 空字节串
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {}), cliType("i64")), "");
 }
