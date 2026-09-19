@@ -44,3 +44,9 @@ target_include_directories(tpe_tests PRIVATE
 )
 
 add_test(NAME tpe_tests COMMAND tpe_tests)
+
+# 手工测试工具 Test.exe 门控（规范 §11.10）：
+# 仅当 TPE_BUILD_TESTS=ON 且 tests/tools 目录存在时构建（目录在 US3 创建）
+if(TPE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools")
+  add_subdirectory(tools)
+endif()
