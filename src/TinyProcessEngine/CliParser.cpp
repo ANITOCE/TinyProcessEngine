@@ -204,9 +204,27 @@ ReplCommand parseReplCommand(const std::string&)
     return command;
 }
 
-ReplOutcome planReplOutcome(const ReplCommand&)
+ReplOutcome planReplOutcome(const ReplCommand& command)
 {
-    return ReplOutcome::Noop;
+    // 用法错误优先:打印 error、不执行、不退出
+    if (!command.error.empty()) {
+        return ReplOutcome::UsageError;
+    }
+    switch (command.kind) {
+    case ReplCommandKind::Empty:
+        return ReplOutcome::Noop;
+    case ReplCommandKind::Help:
+    case ReplCommandKind::Unknown:
+        return ReplOutcome::ShowHelp;
+    case ReplCommandKind::Exit:
+        return ReplOutcome::Exit;
+    case ReplCommandKind::NewScan:
+    case ReplCommandKind::NextScan:
+    case ReplCommandKind::List:
+    case ReplCommandKind::Undo:
+        return ReplOutcome::Execute;
+    }
+    return ReplOutcome::ShowHelp;
 }
 
 std::optional<ScanCondition> toScanCondition(ReplScanType)
