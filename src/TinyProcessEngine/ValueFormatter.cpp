@@ -101,4 +101,23 @@ std::string formatValue(const ScanRecord& record, const CliValueType& valueType)
     return {};
 }
 
+// ---------------------------------------------------------------------------
+// list 渲染(红阶段 stub;T024 绿阶段实现)
+// ---------------------------------------------------------------------------
+
+std::string formatListEntry(const ScanRecord&, const CliValueType&)
+{
+    return {};
+}
+
+std::string formatMatchesTotal(std::uint64_t)
+{
+    return {};
+}
+
+std::string formatTruncationNotice(std::uint64_t)
+{
+    return {};
+}
+
 } // namespace tpe::cli

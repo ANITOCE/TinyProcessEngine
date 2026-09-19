@@ -373,3 +373,35 @@ TEST(ValueFormatter, FallsBackToHexBytesOnSnapshotSizeMismatch)
     // 空快照与非零宽度不匹配 → 空字节串
     EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {}), cliType("i64")), "");
 }
+
+// ---------------------------------------------------------------------------
+// list 渲染格式(T024;契约 C-R3 / 规范 §11.6)
+// ---------------------------------------------------------------------------
+
+TEST(ListRendering, FormatsEntryAsIndentedAddressValuePair)
+{
+    EXPECT_EQ(tpe::cli::formatListEntry(recordWith(0x1C0A10, {0x64, 0x00, 0x00, 0x00}), cliType("i32")),
+              "  0x00000000001C0A10 | 100");
+}
+
+TEST(ListRendering, FormatsEntryValueByCurrentType)
+{
+    // 首扫记录无快照(Phase 05 缺陷 #1 的可见表现):值列回退为空字节串
+    EXPECT_EQ(tpe::cli::formatListEntry(recordWith(0x1000, {}), cliType("i32")),
+              "  0x0000000000001000 | ");
+    // string 值原样
+    EXPECT_EQ(tpe::cli::formatListEntry(recordWith(0x1000, {'h', 'i'}), cliType("string")),
+              "  0x0000000000001000 | hi");
+}
+
+TEST(ListRendering, FormatsMatchesTotalLine)
+{
+    EXPECT_EQ(tpe::cli::formatMatchesTotal(0), "Total: 0 matches");
+    EXPECT_EQ(tpe::cli::formatMatchesTotal(1), "Total: 1 matches");
+    EXPECT_EQ(tpe::cli::formatMatchesTotal(15234), "Total: 15234 matches");
+}
+
+TEST(ListRendering, FormatsTruncationNotice)
+{
+    EXPECT_EQ(tpe::cli::formatTruncationNotice(5234), "... and 5234 more");
+}
