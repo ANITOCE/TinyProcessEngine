@@ -712,6 +712,44 @@ TEST(ReplHelp, CoversAllSevenCommands)
     }
 }
 
+TEST(TerminalHelp, CoversEveryTerminalCommandWithUsage)
+{
+    // FR-021 / C-T5:终端帮助逐条覆盖 5 条命令及用法(含 <PID> 说明)
+    const std::string help(tpe::cli::terminalHelpText());
+    for (const char* name : {"--all-processes", "--search-process", "--open-process", "--version",
+                             "--help"}) {
+        EXPECT_NE(help.find(name), std::string::npos) << name;
+    }
+    EXPECT_NE(help.find("--search-process <PID>"), std::string::npos);
+    EXPECT_NE(help.find("--open-process <PID>"), std::string::npos);
+    EXPECT_NE(help.find("Usage:"), std::string::npos);
+}
+
+TEST(ReplHelp, CoversEveryReplCommandWithUsage)
+{
+    // FR-021 / C-R6:REPL 帮助逐条列出 7 条命令及用法
+    const std::string help(tpe::cli::replHelpText());
+    EXPECT_NE(help.find("new-scan [--equal]"), std::string::npos);
+    EXPECT_NE(help.find("next-scan [--equal <value>]"), std::string::npos);
+    EXPECT_NE(help.find("next-scan [--greater|--less|--changed|--unchanged]"), std::string::npos);
+    EXPECT_NE(help.find("list [<page>] | list --all"), std::string::npos);
+    EXPECT_NE(help.find("write <address> <new-value>"), std::string::npos);
+    EXPECT_NE(help.find("help"), std::string::npos);
+    EXPECT_NE(help.find("exit"), std::string::npos);
+    EXPECT_NE(help.find("undo"), std::string::npos);
+}
+
+TEST(ReplHelp, DocumentsPlaceholderScanTypes)
+{
+    // FR-020 + US4 帮助可发现性:new-scan 的占位扫描类型(语法可识别)须在帮助中可发现
+    // (§11.5:--unknown 不传值;--greater / --less 值必传)
+    const std::string help(tpe::cli::replHelpText());
+    EXPECT_NE(help.find("--unknown"), std::string::npos);
+    EXPECT_NE(help.find("--greater <value>"), std::string::npos);
+    EXPECT_NE(help.find("--less <value>"), std::string::npos);
+    EXPECT_NE(help.find("not implemented yet"), std::string::npos);
+}
+
 TEST(ReplScanConditionMap, MapsEachConditionToEngineValue)
 {
     using tpe::cli::toScanCondition;
