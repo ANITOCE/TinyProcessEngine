@@ -640,6 +640,8 @@ std::string_view replHelpText()
         "  exit                                          Leave the REPL (exit code 0)\n"
         "\n"
         "Value types: u8, i16, i32 (default), i64, float, double, string\n"
+        "Scan types (new-scan): --equal <value> (default) | --unknown | --greater <value> | --less <value>\n"
+        "The --unknown / --greater / --less scan types are recognized but not implemented yet.\n"
         "The --string value takes the rest of the line (spaces allowed).\n";
 }
 
