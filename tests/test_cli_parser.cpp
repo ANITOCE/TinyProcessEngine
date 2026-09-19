@@ -1,17 +1,117 @@
 #include <gtest/gtest.h>
 
-#include "Platform.h"
-#include "CliCommandParser.h"
-#include "cmdline.h"
+#include "CliParser.h"
 
-TEST(CliParserTest, OpenProcessAcceptsPidValue)
+using tpe::cli::CliParseResult;
+using tpe::cli::CliParser;
+using tpe::cli::CliToken;
+
+// ---------------------------------------------------------------------------
+// 令牌化(空白折叠 / 偏移 / 旗标判定)
+// ---------------------------------------------------------------------------
+
+TEST(CliParser, EmptyLineYieldsNoTokens)
 {
-    cmdline::parser parser;
-    configureMainCommandParser(parser);
+    const CliParseResult result = CliParser::parse("");
+    EXPECT_EQ(result.raw, "");
+    EXPECT_TRUE(result.tokens.empty());
+    EXPECT_TRUE(result.flags().empty());
+    EXPECT_TRUE(result.positionals().empty());
+}
 
-    const std::vector<std::string> args{"TinyProcessEngine", "--open-process", "1234"};
+TEST(CliParser, WhitespaceOnlyLineYieldsNoTokens)
+{
+    const CliParseResult result = CliParser::parse("  \t \t ");
+    EXPECT_TRUE(result.tokens.empty());
+    EXPECT_TRUE(result.positionals().empty());
+}
 
-    EXPECT_TRUE(parser.parse(args)) << parser.error_full();
-    EXPECT_TRUE(parser.exist("open-process"));
-    EXPECT_EQ(parser.get<Pid_t>("open-process"), static_cast<Pid_t>(1234));
+TEST(CliParser, FoldsRunsOfWhitespaceIntoTokens)
+{
+    const CliParseResult result = CliParser::parse("  new-scan \t  --i32   100 ");
+    ASSERT_EQ(result.tokens.size(), 3u);
+    EXPECT_EQ(result.tokens[0].text, "new-scan");
+    EXPECT_EQ(result.tokens[1].text, "--i32");
+    EXPECT_EQ(result.tokens[2].text, "100");
+}
+
+TEST(CliParser, KeepsRawLineUnchanged)
+{
+    const std::string line = "  new-scan \t  --i32   100 ";
+    const CliParseResult result = CliParser::parse(line);
+    EXPECT_EQ(result.raw, line);
+}
+
+TEST(CliParser, RecordsOffsetsRelativeToRawLine)
+{
+    const CliParseResult result = CliParser::parse("new-scan --i32 100");
+    ASSERT_EQ(result.tokens.size(), 3u);
+    EXPECT_EQ(result.tokens[0].begin, 0u);
+    EXPECT_EQ(result.tokens[0].end, 8u);
+    EXPECT_EQ(result.tokens[1].begin, 9u);
+    EXPECT_EQ(result.tokens[1].end, 14u);
+    EXPECT_EQ(result.tokens[2].begin, 15u);
+    EXPECT_EQ(result.tokens[2].end, 18u);
+    // 依据偏移可截取“该令牌之后的剩余整行”(--string 取值规则的基础)
+    EXPECT_EQ(result.raw.substr(result.tokens[0].end), " --i32 100");
+}
+
+TEST(CliParser, ClassifiesTokensStartingWithDoubleDashAndLongerThanTwo)
+{
+    const CliParseResult result = CliParser::parse("--i32 100 -x -- --string");
+    ASSERT_EQ(result.tokens.size(), 5u);
+    EXPECT_TRUE(result.tokens[0].isFlag);  // "--i32"
+    EXPECT_FALSE(result.tokens[1].isFlag); // "100"
+    EXPECT_FALSE(result.tokens[2].isFlag); // "-x"(单横线不是旗标)
+    EXPECT_FALSE(result.tokens[3].isFlag); // "--"(长度不足,不是旗标)
+    EXPECT_TRUE(result.tokens[4].isFlag);  // "--string"
+}
+
+TEST(CliParser, TreatsQuotesAsOrdinaryCharacters)
+{
+    // 本项目不做引号分组:--string 取值依赖原始行偏移,而非引号解析
+    const CliParseResult result = CliParser::parse("write 0x10 \"a b\"");
+    ASSERT_EQ(result.tokens.size(), 4u);
+    EXPECT_EQ(result.tokens[2].text, "\"a");
+    EXPECT_EQ(result.tokens[3].text, "b\"");
+}
+
+// ---------------------------------------------------------------------------
+// 便捷访问(flags / positionals / hasFlag)
+// ---------------------------------------------------------------------------
+
+TEST(CliParserFlags, ListsFlagNamesWithoutPrefixInOrder)
+{
+    const CliParseResult result = CliParser::parse("new-scan --i64 --string hello");
+    const std::vector<std::string> flags = result.flags();
+    ASSERT_EQ(flags.size(), 2u);
+    EXPECT_EQ(flags[0], "i64");
+    EXPECT_EQ(flags[1], "string");
+}
+
+TEST(CliParserFlags, HasFlagAcceptsPlainAndPrefixedNames)
+{
+    const CliParseResult result = CliParser::parse("next-scan --equal 100");
+    EXPECT_TRUE(result.hasFlag("equal"));
+    EXPECT_TRUE(result.hasFlag("--equal"));
+    EXPECT_FALSE(result.hasFlag("changed"));
+}
+
+TEST(CliParserPositionals, ReturnsNonFlagTokensInOrder)
+{
+    const CliParseResult result = CliParser::parse("write 1C0A10 42");
+    const std::vector<const CliToken*> positionals = result.positionals();
+    ASSERT_EQ(positionals.size(), 3u);
+    EXPECT_EQ(positionals[0]->text, "write");
+    EXPECT_EQ(positionals[1]->text, "1C0A10");
+    EXPECT_EQ(positionals[2]->text, "42");
+    EXPECT_EQ(positionals[1]->begin, 6u);
+}
+
+TEST(CliParserPositionals, KeepsBareDoubleDashAsPositional)
+{
+    const CliParseResult result = CliParser::parse("-- 100");
+    EXPECT_TRUE(result.flags().empty());
+    ASSERT_EQ(result.positionals().size(), 2u);
+    EXPECT_EQ(result.positionals()[0]->text, "--");
 }
