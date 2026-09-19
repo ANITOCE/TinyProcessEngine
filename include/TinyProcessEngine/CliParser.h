@@ -84,7 +84,7 @@ std::string_view terminalHelpText();
 // REPL 命令解析(spec 004 US2;契约 C-R1–C-R3、C-R5、C-R6)
 // ---------------------------------------------------------------------------
 
-/// REPL 命令分类(`write` 于 US3 落地;本阶段按未知命令处理)。
+/// REPL 命令分类(`write` 于 US3 转正,共 8 类)。
 enum class ReplCommandKind {
     Empty,    // 空输入 / 全空白
     Help,     // help
@@ -92,8 +92,9 @@ enum class ReplCommandKind {
     NewScan,  // new-scan
     NextScan, // next-scan
     List,     // list
+    Write,    // write(按当前数值类型写入目标进程;US3)
     Undo,     // undo
-    Unknown,  // 无法识别(含 write,US3 转正)
+    Unknown,  // 无法识别
 };
 
 /// REPL 命令解析结果;error 非空 = 用法错误(含 "Usage"),主循环打印后不执行。
@@ -110,11 +111,23 @@ struct ReplCommand {
     bool listAll = false; // list --all
     unsigned page = 1;    // list 页码(默认第 1 页)
 
+    // write
+    tpe::Address address = 0; // 已解析的十六进制地址(0x 前缀可省);
+                              // value = 地址后剩余整行(前导空白已去)
+
     std::string error; // 非空 = 用法错误(含 "Usage")
 };
 
 /// 解析一行 REPL 输入(纯逻辑,无 I/O,不抛异常)。
 ReplCommand parseReplCommand(const std::string& line);
+
+/// write 值文本提取(契约 C-R4;US3):
+/// - string 类型:地址后剩余整行(允许空格,原样);
+/// - 其它类型:必须恰为单个 token(多余 token → 用法错误)。
+/// 返回 nullopt 且 error 非空表示用法错误(原因文本;Usage 行由调用方补)。
+std::optional<std::string> extractWriteValueText(const ReplCommand& command,
+                                                 const CliValueType& valueType,
+                                                 std::string& error);
 
 /// 一行输入的顶层处置决策(FR-021;I/O 由 startup_cli 执行)。
 enum class ReplOutcome {

@@ -3,9 +3,11 @@
 #include <cassert>
 #include <cstdint>
 #include <initializer_list>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "CliParser.h"
 #include "CliValueType.h"
 #include "ValueFormatter.h"
 #include "ValueType.h"
@@ -235,6 +237,58 @@ TEST(ValueParse, RejectsOutOfRangeFloatsAndInt64Overflow)
 
     error.clear();
     EXPECT_FALSE(d.parse("1e400", error).has_value());
+}
+
+// ---------------------------------------------------------------------------
+// write 值转换(US3 T026;契约 C-R4:值文本 → ValueType::parse)
+// ---------------------------------------------------------------------------
+
+TEST(WriteValue, ConvertsSingleTokenToTypeRepresentation)
+{
+    const tpe::cli::CliValueType* i32 = tpe::cli::findCliValueTypeByShortName("i32");
+    ASSERT_NE(i32, nullptr);
+    const tpe::cli::ReplCommand command = tpe::cli::parseReplCommand("write 0x10 -2");
+    ASSERT_EQ(command.kind, tpe::cli::ReplCommandKind::Write);
+
+    std::string error;
+    const std::optional<std::string> text =
+        tpe::cli::extractWriteValueText(command, *i32, error);
+    ASSERT_TRUE(text.has_value()) << error;
+    const std::optional<tpe::Memory> data = i32->type->parse(*text, error);
+    ASSERT_TRUE(data.has_value()) << error;
+    EXPECT_EQ(*data, bytes({0xFE, 0xFF, 0xFF, 0xFF}));
+}
+
+TEST(WriteValue, StringWriteKeepsSpacesAndConvertsRawBytes)
+{
+    const tpe::cli::CliValueType* stringType = tpe::cli::findCliValueTypeByShortName("string");
+    ASSERT_NE(stringType, nullptr);
+    const tpe::cli::ReplCommand command = tpe::cli::parseReplCommand("write 0x10 hello world");
+    ASSERT_EQ(command.kind, tpe::cli::ReplCommandKind::Write);
+
+    std::string error;
+    const std::optional<std::string> text =
+        tpe::cli::extractWriteValueText(command, *stringType, error);
+    ASSERT_TRUE(text.has_value()) << error;
+    const std::optional<tpe::Memory> data = stringType->type->parse(*text, error);
+    ASSERT_TRUE(data.has_value()) << error;
+    EXPECT_EQ(*data, bytes({'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd'}));
+}
+
+TEST(WriteValue, OutOfRangeValueIsRejectedByTargetTypeParse)
+{
+    const tpe::cli::CliValueType* u8 = tpe::cli::findCliValueTypeByShortName("u8");
+    ASSERT_NE(u8, nullptr);
+    const tpe::cli::ReplCommand command = tpe::cli::parseReplCommand("write 0x10 256");
+    ASSERT_EQ(command.kind, tpe::cli::ReplCommandKind::Write);
+
+    std::string error;
+    const std::optional<std::string> text =
+        tpe::cli::extractWriteValueText(command, *u8, error);
+    ASSERT_TRUE(text.has_value()) << error;
+    error.clear();
+    EXPECT_FALSE(u8->type->parse(*text, error).has_value());
+    EXPECT_NE(error.find("range"), std::string::npos) << error;
 }
 
 // ---------------------------------------------------------------------------

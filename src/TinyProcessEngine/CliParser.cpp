@@ -211,6 +211,8 @@ std::string_view replUsageFor(ReplCommandKind kind)
                "[--greater|--less|--changed|--unchanged] [<value-type>]";
     case ReplCommandKind::List:
         return "Usage: list [<page>] | list --all";
+    case ReplCommandKind::Write:
+        return "Usage: write <address> <new-value>";
     case ReplCommandKind::Undo:
         return "Usage: undo";
     case ReplCommandKind::Exit:
@@ -474,8 +476,14 @@ ReplCommand parseReplCommand(const std::string& line)
     if (name == "list") {
         return parseListCommand(parsed);
     }
+    if (name == "write") {
+        // US3 T026 红:解析未实现(占位);T027 补全地址/值解析
+        ReplCommand command;
+        command.kind = ReplCommandKind::Write;
+        return command;
+    }
 
-    ReplCommand command; // 未知命令(含 write;US3 转正)
+    ReplCommand command; // 未知命令
     return command;
 }
 
@@ -496,10 +504,18 @@ ReplOutcome planReplOutcome(const ReplCommand& command)
     case ReplCommandKind::NewScan:
     case ReplCommandKind::NextScan:
     case ReplCommandKind::List:
+    case ReplCommandKind::Write:
     case ReplCommandKind::Undo:
         return ReplOutcome::Execute;
     }
     return ReplOutcome::ShowHelp;
+}
+
+std::optional<std::string> extractWriteValueText(const ReplCommand&, const CliValueType&,
+                                                 std::string&)
+{
+    // US3 T026 红:占位实现(尚未实现)→ 新用例应断言失败
+    return std::nullopt;
 }
 
 std::optional<ScanCondition> toScanCondition(ReplScanType type)

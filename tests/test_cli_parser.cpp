@@ -299,6 +299,7 @@ TEST(ReplCommandParse, ClassifiesEachCommandKind)
     EXPECT_EQ(parseReplCommand("new-scan 100").kind, ReplCommandKind::NewScan);
     EXPECT_EQ(parseReplCommand("next-scan 100").kind, ReplCommandKind::NextScan);
     EXPECT_EQ(parseReplCommand("list").kind, ReplCommandKind::List);
+    EXPECT_EQ(parseReplCommand("write 0x10 42").kind, ReplCommandKind::Write);
     EXPECT_EQ(parseReplCommand("undo").kind, ReplCommandKind::Undo);
     EXPECT_EQ(parseReplCommand("help").kind, ReplCommandKind::Help);
     EXPECT_EQ(parseReplCommand("exit").kind, ReplCommandKind::Exit);
@@ -316,13 +317,6 @@ TEST(ReplCommandParse, UnknownCommandsAreUnrecognized)
     EXPECT_EQ(parseReplCommand("bogus").kind, ReplCommandKind::Unknown);
     EXPECT_EQ(parseReplCommand("--all").kind, ReplCommandKind::Unknown);
     EXPECT_EQ(parseReplCommand("NEW-SCAN 100").kind, ReplCommandKind::Unknown); // 大小写敏感
-}
-
-TEST(ReplCommandParse, WriteIsUnknownUntilUs3)
-{
-    // US3(T026/T027)转正为 write 命令;本阶段按未知命令处理(显示 REPL 帮助)
-    EXPECT_EQ(parseReplCommand("write 0x10 42").kind, ReplCommandKind::Unknown);
-    EXPECT_EQ(parseReplCommand("write").kind, ReplCommandKind::Unknown);
 }
 
 TEST(ReplCommandParse, NewScanDefaultsToEqualAndCurrentType)
@@ -546,6 +540,118 @@ TEST(ReplCommandParse, UsageErrorsIncludeUsageHint)
     EXPECT_NE(parseReplCommand("new-scan").error.find("Usage"), std::string::npos);
     EXPECT_NE(parseReplCommand("next-scan --changed 1").error.find("Usage"), std::string::npos);
     EXPECT_NE(parseReplCommand("list 0").error.find("Usage"), std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// write 命令解析(US3 T026;契约 C-R4)
+// ---------------------------------------------------------------------------
+
+TEST(ReplCommandParse, WriteParsesHexAddressAndValue)
+{
+    const ReplCommand command = parseReplCommand("write 0x1C0A10 42");
+    ASSERT_EQ(command.kind, ReplCommandKind::Write);
+    EXPECT_EQ(command.address, static_cast<tpe::Address>(0x1C0A10));
+    EXPECT_TRUE(command.hasValue);
+    EXPECT_EQ(command.value, "42");
+    EXPECT_TRUE(command.error.empty());
+}
+
+TEST(ReplCommandParse, WriteAddressHexPrefixIsOptional)
+{
+    // `0x` 前缀可省;hex 数字与前缀大小写不敏感
+    EXPECT_EQ(parseReplCommand("write 1C0A10 42").address,
+              static_cast<tpe::Address>(0x1C0A10));
+    EXPECT_EQ(parseReplCommand("write 0x1c0a10 42").address,
+              static_cast<tpe::Address>(0x1C0A10));
+    EXPECT_EQ(parseReplCommand("write 0X1C0A10 42").address,
+              static_cast<tpe::Address>(0x1C0A10));
+    EXPECT_EQ(parseReplCommand("write 0 42").address, static_cast<tpe::Address>(0));
+}
+
+TEST(ReplCommandParse, WriteKeepsRemainderOfLineAsValue)
+{
+    // 地址后剩余整行(内部空格保留);string 目标的取值规则见 extractWriteValueText
+    const ReplCommand command = parseReplCommand("write 0x10 hello  world");
+    ASSERT_EQ(command.kind, ReplCommandKind::Write);
+    EXPECT_TRUE(command.hasValue);
+    EXPECT_EQ(command.value, "hello  world");
+    EXPECT_TRUE(command.error.empty());
+}
+
+TEST(ReplCommandParse, WriteRequiresAddressAndValue)
+{
+    const ReplCommand missingAddress = parseReplCommand("write");
+    EXPECT_FALSE(missingAddress.error.empty());
+    EXPECT_NE(missingAddress.error.find("Usage"), std::string::npos);
+
+    const ReplCommand missingValue = parseReplCommand("write 0x10");
+    EXPECT_FALSE(missingValue.error.empty());
+    EXPECT_NE(missingValue.error.find("Usage"), std::string::npos);
+
+    const ReplCommand blankValue = parseReplCommand("write 0x10   ");
+    EXPECT_FALSE(blankValue.error.empty());
+    EXPECT_NE(blankValue.error.find("Usage"), std::string::npos);
+}
+
+TEST(ReplCommandParse, WriteRejectsInvalidAddresses)
+{
+    for (const char* line : {"write 0x 42", "write 0xZZ10 42", "write -1 42", "write 41G0 42",
+                             "write FFFFFFFFFFFFFFFFFF 42"}) {
+        const ReplCommand command = parseReplCommand(line);
+        EXPECT_FALSE(command.error.empty()) << line;
+        EXPECT_NE(command.error.find("Usage"), std::string::npos) << line;
+    }
+}
+
+TEST(ReplCommandParse, WriteRejectsOptions)
+{
+    // write 语法无旗标:值类型由 REPL 当前 `value-type` 决定(规范 §11.7)
+    const ReplCommand command = parseReplCommand("write --i32 0x10 42");
+    EXPECT_FALSE(command.error.empty());
+    EXPECT_NE(command.error.find("--i32"), std::string::npos);
+}
+
+TEST(ReplCommandParse, WriteValueRulesFollowTargetType)
+{
+    using tpe::cli::CliValueType;
+    using tpe::cli::defaultCliValueType;
+    using tpe::cli::extractWriteValueText;
+    using tpe::cli::findCliValueTypeByShortName;
+
+    std::string error;
+    const CliValueType& i32 = defaultCliValueType();
+    const CliValueType* stringType = findCliValueTypeByShortName("string");
+    ASSERT_NE(stringType, nullptr);
+
+    // 非 string:单 token 通过
+    const ReplCommand single = parseReplCommand("write 0x10 -2");
+    ASSERT_EQ(single.kind, ReplCommandKind::Write);
+    const std::optional<std::string> singleText = extractWriteValueText(single, i32, error);
+    ASSERT_TRUE(singleText.has_value()) << error;
+    EXPECT_EQ(*singleText, "-2");
+
+    // 非 string:多余 token → 用法错误(不执行)
+    const ReplCommand extra = parseReplCommand("write 0x10 42 43");
+    error.clear();
+    EXPECT_FALSE(extractWriteValueText(extra, i32, error).has_value());
+    EXPECT_NE(error.find("43"), std::string::npos) << error;
+
+    // string:地址后剩余整行(允许空格)
+    const ReplCommand text = parseReplCommand("write 0x10 hello world");
+    error.clear();
+    const std::optional<std::string> stringText = extractWriteValueText(text, *stringType, error);
+    ASSERT_TRUE(stringText.has_value()) << error;
+    EXPECT_EQ(*stringText, "hello world");
+}
+
+TEST(ReplCommandParse, WritePlansToExecute)
+{
+    EXPECT_EQ(tpe::cli::planReplOutcome(parseReplCommand("write 0x10 42")),
+              tpe::cli::ReplOutcome::Execute);
+    EXPECT_EQ(tpe::cli::planReplOutcome(parseReplCommand("write 0x10")),
+              tpe::cli::ReplOutcome::UsageError);
+    EXPECT_EQ(tpe::cli::planReplOutcome(parseReplCommand("write")),
+              tpe::cli::ReplOutcome::UsageError);
 }
 
 TEST(ReplHelp, CoversAllSevenCommands)
