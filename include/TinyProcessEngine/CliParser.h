@@ -1,11 +1,15 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "CliValueType.h"
 #include "Platform.h" // Pid_t
+#include "ReplState.h"
+#include "ScanTypes.h"
 
 namespace tpe::cli {
 
@@ -75,5 +79,61 @@ int parseExitCode(TerminalCommandKind kind);
 
 /// 终端侧帮助文本(覆盖全部终端命令与用法;--help 与参数错误时打印,契约 C-T5/C-T6)。
 std::string_view terminalHelpText();
+
+// ---------------------------------------------------------------------------
+// REPL 命令解析(spec 004 US2;契约 C-R1–C-R3、C-R5、C-R6)
+// ---------------------------------------------------------------------------
+
+/// REPL 命令分类(`write` 于 US3 落地;本阶段按未知命令处理)。
+enum class ReplCommandKind {
+    Empty,    // 空输入 / 全空白
+    Help,     // help
+    Exit,     // exit
+    NewScan,  // new-scan
+    NextScan, // next-scan
+    List,     // list
+    Undo,     // undo
+    Unknown,  // 无法识别(含 write,US3 转正)
+};
+
+/// REPL 命令解析结果;error 非空 = 用法错误(含 "Usage"),主循环打印后不执行。
+struct ReplCommand {
+    ReplCommandKind kind = ReplCommandKind::Unknown;
+
+    // new-scan / next-scan
+    ReplScanType scanType = ReplScanType::Equal; // 默认 equal
+    const CliValueType* valueType = nullptr;     // 显式 --<type> 旗标;nullptr = 沿用当前
+    std::string value;                           // 值原文(--string 取旗标后剩余整行)
+    bool hasValue = false;
+
+    // list
+    bool listAll = false; // list --all
+    unsigned page = 1;    // list 页码(默认第 1 页)
+
+    std::string error; // 非空 = 用法错误(含 "Usage")
+};
+
+/// 解析一行 REPL 输入(纯逻辑,无 I/O,不抛异常)。
+ReplCommand parseReplCommand(const std::string& line);
+
+/// 一行输入的顶层处置决策(FR-021;I/O 由 startup_cli 执行)。
+enum class ReplOutcome {
+    Noop,       // 空输入:不打印任何内容,仅刷新提示符
+    ShowHelp,   // help / 未知命令:打印 REPL 帮助、不退出
+    UsageError, // 用法错误:打印 error、不执行、不退出
+    Exit,       // exit:退出 REPL(进程退出码 0)
+    Execute,    // 已识别命令:交给主循环执行
+};
+
+/// 根据解析结果决定处置(纯逻辑;error 非空时优先 UsageError)。
+ReplOutcome planReplOutcome(const ReplCommand& command);
+
+/// REPL 扫描类型 → 引擎扫描条件(next-scan 执行用)。
+/// Equal→ExactValue;Greater→Increased;Less→Decreased;Changed/Unchanged 同名;
+/// Unknown(仅 new-scan 占位,US4)无对应条件 → nullopt。
+std::optional<ScanCondition> toScanCondition(ReplScanType type);
+
+/// REPL 帮助文本(覆盖 7 条命令;契约 C-R6)。
+std::string_view replHelpText();
 
 } // namespace tpe::cli

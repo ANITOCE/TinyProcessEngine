@@ -194,4 +194,29 @@ std::string_view terminalHelpText()
         "Without arguments the same help is printed.\n";
 }
 
+// ---------------------------------------------------------------------------
+// REPL 命令解析(红阶段 stub;T020 绿阶段实现)
+// ---------------------------------------------------------------------------
+
+ReplCommand parseReplCommand(const std::string&)
+{
+    ReplCommand command; // kind 默认 Unknown
+    return command;
+}
+
+ReplOutcome planReplOutcome(const ReplCommand&)
+{
+    return ReplOutcome::Noop;
+}
+
+std::optional<ScanCondition> toScanCondition(ReplScanType)
+{
+    return std::nullopt;
+}
+
+std::string_view replHelpText()
+{
+    return {};
+}
+
 } // namespace tpe::cli
