@@ -176,4 +176,22 @@ int parseExitCode(TerminalCommandKind kind)
     return kind == TerminalCommandKind::UsageError ? kExitUsageError : kExitOk;
 }
 
+std::string_view terminalHelpText()
+{
+    return
+        "TinyProcessEngine - process memory scanner\n"
+        "\n"
+        "Usage: TinyProcessEngine.exe [command]\n"
+        "\n"
+        "Commands:\n"
+        "  --all-processes         List all processes (PID and process name)\n"
+        "  --search-process <PID>  Print the process name for the given PID\n"
+        "  --open-process <PID>    Open the process and enter the interactive REPL\n"
+        "  --version               Print version information\n"
+        "  --help                  Show this help\n"
+        "\n"
+        "PID is a non-negative decimal process identifier.\n"
+        "Without arguments the same help is printed.\n";
+}
+
 } // namespace tpe::cli

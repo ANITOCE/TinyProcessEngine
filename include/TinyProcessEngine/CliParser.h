@@ -73,4 +73,7 @@ inline constexpr int kExitUsageError = 2;
 /// 运行期失败(kExitRuntimeError)由命令执行层返回。
 int parseExitCode(TerminalCommandKind kind);
 
+/// 终端侧帮助文本(覆盖全部终端命令与用法;--help 与参数错误时打印,契约 C-T5/C-T6)。
+std::string_view terminalHelpText();
+
 } // namespace tpe::cli

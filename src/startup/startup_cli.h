@@ -1,9 +1,12 @@
 #pragma once
 
+#include <string>
+#include <vector>
+
 namespace tpe::app {
 
-/// CLI 装配点:终端一次性命令与 REPL 主循环。
-/// 本阶段(T001)仅保留签名与空实现,业务行为在 US1/US2 落地。
-int runCli(int argc, char** argv);
+/// CLI 装配点:执行终端一次性命令(--all-processes / --search-process / --open-process)。
+/// args 不含程序名;返回终端退出码(tpe::cli::kExitOk / kExitRuntimeError / kExitUsageError)。
+int runCli(const std::vector<std::string>& args);
 
 } // namespace tpe::app
