@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "CliValueType.h"
 #include "ValueType.h"
 
 namespace {
@@ -232,4 +233,65 @@ TEST(ValueParse, RejectsOutOfRangeFloatsAndInt64Overflow)
 
     error.clear();
     EXPECT_FALSE(d.parse("1e400", error).has_value());
+}
+
+// ---------------------------------------------------------------------------
+// CliValueType — 旗标 ↔ 短名 ↔ ValueType 映射
+// ---------------------------------------------------------------------------
+
+TEST(CliValueType, ExposesSevenTypesInFixedOrder)
+{
+    const std::vector<tpe::cli::CliValueType>& types = tpe::cli::cliValueTypes();
+    ASSERT_EQ(types.size(), 7u);
+    const char* expected[] = {"u8", "i16", "i32", "i64", "float", "double", "string"};
+    for (std::size_t i = 0; i < types.size(); ++i) {
+        EXPECT_EQ(types[i].flagName, expected[i]);
+        EXPECT_EQ(types[i].shortName, expected[i]);
+        EXPECT_NE(types[i].type, nullptr) << types[i].shortName;
+    }
+}
+
+TEST(CliValueType, LooksUpByFlagWithOrWithoutPrefix)
+{
+    const tpe::cli::CliValueType* plain = tpe::cli::findCliValueTypeByFlag("i16");
+    const tpe::cli::CliValueType* prefixed = tpe::cli::findCliValueTypeByFlag("--i16");
+    ASSERT_NE(plain, nullptr);
+    ASSERT_NE(prefixed, nullptr);
+    EXPECT_EQ(plain, prefixed);
+    EXPECT_EQ(plain->kind, tpe::cli::CliValueKind::I16);
+    EXPECT_EQ(plain->type->name, std::string("16-bit integer"));
+}
+
+TEST(CliValueType, LooksUpByShortName)
+{
+    const tpe::cli::CliValueType* entry = tpe::cli::findCliValueTypeByShortName("string");
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->kind, tpe::cli::CliValueKind::String);
+    EXPECT_EQ(entry->type->name, std::string("string"));
+}
+
+TEST(CliValueType, ReturnsNullForUnknownNames)
+{
+    EXPECT_EQ(tpe::cli::findCliValueTypeByFlag("unknown"), nullptr);
+    EXPECT_EQ(tpe::cli::findCliValueTypeByFlag("--nope"), nullptr);
+    EXPECT_EQ(tpe::cli::findCliValueTypeByShortName("nope"), nullptr);
+    EXPECT_EQ(tpe::cli::findCliValueTypeByShortName("--i32"), nullptr); // 短名查找不剥前缀
+}
+
+TEST(CliValueType, DefaultsToI32)
+{
+    const tpe::cli::CliValueType& entry = tpe::cli::defaultCliValueType();
+    EXPECT_EQ(entry.kind, tpe::cli::CliValueKind::I32);
+    EXPECT_EQ(entry.flagName, "i32");
+    EXPECT_EQ(entry.type, tpe::cli::findCliValueTypeByFlag("i32")->type);
+}
+
+TEST(CliValueType, EveryMappedValueTypeParsesText)
+{
+    std::string error;
+    for (const tpe::cli::CliValueType& entry : tpe::cli::cliValueTypes()) {
+        ASSERT_NE(entry.type, nullptr) << entry.shortName;
+        const auto parsed = entry.type->parse("42", error);
+        EXPECT_TRUE(parsed.has_value()) << entry.shortName << ": " << error;
+    }
 }
