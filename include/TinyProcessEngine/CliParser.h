@@ -64,4 +64,13 @@ struct TerminalCommand {
 /// 空参数等同 --help(C-T5);错误仅以 UsageError + 原因报告(退出码由调用方决定)。
 TerminalCommand parseTerminalCommand(const std::vector<std::string>& args);
 
+/// 终端退出码(契约:0 = 成功;1 = 运行期失败;2 = 参数/用法错误)。
+inline constexpr int kExitOk = 0;
+inline constexpr int kExitRuntimeError = 1;
+inline constexpr int kExitUsageError = 2;
+
+/// 解析阶段的退出码映射:UsageError → kExitUsageError,其余 → kExitOk;
+/// 运行期失败(kExitRuntimeError)由命令执行层返回。
+int parseExitCode(TerminalCommandKind kind);
+
 } // namespace tpe::cli

@@ -257,3 +257,30 @@ TEST(TerminalCommandParse, RejectsUnknownBareArguments)
     EXPECT_EQ(parseTerminalCommand({"foo"}).kind, TerminalCommandKind::UsageError);
     EXPECT_EQ(parseTerminalCommand({""}).kind, TerminalCommandKind::UsageError);
 }
+
+// ---------------------------------------------------------------------------
+// 终端退出码映射(契约:0 = 成功;1 = 运行期失败;2 = 参数/用法错误)
+// ---------------------------------------------------------------------------
+
+TEST(TerminalExitCodes, ConstantsMatchContract)
+{
+    EXPECT_EQ(tpe::cli::kExitOk, 0);
+    EXPECT_EQ(tpe::cli::kExitRuntimeError, 1);
+    EXPECT_EQ(tpe::cli::kExitUsageError, 2);
+}
+
+TEST(TerminalExitCodes, UsageErrorMapsToExitCodeTwo)
+{
+    const TerminalCommand command = parseTerminalCommand({"--no-such"});
+    ASSERT_EQ(command.kind, TerminalCommandKind::UsageError);
+    EXPECT_EQ(tpe::cli::parseExitCode(command.kind), tpe::cli::kExitUsageError);
+}
+
+TEST(TerminalExitCodes, OtherKindsMapToExitCodeZero)
+{
+    EXPECT_EQ(tpe::cli::parseExitCode(TerminalCommandKind::Help), tpe::cli::kExitOk);
+    EXPECT_EQ(tpe::cli::parseExitCode(TerminalCommandKind::Version), tpe::cli::kExitOk);
+    EXPECT_EQ(tpe::cli::parseExitCode(TerminalCommandKind::AllProcesses), tpe::cli::kExitOk);
+    EXPECT_EQ(tpe::cli::parseExitCode(TerminalCommandKind::SearchProcess), tpe::cli::kExitOk);
+    EXPECT_EQ(tpe::cli::parseExitCode(TerminalCommandKind::OpenProcess), tpe::cli::kExitOk);
+}
