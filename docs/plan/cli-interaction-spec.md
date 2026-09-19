@@ -49,13 +49,13 @@
 
 ```
 notepad.exe-equal-i32> new-scan 100
-notepad.exe-equal-i32-100> next-scan --increased
-notepad.exe-increased-i32-100> list 1
+notepad.exe-equal-i32-100> next-scan --greater
+notepad.exe-greater-i32-100> list 1
 ```
 
 **`[<value>]` 显示规则**:
 - 显示"最近一次带值扫描传入的值"
-- `next-scan --changed` / `--unchanged` / `--unknown`(无值)执行后 → 隐藏
+- `next-scan --changed` / `--unchanged`(不传值)执行后 → 隐藏
 - `new-scan` 销毁之前的扫描进度,回到默认不显示状态
 - 最近一次扫描带值 → 显示该值;否则隐藏
 
@@ -92,8 +92,8 @@ notepad.exe-increased-i32-100> list 1
 | 旗标 | 含义 | 值 | 状态 |
 |------|------|----|------|
 | `--equal` | 精确值 | 必传 | ✅ 已实现 |
-| `--greater` | 值变大 | 必传 | ✅ 已实现 |
-| `--less` | 值变小 | 必传 | ✅ 已实现 |
+| `--greater` | 值变大 | 不传 | ✅ 已实现 |
+| `--less` | 值变小 | 不传 | ✅ 已实现 |
 | `--changed` | 值变化 | 不传 | ✅ 已实现 |
 | `--unchanged` | 值未变化 | 不传 | ✅ 已实现 |
 
@@ -105,13 +105,13 @@ notepad.exe-increased-i32-100> list 1
 new-scan 100                    # equal + i32 + 100
 new-scan --equal --i32 100      # 显式等价
 next-scan --changed             # 无值
-next-scan --less --i64 42
+next-scan --less --i64          # 无值(值变小)
 new-scan --unknown              # 占位(打印 not implemented)
 ```
 
 **缺值规则**:
 - 需要值却未提供(如 `new-scan`、`next-scan --equal`)→ 打印用法错误(含 Usage 提示),不执行
-- `--changed` / `--unchanged` / `--unknown` 缺值不报错,正常执行
+- 不传值的旗标(`--changed` / `--unchanged` / `--unknown`,以及 `next-scan` 的 `--greater` / `--less`)缺值不报错,正常执行
 - **永不交互式追问**
 
 ## 11.6 list 显示格式
@@ -189,6 +189,19 @@ src/
   - 按 Esc → 退出
 - 用途:配合 `TinyProcessEngine.exe --open-process <Test.exe 的 PID>` 进行真实扫描/修改流程验证
 - 输入读取需平台非缓冲输入(Windows `_getch()` / Linux `termios`)
+
+---
+
+## 勘误记录
+
+> 本文件为公开区规格输入文档。以下勘误由 Phase 04 消歧(P2,2026-09-20)定稿驱动,须经 **P7 人工评审闸门**确认后方视为生效;未通过评审时应回退对应条目。
+
+| 日期 | 位置 | 原文 | 勘误后 | 依据 | 评审状态 |
+|---|---|---|---|---|---|
+| 2026-09-20 | §11.3 示例 | `next-scan --increased`(提示符 `increased`) | `next-scan --greater`(提示符 `greater`) | Phase 04 P2 定稿:旗标名以 §11.5 旗标表为准,`--increased` 视为笔误 | 待 P7 |
+| 2026-09-20 | §11.3 `[<value>]` 显示规则 | 含 `next-scan --unknown` | 仅保留 `--changed` / `--unchanged` | Phase 04 P2 定稿:`next-scan` 不支持 `--unknown`(`Unknown` 仅首轮) | 待 P7 |
+| 2026-09-20 | §11.5 `next-scan` 表 | `--greater` / `--less` 值列 = 必传 | 改为**不传** | **新增勘误(未经 P2 提问)**:值变大/值变小为快照比较条件,不需要外部值——与 §11.3 示例、§11.5 缺值规则举例(如 `next-scan --equal`)及引擎现有条件(`ScanCondition::Increased` / `Decreased`,见 `src/TinyProcessEngine/MemoryScanner.cpp`)一致;原“必传”疑为自 `new-scan` 表复制 | **待 P7 重点评审** |
+| 2026-09-20 | §11.5 缺值规则 / 示例 | 示例 `next-scan --less --i64 42`;缺值规则未列 `--greater` / `--less` | 示例改 `next-scan --less --i64`;缺值规则补入 `next-scan` 的 `--greater` / `--less` | 同上 | **待 P7 重点评审** |
 
 ---
 
