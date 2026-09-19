@@ -1,10 +1,16 @@
 #include <gtest/gtest.h>
 
+#include <limits>
+#include <string>
+
 #include "CliParser.h"
 
 using tpe::cli::CliParseResult;
 using tpe::cli::CliParser;
 using tpe::cli::CliToken;
+using tpe::cli::parseTerminalCommand;
+using tpe::cli::TerminalCommand;
+using tpe::cli::TerminalCommandKind;
 
 // ---------------------------------------------------------------------------
 // 令牌化(空白折叠 / 偏移 / 旗标判定)
@@ -114,4 +120,140 @@ TEST(CliParserPositionals, KeepsBareDoubleDashAsPositional)
     EXPECT_TRUE(result.flags().empty());
     ASSERT_EQ(result.positionals().size(), 2u);
     EXPECT_EQ(result.positionals()[0]->text, "--");
+}
+
+// ---------------------------------------------------------------------------
+// 终端命令分类(契约 C-T1–C-T6 / FR-001–FR-006)
+// ---------------------------------------------------------------------------
+
+TEST(TerminalCommandParse, NoArgumentsBehavesLikeHelp)
+{
+    const TerminalCommand none = parseTerminalCommand({});
+    const TerminalCommand help = parseTerminalCommand({"--help"});
+    EXPECT_EQ(none.kind, TerminalCommandKind::Help);
+    EXPECT_EQ(none.kind, help.kind); // 无参数 ≡ --help(C-T5)
+    EXPECT_TRUE(none.error.empty());
+}
+
+TEST(TerminalCommandParse, RecognizesVersionFlag)
+{
+    const TerminalCommand command = parseTerminalCommand({"--version"});
+    EXPECT_EQ(command.kind, TerminalCommandKind::Version);
+    EXPECT_TRUE(command.error.empty());
+}
+
+TEST(TerminalCommandParse, RecognizesAllProcessesFlag)
+{
+    const TerminalCommand command = parseTerminalCommand({"--all-processes"});
+    EXPECT_EQ(command.kind, TerminalCommandKind::AllProcesses);
+}
+
+TEST(TerminalCommandParse, ParsesSearchProcessWithPid)
+{
+    const TerminalCommand command = parseTerminalCommand({"--search-process", "1234"});
+    ASSERT_EQ(command.kind, TerminalCommandKind::SearchProcess);
+    EXPECT_EQ(command.pid, static_cast<Pid_t>(1234));
+}
+
+TEST(TerminalCommandParse, ParsesOpenProcessWithPid)
+{
+    const TerminalCommand command = parseTerminalCommand({"--open-process", "1234"});
+    ASSERT_EQ(command.kind, TerminalCommandKind::OpenProcess);
+    EXPECT_EQ(command.pid, static_cast<Pid_t>(1234));
+}
+
+TEST(TerminalCommandParse, AcceptsPidAtTypeMaximum)
+{
+    const unsigned long long maxPid = (std::numeric_limits<Pid_t>::max)();
+    const TerminalCommand command =
+        parseTerminalCommand({"--search-process", std::to_string(maxPid)});
+    ASSERT_EQ(command.kind, TerminalCommandKind::SearchProcess);
+    EXPECT_EQ(static_cast<unsigned long long>(command.pid), maxPid);
+}
+
+TEST(TerminalCommandParse, AcceptsDecimalPidWithLeadingZeros)
+{
+    const TerminalCommand command = parseTerminalCommand({"--open-process", "000123"});
+    ASSERT_EQ(command.kind, TerminalCommandKind::OpenProcess);
+    EXPECT_EQ(command.pid, static_cast<Pid_t>(123));
+}
+
+TEST(TerminalCommandParse, RejectsUnknownFlag)
+{
+    const TerminalCommand command = parseTerminalCommand({"--no-such"});
+    ASSERT_EQ(command.kind, TerminalCommandKind::UsageError);
+    EXPECT_FALSE(command.error.empty());
+    EXPECT_NE(command.error.find("--no-such"), std::string::npos);
+}
+
+TEST(TerminalCommandParse, RejectsMixedFlags)
+{
+    const TerminalCommand command = parseTerminalCommand({"--help", "--version"});
+    ASSERT_EQ(command.kind, TerminalCommandKind::UsageError);
+    EXPECT_FALSE(command.error.empty());
+}
+
+TEST(TerminalCommandParse, RejectsUnexpectedArgumentAfterKnownFlag)
+{
+    EXPECT_EQ(parseTerminalCommand({"--all-processes", "extra"}).kind,
+              TerminalCommandKind::UsageError);
+    EXPECT_EQ(parseTerminalCommand({"--version", "extra"}).kind,
+              TerminalCommandKind::UsageError);
+    EXPECT_EQ(parseTerminalCommand({"--help", "extra"}).kind,
+              TerminalCommandKind::UsageError);
+}
+
+TEST(TerminalCommandParse, RejectsMissingPidForSearchProcess)
+{
+    const TerminalCommand command = parseTerminalCommand({"--search-process"});
+    ASSERT_EQ(command.kind, TerminalCommandKind::UsageError);
+    EXPECT_NE(command.error.find("--search-process"), std::string::npos);
+}
+
+TEST(TerminalCommandParse, RejectsMissingPidForOpenProcess)
+{
+    const TerminalCommand command = parseTerminalCommand({"--open-process"});
+    ASSERT_EQ(command.kind, TerminalCommandKind::UsageError);
+    EXPECT_NE(command.error.find("--open-process"), std::string::npos);
+}
+
+TEST(TerminalCommandParse, RejectsNonNumericPid)
+{
+    const TerminalCommand command = parseTerminalCommand({"--search-process", "abc"});
+    ASSERT_EQ(command.kind, TerminalCommandKind::UsageError);
+    EXPECT_NE(command.error.find("abc"), std::string::npos);
+}
+
+TEST(TerminalCommandParse, RejectsHexSignedAndSpacedPid)
+{
+    EXPECT_EQ(parseTerminalCommand({"--open-process", "0x10"}).kind,
+              TerminalCommandKind::UsageError);
+    EXPECT_EQ(parseTerminalCommand({"--open-process", "-1"}).kind,
+              TerminalCommandKind::UsageError);
+    EXPECT_EQ(parseTerminalCommand({"--open-process", "12 34"}).kind,
+              TerminalCommandKind::UsageError);
+}
+
+TEST(TerminalCommandParse, RejectsPidAboveTypeRange)
+{
+    const std::string tooLarge = std::to_string(
+        static_cast<unsigned long long>((std::numeric_limits<Pid_t>::max)()) + 1);
+    const TerminalCommand command = parseTerminalCommand({"--search-process", tooLarge});
+    ASSERT_EQ(command.kind, TerminalCommandKind::UsageError);
+    EXPECT_FALSE(command.error.empty());
+}
+
+TEST(TerminalCommandParse, RejectsExtraArgumentsAfterPid)
+{
+    const TerminalCommand command = parseTerminalCommand({"--search-process", "1", "2"});
+    ASSERT_EQ(command.kind, TerminalCommandKind::UsageError);
+    EXPECT_FALSE(command.error.empty());
+}
+
+TEST(TerminalCommandParse, RejectsUnknownBareArguments)
+{
+    // 裸 “--” 不做特殊解析,与其它未知参数同等对待
+    EXPECT_EQ(parseTerminalCommand({"--"}).kind, TerminalCommandKind::UsageError);
+    EXPECT_EQ(parseTerminalCommand({"foo"}).kind, TerminalCommandKind::UsageError);
+    EXPECT_EQ(parseTerminalCommand({""}).kind, TerminalCommandKind::UsageError);
 }

@@ -5,6 +5,8 @@
 #include <string_view>
 #include <vector>
 
+#include "Platform.h" // Pid_t
+
 namespace tpe::cli {
 
 /// 一行 CLI 文本中的单个令牌。
@@ -36,5 +38,30 @@ public:
     /// 对一行文本分词;空行/全空白行返回 0 个令牌。
     static CliParseResult parse(const std::string& line);
 };
+
+// ---------------------------------------------------------------------------
+// 终端命令分类(spec 004 US1;契约 C-T1–C-T6)
+// ---------------------------------------------------------------------------
+
+/// 终端调用(一次性命令)的分类结果。
+enum class TerminalCommandKind {
+    Help,          // --help 或无参数
+    Version,       // --version
+    AllProcesses,  // --all-processes
+    SearchProcess, // --search-process <PID>
+    OpenProcess,   // --open-process <PID>
+    UsageError,    // 未知旗标 / 缺 PID / PID 非法 / 多余参数
+};
+
+/// parseTerminalCommand 的结果;UsageError 时 error 保存英文原因。
+struct TerminalCommand {
+    TerminalCommandKind kind = TerminalCommandKind::Help;
+    Pid_t pid = 0;
+    std::string error;
+};
+
+/// 分类终端调用参数(args 不含程序名;纯逻辑,无 I/O,不抛异常)。
+/// 空参数等同 --help(C-T5);错误仅以 UsageError + 原因报告(退出码由调用方决定)。
+TerminalCommand parseTerminalCommand(const std::vector<std::string>& args);
 
 } // namespace tpe::cli

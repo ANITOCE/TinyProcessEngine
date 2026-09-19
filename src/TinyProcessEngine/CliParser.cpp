@@ -82,4 +82,10 @@ CliParseResult CliParser::parse(const std::string& line)
     return result;
 }
 
+TerminalCommand parseTerminalCommand(const std::vector<std::string>&)
+{
+    // TDD 红阶段占位:仅提供可链接的默认结果;断言失败后于绿阶段实现。
+    return TerminalCommand{};
+}
+
 } // namespace tpe::cli
