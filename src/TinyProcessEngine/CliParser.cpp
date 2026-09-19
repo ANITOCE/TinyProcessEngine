@@ -171,10 +171,9 @@ TerminalCommand parseTerminalCommand(const std::vector<std::string>& args)
     return usageError("Unknown argument: " + first);
 }
 
-int parseExitCode(TerminalCommandKind)
+int parseExitCode(TerminalCommandKind kind)
 {
-    // TDD 红阶段占位:映射行为待实现;断言失败后于绿阶段实现。
-    return -1;
+    return kind == TerminalCommandKind::UsageError ? kExitUsageError : kExitOk;
 }
 
 } // namespace tpe::cli
