@@ -284,3 +284,285 @@ TEST(TerminalExitCodes, OtherKindsMapToExitCodeZero)
     EXPECT_EQ(tpe::cli::parseExitCode(TerminalCommandKind::SearchProcess), tpe::cli::kExitOk);
     EXPECT_EQ(tpe::cli::parseExitCode(TerminalCommandKind::OpenProcess), tpe::cli::kExitOk);
 }
+
+// ---------------------------------------------------------------------------
+// REPL 命令解析(T020;契约 C-R1–C-R3、C-R5、C-R6)
+// ---------------------------------------------------------------------------
+
+using tpe::cli::parseReplCommand;
+using tpe::cli::ReplCommand;
+using tpe::cli::ReplCommandKind;
+using tpe::cli::ReplScanType;
+
+TEST(ReplCommandParse, ClassifiesEachCommandKind)
+{
+    EXPECT_EQ(parseReplCommand("new-scan 100").kind, ReplCommandKind::NewScan);
+    EXPECT_EQ(parseReplCommand("next-scan 100").kind, ReplCommandKind::NextScan);
+    EXPECT_EQ(parseReplCommand("list").kind, ReplCommandKind::List);
+    EXPECT_EQ(parseReplCommand("undo").kind, ReplCommandKind::Undo);
+    EXPECT_EQ(parseReplCommand("help").kind, ReplCommandKind::Help);
+    EXPECT_EQ(parseReplCommand("exit").kind, ReplCommandKind::Exit);
+}
+
+TEST(ReplCommandParse, EmptyAndWhitespaceInputAreEmpty)
+{
+    EXPECT_EQ(parseReplCommand("").kind, ReplCommandKind::Empty);
+    EXPECT_EQ(parseReplCommand("   \t ").kind, ReplCommandKind::Empty);
+    EXPECT_TRUE(parseReplCommand("").error.empty());
+}
+
+TEST(ReplCommandParse, UnknownCommandsAreUnrecognized)
+{
+    EXPECT_EQ(parseReplCommand("bogus").kind, ReplCommandKind::Unknown);
+    EXPECT_EQ(parseReplCommand("--all").kind, ReplCommandKind::Unknown);
+    EXPECT_EQ(parseReplCommand("NEW-SCAN 100").kind, ReplCommandKind::Unknown); // 大小写敏感
+}
+
+TEST(ReplCommandParse, WriteIsUnknownUntilUs3)
+{
+    // US3(T026/T027)转正为 write 命令;本阶段按未知命令处理(显示 REPL 帮助)
+    EXPECT_EQ(parseReplCommand("write 0x10 42").kind, ReplCommandKind::Unknown);
+    EXPECT_EQ(parseReplCommand("write").kind, ReplCommandKind::Unknown);
+}
+
+TEST(ReplCommandParse, NewScanDefaultsToEqualAndCurrentType)
+{
+    const ReplCommand command = parseReplCommand("new-scan 100");
+    ASSERT_EQ(command.kind, ReplCommandKind::NewScan);
+    EXPECT_EQ(command.scanType, ReplScanType::Equal);
+    EXPECT_EQ(command.valueType, nullptr); // 沿用当前数值类型
+    EXPECT_TRUE(command.hasValue);
+    EXPECT_EQ(command.value, "100");
+    EXPECT_TRUE(command.error.empty());
+}
+
+TEST(ReplCommandParse, NewScanAcceptsExplicitEqualFlag)
+{
+    const ReplCommand command = parseReplCommand("new-scan --equal --i32 100");
+    ASSERT_EQ(command.kind, ReplCommandKind::NewScan);
+    EXPECT_EQ(command.scanType, ReplScanType::Equal);
+    ASSERT_NE(command.valueType, nullptr);
+    EXPECT_EQ(command.valueType->shortName, "i32");
+    EXPECT_TRUE(command.hasValue);
+    EXPECT_EQ(command.value, "100");
+    EXPECT_TRUE(command.error.empty());
+}
+
+TEST(ReplCommandParse, NewScanAcceptsValueTypeFlagOnly)
+{
+    const ReplCommand command = parseReplCommand("new-scan --i64 100");
+    ASSERT_EQ(command.kind, ReplCommandKind::NewScan);
+    EXPECT_EQ(command.scanType, ReplScanType::Equal);
+    ASSERT_NE(command.valueType, nullptr);
+    EXPECT_EQ(command.valueType->shortName, "i64");
+    EXPECT_EQ(command.value, "100");
+}
+
+TEST(ReplCommandParse, NewScanStringTakesRemainderOfLine)
+{
+    const ReplCommand command = parseReplCommand("new-scan --string hello world");
+    ASSERT_EQ(command.kind, ReplCommandKind::NewScan);
+    ASSERT_NE(command.valueType, nullptr);
+    EXPECT_EQ(command.valueType->shortName, "string");
+    EXPECT_TRUE(command.hasValue);
+    EXPECT_EQ(command.value, "hello world");
+
+    // 旗标后多个空白:跳过分隔空白,保留值内部空白
+    const ReplCommand spaced = parseReplCommand("new-scan --string   hello  world");
+    EXPECT_EQ(spaced.value, "hello  world");
+
+    const ReplCommand switched = parseReplCommand("next-scan --string a b");
+    ASSERT_EQ(switched.kind, ReplCommandKind::NextScan);
+    EXPECT_EQ(switched.value, "a b");
+}
+
+TEST(ReplCommandParse, NewScanRequiresValue)
+{
+    EXPECT_FALSE(parseReplCommand("new-scan").error.empty());
+    EXPECT_FALSE(parseReplCommand("new-scan --equal").error.empty());
+    EXPECT_FALSE(parseReplCommand("new-scan --string").error.empty());
+    EXPECT_FALSE(parseReplCommand("new-scan --string    ").error.empty());
+    EXPECT_NE(parseReplCommand("new-scan").error.find("Usage"), std::string::npos);
+}
+
+TEST(ReplCommandParse, NewScanRejectsExtraPositionalArguments)
+{
+    EXPECT_FALSE(parseReplCommand("new-scan 100 200").error.empty());
+}
+
+TEST(ReplCommandParse, NewScanRejectsConflictingOrUnknownFlags)
+{
+    EXPECT_FALSE(parseReplCommand("new-scan --i16 --i32 100").error.empty());
+    EXPECT_FALSE(parseReplCommand("new-scan --no-such 100").error.empty());
+    EXPECT_FALSE(parseReplCommand("new-scan --changed").error.empty()); // new-scan 旗标表无此项
+}
+
+TEST(ReplCommandParse, NewScanPlaceholderFlagsDeferredToUs4)
+{
+    // 占位功能属 US4(C-R7 / T030–T034):US2 阶段以“未实现”错误拒绝,
+    // US4 将改为:解析通过 + 占位提示 + 仅切换 scan-type(本测试届时替换)。
+    EXPECT_FALSE(parseReplCommand("new-scan --unknown").error.empty());
+    EXPECT_FALSE(parseReplCommand("new-scan --greater").error.empty());
+    EXPECT_FALSE(parseReplCommand("new-scan --less").error.empty());
+}
+
+TEST(ReplCommandParse, NextScanDefaultsToEqualWithValue)
+{
+    const ReplCommand command = parseReplCommand("next-scan 100");
+    ASSERT_EQ(command.kind, ReplCommandKind::NextScan);
+    EXPECT_EQ(command.scanType, ReplScanType::Equal);
+    EXPECT_EQ(command.valueType, nullptr);
+    EXPECT_TRUE(command.hasValue);
+    EXPECT_EQ(command.value, "100");
+    EXPECT_TRUE(command.error.empty());
+}
+
+TEST(ReplCommandParse, NextScanAcceptsValuelessConditions)
+{
+    const ReplCommand greater = parseReplCommand("next-scan --greater");
+    ASSERT_EQ(greater.kind, ReplCommandKind::NextScan);
+    EXPECT_EQ(greater.scanType, ReplScanType::Greater);
+    EXPECT_FALSE(greater.hasValue);
+    EXPECT_TRUE(greater.error.empty());
+
+    const ReplCommand less = parseReplCommand("next-scan --less --i64");
+    EXPECT_EQ(less.scanType, ReplScanType::Less);
+    ASSERT_NE(less.valueType, nullptr);
+    EXPECT_EQ(less.valueType->shortName, "i64");
+    EXPECT_FALSE(less.hasValue);
+    EXPECT_TRUE(less.error.empty());
+
+    const ReplCommand changed = parseReplCommand("next-scan --changed");
+    EXPECT_EQ(changed.scanType, ReplScanType::Changed);
+    EXPECT_FALSE(changed.hasValue);
+    EXPECT_TRUE(changed.error.empty());
+
+    const ReplCommand unchanged = parseReplCommand("next-scan --unchanged");
+    EXPECT_EQ(unchanged.scanType, ReplScanType::Unchanged);
+    EXPECT_TRUE(unchanged.error.empty());
+}
+
+TEST(ReplCommandParse, NextScanRejectsUnknownCondition)
+{
+    // FR-013:next-scan MUST NOT 接受 --unknown
+    const ReplCommand command = parseReplCommand("next-scan --unknown");
+    ASSERT_EQ(command.kind, ReplCommandKind::NextScan);
+    EXPECT_FALSE(command.error.empty());
+    EXPECT_NE(command.error.find("--unknown"), std::string::npos);
+}
+
+TEST(ReplCommandParse, NextScanValuelessConditionsRejectExtraArguments)
+{
+    // 严格策略:不传值条件出现多余位置参数 → 用法错误(不执行、状态不变)
+    EXPECT_FALSE(parseReplCommand("next-scan --changed 100").error.empty());
+    EXPECT_FALSE(parseReplCommand("next-scan --greater extra").error.empty());
+    EXPECT_FALSE(parseReplCommand("next-scan --less 42").error.empty());
+    EXPECT_FALSE(parseReplCommand("next-scan --unchanged x").error.empty());
+}
+
+TEST(ReplCommandParse, NextScanRequiresValueForEqualForm)
+{
+    EXPECT_FALSE(parseReplCommand("next-scan").error.empty());
+    EXPECT_FALSE(parseReplCommand("next-scan --equal").error.empty());
+    EXPECT_NE(parseReplCommand("next-scan").error.find("Usage"), std::string::npos);
+}
+
+TEST(ReplCommandParse, NextScanRejectsConflictingConditions)
+{
+    EXPECT_FALSE(parseReplCommand("next-scan --greater --less").error.empty());
+    EXPECT_FALSE(parseReplCommand("next-scan --changed --equal 5").error.empty());
+}
+
+TEST(ReplCommandParse, ListDefaultsToFirstPage)
+{
+    const ReplCommand command = parseReplCommand("list");
+    ASSERT_EQ(command.kind, ReplCommandKind::List);
+    EXPECT_FALSE(command.listAll);
+    EXPECT_EQ(command.page, 1u);
+    EXPECT_TRUE(command.error.empty());
+}
+
+TEST(ReplCommandParse, ListAllFlag)
+{
+    const ReplCommand command = parseReplCommand("list --all");
+    ASSERT_EQ(command.kind, ReplCommandKind::List);
+    EXPECT_TRUE(command.listAll);
+    EXPECT_TRUE(command.error.empty());
+}
+
+TEST(ReplCommandParse, ListAcceptsPositivePageNumber)
+{
+    const ReplCommand command = parseReplCommand("list 3");
+    ASSERT_EQ(command.kind, ReplCommandKind::List);
+    EXPECT_EQ(command.page, 3u);
+    EXPECT_TRUE(command.error.empty());
+}
+
+TEST(ReplCommandParse, ListRejectsInvalidPageNumbers)
+{
+    EXPECT_FALSE(parseReplCommand("list 0").error.empty());
+    EXPECT_FALSE(parseReplCommand("list abc").error.empty());
+    EXPECT_FALSE(parseReplCommand("list -1").error.empty());
+    EXPECT_FALSE(parseReplCommand("list 0x10").error.empty());
+    EXPECT_FALSE(parseReplCommand("list 99999999999999999999").error.empty()); // 超出页码范围
+}
+
+TEST(ReplCommandParse, ListRejectsCombinedOrExtraArguments)
+{
+    EXPECT_FALSE(parseReplCommand("list --all 2").error.empty());
+    EXPECT_FALSE(parseReplCommand("list 1 --all").error.empty());
+    EXPECT_FALSE(parseReplCommand("list 1 2").error.empty());
+    EXPECT_FALSE(parseReplCommand("list --no-such").error.empty());
+}
+
+TEST(ReplCommandParse, UndoRejectsArguments)
+{
+    const ReplCommand command = parseReplCommand("undo");
+    ASSERT_EQ(command.kind, ReplCommandKind::Undo);
+    EXPECT_TRUE(command.error.empty());
+    EXPECT_FALSE(parseReplCommand("undo x").error.empty());
+    EXPECT_FALSE(parseReplCommand("undo --all").error.empty());
+}
+
+TEST(ReplCommandParse, HelpIgnoresArguments)
+{
+    // §11.4:help 在“无参数或参数错误”时默认调用 → 一律显示帮助,不报错
+    EXPECT_EQ(parseReplCommand("help").kind, ReplCommandKind::Help);
+    const ReplCommand withArgs = parseReplCommand("help me");
+    EXPECT_EQ(withArgs.kind, ReplCommandKind::Help);
+    EXPECT_TRUE(withArgs.error.empty());
+}
+
+TEST(ReplCommandParse, ExitRejectsArguments)
+{
+    const ReplCommand command = parseReplCommand("exit");
+    ASSERT_EQ(command.kind, ReplCommandKind::Exit);
+    EXPECT_TRUE(command.error.empty());
+    EXPECT_FALSE(parseReplCommand("exit now").error.empty());
+}
+
+TEST(ReplCommandParse, UsageErrorsIncludeUsageHint)
+{
+    EXPECT_NE(parseReplCommand("new-scan").error.find("Usage"), std::string::npos);
+    EXPECT_NE(parseReplCommand("next-scan --changed 1").error.find("Usage"), std::string::npos);
+    EXPECT_NE(parseReplCommand("list 0").error.find("Usage"), std::string::npos);
+}
+
+TEST(ReplHelp, CoversAllSevenCommands)
+{
+    const std::string help(tpe::cli::replHelpText());
+    for (const char* name : {"help", "exit", "new-scan", "next-scan", "list", "write", "undo"}) {
+        EXPECT_NE(help.find(name), std::string::npos) << name;
+    }
+}
+
+TEST(ReplScanConditionMap, MapsEachConditionToEngineValue)
+{
+    using tpe::cli::toScanCondition;
+    EXPECT_EQ(toScanCondition(ReplScanType::Equal), ScanCondition::ExactValue);
+    EXPECT_EQ(toScanCondition(ReplScanType::Greater), ScanCondition::Increased);
+    EXPECT_EQ(toScanCondition(ReplScanType::Less), ScanCondition::Decreased);
+    EXPECT_EQ(toScanCondition(ReplScanType::Changed), ScanCondition::Changed);
+    EXPECT_EQ(toScanCondition(ReplScanType::Unchanged), ScanCondition::Unchanged);
+    EXPECT_FALSE(toScanCondition(ReplScanType::Unknown).has_value());
+}
