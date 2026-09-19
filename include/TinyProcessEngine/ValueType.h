@@ -4,6 +4,7 @@
 #include <string>
 #include <cstdint>
 #include <cassert>
+#include <cstddef>
 #include <sstream>
 #include <memory>
 #include <array>
@@ -28,6 +29,10 @@ struct ValueType
     /// 非交互解析:text → 内存表示(小端);失败时写入英文 error 并返回 nullopt。
     /// 由 `SimpleValueType<T>` 提供通用实现(见本头文件);本 Phase 的 7 个 CLI 类型必须可用。
     virtual std::optional<tpe::Memory> parse(std::string_view text, std::string &error) const;
+
+    /// 类型的内存宽度(字节);0 = 变长(宽度由具体值决定,如 string)。
+    /// 供非交互扫描确定读取宽度,替代交互式 askValue().size()(spec 004 T022a)。
+    virtual std::size_t byteWidth() const { return 0; }
 
     virtual ~ValueType() = default;
 };

@@ -31,8 +31,10 @@ public:
     std::optional<std::string> searchProcess(Pid_t pid) const;
 
     /// Execute first scan on the currently opened process.
+    /// @param type    值类型（决定浮点容差与展示）
+    /// @param pattern 搜索模式（由调用方显式提供；不再交互追问）
     /// Returns the number of matches found (0 if scan failed or no process).
-    uint64_t searchMemory(const ValueType& type);
+    uint64_t searchMemory(const ValueType& type, const tpe::Memory& pattern);
 
     /// Execute next (incremental) scan on existing results.
     uint64_t nextScan(ScanCondition condition, const ValueType& type,

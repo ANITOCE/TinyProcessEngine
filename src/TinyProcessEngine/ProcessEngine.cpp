@@ -37,7 +37,7 @@ std::optional<std::string> ProcessEngine::searchProcess(Pid_t pid) const
     return std::nullopt;
 }
 
-uint64_t ProcessEngine::searchMemory(const ValueType& type)
+uint64_t ProcessEngine::searchMemory(const ValueType& type, const tpe::Memory& pattern)
 {
     if (!m_currentProcess) {
         std::cerr << "No process opened. Use 'open-process <PID>' first." << std::endl;
@@ -48,9 +48,9 @@ uint64_t ProcessEngine::searchMemory(const ValueType& type)
     m_session = std::make_unique<ScanSession>(m_currentProcess);
     m_session->beginScan(type);
 
-    // Execute first scan
+    // Execute first scan (pattern is provided by the caller; no interactive prompt)
     ScanOptions options;
-    auto results = m_scanner.firstScan(*m_currentProcess, type, options);
+    auto results = m_scanner.firstScan(*m_currentProcess, type, pattern, options);
 
     // Commit results to session
     m_session->commitFirstScan(std::move(results));
