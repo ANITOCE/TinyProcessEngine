@@ -11,13 +11,13 @@
 | 字段 | 内容 |
 |---|---|
 | 项目/功能名 | TinyProcessEngine — First MVP |
-| 指南版本 | 1.0.0 |
+| 指南版本 | 1.0.1 |
 | 状态 | `accepted`(2026-09-18 评审通过;全部 Phase 完成验收后置 `done(已封存,只读)`) |
 | 负责人(owner) | anitoce |
 | 创建日期 | 2026-09-18 |
-| 最近更新 | 2026-09-18 |
+| 最近更新 | 2026-09-21 |
 | 关联仓库 | 本地 Git 仓库(未配置远端;如建立公开远端,按第 3 节公开边界执行) |
-| 工具链 | VS Code Copilot Chat(不使用 Copilot CLI);spec-kit `0.11.9`(copilot 集成,PowerShell 脚本) |
+| 工具链 | VS Code Copilot Chat(不使用 Copilot CLI);spec-kit `0.16.1`(copilot 集成,PowerShell 脚本) |
 | 场景 | 存量迭代 |
 
 ---
@@ -26,7 +26,7 @@
 
 ### 1.1 背景与动机
 
-TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工具(类 Cheat Engine),当前提供 CLI 前端;CE_UI 图形界面与远程连接等长线方向由后续新指南承接。Phase 01–03(基础重构、核心内存扫描、Linux 平台支持)已交付,其制品位于主检出 `specs/001–003`(私有区);但 2026-09 的独立审计发现 7 项功能性缺陷(详见第 7 节)与若干规范偏差,且 CLI 仍沿用旧式交互流程。本指南取代旧版《DEVELOPMENT_GUIDE.md》v0.2.0(`docs/temp/`,随本指南落地删除;其第 11 章 CLI 交互规范已迁移为 `docs/plan/cli-interaction-spec.md`),聚焦 **First MVP** 落地:CLI 交互重构 → 审计修复 → MVP 验收,为后续新指南建立干净基线。
+TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工具(类 Cheat Engine),当前提供 CLI 前端;CE_UI 图形界面与远程连接等长线方向由后续新指南承接。Phase 01–03(基础重构、核心内存扫描、Linux 平台支持)已交付,其制品位于主检出 `specs/001–003`(私有区);但 2026-09 的独立审计发现 7 项功能性缺陷(详见 §4.2 Phase 05)与若干规范偏差;CLI 旧式交互流程已在 Phase 04 完成重构(2026-09-21 合并)。本指南取代旧版《DEVELOPMENT_GUIDE.md》v0.2.0(`docs/temp/`,随本指南落地删除;其第 11 章 CLI 交互规范已迁移为 `docs/plan/cli-interaction-spec.md`),聚焦 **First MVP** 落地:CLI 交互重构 → 审计修复 → MVP 验收,为后续新指南建立干净基线。
 
 ### 1.2 目标
 
@@ -56,17 +56,17 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 | tpe | TinyProcessEngine 的命名空间前缀(`tpe::core`、`tpe::platform` 等) |
 | REPL | 读取—求值—打印循环;本项目中 `--open-process` 进入的驻留交互模式 |
 | 首轮扫描 / 增量扫描 | 在全进程内存中搜索初始值 / 在上一轮结果上按条件过滤 |
-| 审计 | 2026-09 对 Phase 01–03 的独立审查(7 项缺陷 + 规范偏差,见 §7) |
+| 审计 | 2026-09 对 Phase 01–03 的独立审查(7 项缺陷 + 规范偏差,见 §4.2 Phase 05) |
 | MVP | 最小可用版本:CLI 全流程可用且无占位 |
 | 封存 | 全部 Phase 完成验收后将指南转只读(第 9 节),禁止修改或删除 |
-| spec-kit | GitHub spec-kit 工具链(specify CLI 0.11.9),提供 `/speckit.*` 规格驱动流程 |
+| spec-kit | GitHub spec-kit 工具链(specify CLI 0.16.1),提供 `/speckit.*` 规格驱动流程 |
 
 ---
 
 ## 2. Constitution(项目治理准则)
 
 > **本节是最高开发准则,所有 Phase 的规格、计划、任务与实现都必须符合。**
-> 说明:仓库现行 `.specify/memory/constitution.md` 为空模板,本节按"新项目"方式给出全文,评审通过后经 `/speckit.constitution` 落地为 `.specify/memory/constitution.md`,并核对一致。
+> 说明:本指南首次落地时 `.specify/memory/constitution.md` 为空模板,故本节按“新项目”方式给出全文,并已经 `/speckit.constitution` 落地为 `.specify/memory/constitution.md`(初次落地 2026-09-18;2026-09-21 修订为 v1.0.1);两处内容须保持同步。
 > 任何条款变更必须记录理由、评审人与日期(写入第 8 节),并同步落地文件。
 
 ### 2.1 测试准则(必填,NON-NEGOTIABLE)
@@ -86,7 +86,7 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 
 ### 2.2 工作空间与版本控制准则(必填)
 
-- **单检出**:每个 Phase 独占一个特性分支,在主检出内切换;**不使用 git worktree**(私有区文件不会随分支进入 worktree,会破坏 spec-kit 流程);禁止多会话在同一检出目录并发写文件。
+- **单检出**:每个 Phase 独占一个特性分支,在**既有工作目录**内切换(本仓库为既有 worktree `TinyProcessEngine.worktrees/feat-first-mvp`,开发指南、`docs/templates/`、`.specify/` 等仅存在于该目录);**不新建 worktree**(私有区文件不会随分支进入新 worktree,会破坏 spec-kit 流程);禁止多会话在同一检出目录并发写文件。
 - **git 纪律**:主干受保护;不强制推送;每个提交是最小可理解状态;Phase 收尾由人三选一(本地合并 / 推送建 PR / 保留分支),合并后必须再跑一次全量测试。
 - **提交面检查**:每次提交前执行 `git status --porcelain`,输出必须只含公开区路径(见第 3 节公开边界)。
 - 依赖环境按项目隔离,锁文件入库。
@@ -125,8 +125,8 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 | 构建系统 | CMake(现仓库基线 `3.10+`);`FetchContent` 管理第三方依赖 | 统一、无额外包管理器;与既有构建方式一致 |
 | 测试框架 | GoogleTest `v1.14.0`(FetchContent) | 已集成;GTest 生态成熟 |
 | 依赖策略 | `FetchContent` 固定 tag;新增依赖必须同步修订本指南(走评审) | 版本可控、可复现 |
-| 目录约定 | `docs/plan/`(开发指南,公开区)、`docs/phases/`(Phase 文档,私有)、`specs/<分支名>/`(制品,私有);单检出分支切换,不使用 worktree | 统一治理结构 |
-| 工具链 | VS Code Copilot Chat(不使用 Copilot CLI);spec-kit `0.11.9`(copilot 集成,PowerShell 脚本) | 项目既定 |
+| 目录约定 | `docs/plan/`(开发指南,公开区)、`docs/phases/`(Phase 文档,私有)、`specs/<分支名>/`(制品,私有);单检出分支切换(在既有 worktree 内操作,**不新建 worktree**) | 统一治理结构 |
+| 工具链 | VS Code Copilot Chat(不使用 Copilot CLI);spec-kit `0.16.1`(copilot 集成,PowerShell 脚本) | 项目既定 |
 | 公开边界 | 私有区(一律 gitignore):`.github/skills/`、`.github/agents/`、`.github/prompts/`、`.github/copilot-instructions.md`、`.specify/`、`specs/`、`docs/superpowers/`、`.superpowers/`、`docs/phases/`、`docs/templates/`、防御性 `.worktrees/`。公开区:实现代码(`src/`、`include/`、`tests/`)、公开文档、`docs/plan/`、常规构建配置 | 隐私与治理要求 |
 | 后续技术(不在本指南) | Qt 6(CE_UI)与 libhv、MessagePack(远程连接)仅在后继指南中引入;本指南不新增这些依赖 | 控制当前阶段范围与依赖面 |
 
@@ -141,11 +141,13 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 | Phase | 名称 | 目标(一句话) | 依赖 | 产出 | 状态 |
 |---|---|---|---|---|---|
 | Phase 04 | CLI 交互重构 | 按《CLI 交互规范》落地终端旗标命令、REPL、startup 分层与 Test.exe,废弃旧交互流程 | 无(前置 Phase 01–03 已完成) | `specs/004-cli-interaction-refactor` | `merged`(2026-09-21) |
-| Phase 05 | 遗留缺陷修复 | 清零 Phase 01–03 审计的 7 项功能性缺陷,每项先复现后修复并带回归测试 | Phase 04 | `specs/005-defect-remediation` | `planned` |
+| Phase 05 | 遗留缺陷修复 | 清零 7 项审计缺陷 + 1 项 Phase 04 移交缺陷(`--all-processes` 枚举失败信号),每项先复现后修复并带回归测试 | Phase 04 | `specs/005-defect-remediation` | `planned` |
 | Phase 06 | 规范符合性收敛 | 收敛审计规范偏差:命名空间、头文件风格、库层异常、构建告警 | Phase 05 | `specs/006-spec-compliance` | `planned` |
 | Phase 07 | 功能补齐 → MVP | 补齐 `--unknown`/`--greater`/`--less` 首扫、`list` 实时重读,占位清零,完成 MVP 验收 | Phase 06 | `specs/007-mvp-completion` | `planned` |
 
 状态机: `planned → in-progress → in-review → merged → done`(由 Phase 收尾步骤更新)。
+
+**合并策略**(2026-09-21 决定,适用于 Phase 05–07):各 Phase 分支先 `--no-ff` 本地合并至集成分支 `feat/first-mvp`;全部 Phase 完成后由 `feat/first-mvp` 一次性合入 `main`,随后各 Phase 状态由 `merged` 转 `done`、执行项目级 DoD 校验并封存本指南。
 
 **编号说明**:本指南延续项目既有 Phase 编号(01–03 已完成,制品见主检出 `specs/001–003`)。旧版指南(已删除)的 Phase 4 / Phase 5 对应本指南 Phase 04 / Phase 07;Phase 05(缺陷修复)与 Phase 06(规范收敛)为本次新增插入,位置按要求置于 CLI 重构之后、MVP 补齐之前。各 Phase 产出目录名以 `/speckit.specify` 实际生成为准。
 
@@ -162,11 +164,11 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 
 #### Phase 05:遗留缺陷修复(Phase 01–03 审计)
 
-- **目标**: 清零 Phase 01–03 审计的 7 项缺陷:①增量扫描快照缺失与比较语义错误(`Changed`/`Unchanged`/`Increased`/`Decreased`、整数按无符号比较);②`u8` 序列化回退到 4 字节模式;③Windows 打开进程未请求写权限;④Linux `/proc/<pid>/mem` 降级路径写失败(`O_RDONLY` 缓存问题);⑤大结果集磁盘后端(`ResultStorage`)未接入 `ScanSession`;⑥CTest 未注册、Linux 测试未纳入构建目标;⑦Linux 权限错误消息与 `EACCES` 处理不符合规格。每项先复现后修复并带回归测试。
-- **范围**: in-scope 上述 7 项缺陷的复现测试、修复与证据;测试基础设施修复(顶层测试发现、测试目标纳入 `test_linux_*.cpp` 等);out-of-scope 规范风格类偏差(Phase 06)、任何新功能。
+- **目标**: 清零 Phase 01–03 审计的 7 项缺陷:①增量扫描快照缺失与比较语义错误(`Changed`/`Unchanged`/`Increased`/`Decreased`、整数按无符号比较);②`u8` 序列化回退到 4 字节模式;③Windows 打开进程未请求写权限;④Linux `/proc/<pid>/mem` 降级路径写失败(`O_RDONLY` 缓存问题);⑤大结果集磁盘后端(`ResultStorage`)未接入 `ScanSession`;⑥CTest 未注册、Linux 测试未纳入构建目标;⑦Linux 权限错误消息与 `EACCES` 处理不符合规格;⑧Phase 04 移交的新增缺陷:`--all-processes` 枚举失败信号不可达(现有平台 API 无法上报枚举失败;其余移交项与审计 ①③ 重合)。每项先复现后修复并带回归测试。
+- **范围**: in-scope 上述 8 项缺陷(7 项审计 + 1 项 Phase 04 移交)的复现测试、修复与证据;测试基础设施修复(顶层测试发现、测试目标纳入 `test_linux_*.cpp` 等);out-of-scope 规范风格类偏差(Phase 06)、任何新功能。
 - **依赖**: Phase 04。
 - **交付物**: `specs/005-*` 制品;缺陷—测试—证据对照表。
-- **验收**: 7 项逐项关闭并附复现/回归测试;顶层 `ctest` 可发现并运行全部用例(`N 通过 / 0 失败`);Windows 上 `modifyMemory` 写入流程可验证(附运行证据);Linux 相关项附复现证据,或按 §2.5 记录获批的证据缺口例外。
+- **验收**: 8 项逐项关闭并附复现/回归测试;顶层 `ctest` 可发现并运行全部用例(`N 通过 / 0 失败`);Windows 上 `modifyMemory` 写入流程可验证(附运行证据);Linux 相关项附复现证据,或按 §2.5 记录获批的证据缺口例外。
 - **状态**: `planned`
 
 #### Phase 06:规范符合性收敛
@@ -239,9 +241,9 @@ Phase 04 → 05 → 06 → 07 为**硬依赖链,全部串行**:修复基于重�
 | # | 风险/问题 | 影响 | 缓解措施 | 状态 |
 |---|---|---|---|---|
 | 1 | Linux 运行时验证环境缺失(当前开发机为 Windows) | Phase 05/07 中 Linux 相关缺陷无法本地复现验证 | 使用 WSL 或独立 Linux 机器补充验证;确无法验证时记录"证据缺口"并经人批准例外(§2.5) | `open` |
-| 2 | 本 worktree `.specify/` 缺 `feature.json`(及扩展) | Phase 04 P0 无法定位特性目录 | Phase 04 P0 修复 `feature.json` 指向 `specs/004-*` | `open` |
+| 2 | 本 worktree `.specify/` 缺 `feature.json`(及扩展) | Phase 04 P0 无法定位特性目录 | 已修复:`.specify/feature.json` 指向 `specs/004-*`(2026-09-20,Phase 04 P0);Phase 05 P0 需重指向 `specs/005-*` | `closed`(2026-09-20) |
 | 3 | CMake 4.4 弃用 `FetchContent_Populate`,现构建有弃用告警 | 未来 CMake 升级导致构建中断 | Phase 06 替换为 `FetchContent_MakeAvailable`(同步评估最低 CMake 版本) | `open` |
-| 4 | 测试基础设施待修复:CTest 未注册、Linux 测试未纳入目标 | Phase 04 起无法以 `ctest` 建立基线 | Phase 04 直接运行测试可执行文件;Phase 05 修复后切换口径(§6.3) | `open` |
+| 4 | 测试基础设施待修复:CTest 未注册、Linux 测试未纳入目标 | 顶层 `ctest` 不可用,基线只能直接运行测试可执行文件 | 当前口径:直接运行测试可执行文件(Phase 04 已按此验证);Phase 05 修复后切换 `ctest`(§6.3) | `open` |
 | 5 | 长线方向(CE_UI、远程连接、工程完善、高级功能)不在本指南范围 | 后续工作暂无总纲可依 | MVP 验收封存后,按 §1.3/§1.4 划界新建开发指南 | `open` |
 | 6 | 既有 `specs/001–003` 为旧流程产物,与现行模板存在差异 | 追溯口径不完全一致 | 保持只读引用;新 Phase 一律走现行模板流程;发现不一致时以现行模板为准 | `open` |
 
@@ -255,6 +257,7 @@ Phase 04 → 05 → 06 → 07 为**硬依赖链,全部串行**:修复基于重�
 |---|---|---|---|---|
 | 1.0.0 | 2026-09-18 | 初始创建:取代旧《DEVELOPMENT_GUIDE.md》v0.2.0;第 11 章 CLI 交互规范迁移为 `docs/plan/cli-interaction-spec.md`;审计缺陷与规范偏差修复插入为 Phase 05/06(CLI 重构后优先);删除 `docs/temp/`(含 `CE_UI.png`) | GitHub Copilot | anitoce |
 | 1.0.0 | 2026-09-21 | 路线图回写:P04 状态 `planned` → `merged`(本地合并至 `feat/first-mvp`,无 PR;验证证据:人工验证通过 + 全量测试 187 通过 / 0 失败);同批公开提交 `docs: update dev guide roadmap (phase 04)` | GitHub Copilot | anitoce |
+| 1.0.1 | 2026-09-21 | 一致性修订(PATCH):spec-kit 版本勘误 `0.11.9` → `0.16.1`(文档信息/术语表/§3);单检出表述澄清(既有 worktree 内操作、不新建 worktree;§2.2/§3);§4.1 新增"合并策略"段;Phase 05 条目补充 Phase 04 移交缺陷 ⑧(§4.1/§4.2);§7 风险 #2 关闭、#4 措辞同步;文档信息版本/最近更新同步 | GitHub Copilot | anitoce |
 
 ---
 

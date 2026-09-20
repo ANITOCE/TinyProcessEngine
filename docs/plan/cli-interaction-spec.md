@@ -1,7 +1,7 @@
 # TinyProcessEngine CLI 交互规范
 
 > **来源**: 迁移自旧版《DEVELOPMENT_GUIDE.md》v0.2.0 第 11 章(2026-09-18 迁移);旧文档随 `docs/temp/` 一并删除,本文件为其在公开区的权威副本。章节编号沿用原第 11 章(§11.x),便于与历史记录对照。
-> **地位**: 本文件是 **Phase 04(CLI 交互重构)的规格输入**;与开发指南(`docs/plan/first-mvp-guide.md`)冲突时,以开发指南为准并先行修订指南(走评审)。
+> **地位**: 本文件是 **Phase 04(CLI 交互重构)的规格输入**(Phase 04 已于 2026-09-21 合并);继续作为 **CLI 行为契约**,供 Phase 07(占位补齐)与后续迭代引用。与开发指南(`docs/plan/first-mvp-guide.md`)冲突时,以开发指南为准并先行修订指南(走评审)。
 > 核心原则:**终端优先、单行自包含、子模式为主体**。
 
 ---
@@ -194,15 +194,15 @@ src/
 
 ## 勘误记录
 
-> 本文件为公开区规格输入文档。以下勘误由 Phase 04 消歧(P2,2026-09-20)定稿驱动,须经 **P7 人工评审闸门**确认后方视为生效;未通过评审时应回退对应条目。
+> 本文件为公开区规格输入文档。以下勘误由 Phase 04 消歧(P2,2026-09-20)定稿驱动,并已经 **P7 人工评审闸门确认生效**(2026-09-20,评审人 anitoce)。
 
 | 日期 | 位置 | 原文 | 勘误后 | 依据 | 评审状态 |
 |---|---|---|---|---|---|
-| 2026-09-20 | §11.3 示例 | `next-scan --increased`(提示符 `increased`) | `next-scan --greater`(提示符 `greater`) | Phase 04 P2 定稿:旗标名以 §11.5 旗标表为准,`--increased` 视为笔误 | 待 P7 |
-| 2026-09-20 | §11.3 `[<value>]` 显示规则 | 含 `next-scan --unknown` | 仅保留 `--changed` / `--unchanged` | Phase 04 P2 定稿:`next-scan` 不支持 `--unknown`(`Unknown` 仅首轮) | 待 P7 |
-| 2026-09-20 | §11.5 `next-scan` 表 | `--greater` / `--less` 值列 = 必传 | 改为**不传** | **新增勘误(未经 P2 提问)**:值变大/值变小为快照比较条件,不需要外部值——与 §11.3 示例、§11.5 缺值规则举例(如 `next-scan --equal`)及引擎现有条件(`ScanCondition::Increased` / `Decreased`,见 `src/TinyProcessEngine/MemoryScanner.cpp`)一致;原“必传”疑为自 `new-scan` 表复制 | **待 P7 重点评审** |
-| 2026-09-20 | §11.5 缺值规则 / 示例 | 示例 `next-scan --less --i64 42`;缺值规则未列 `--greater` / `--less` | 示例改 `next-scan --less --i64`;缺值规则补入 `next-scan` 的 `--greater` / `--less` | 同上 | **待 P7 重点评审** |
+| 2026-09-20 | §11.3 示例 | `next-scan --increased`(提示符 `increased`) | `next-scan --greater`(提示符 `greater`) | Phase 04 P2 定稿:旗标名以 §11.5 旗标表为准,`--increased` 视为笔误 | 已确认(P7,2026-09-20) |
+| 2026-09-20 | §11.3 `[<value>]` 显示规则 | 含 `next-scan --unknown` | 仅保留 `--changed` / `--unchanged` | Phase 04 P2 定稿:`next-scan` 不支持 `--unknown`(`Unknown` 仅首轮) | 已确认(P7,2026-09-20) |
+| 2026-09-20 | §11.5 `next-scan` 表 | `--greater` / `--less` 值列 = 必传 | 改为**不传** | **新增勘误(未经 P2 提问)**:值变大/值变小为快照比较条件,不需要外部值——与 §11.3 示例、§11.5 缺值规则举例(如 `next-scan --equal`)及引擎现有条件(`ScanCondition::Increased` / `Decreased`,见 `src/TinyProcessEngine/MemoryScanner.cpp`)一致;原“必传”疑为自 `new-scan` 表复制 | 已确认(P7 重点评审通过,2026-09-20) |
+| 2026-09-20 | §11.5 缺值规则 / 示例 | 示例 `next-scan --less --i64 42`;缺值规则未列 `--greater` / `--less` | 示例改 `next-scan --less --i64`;缺值规则补入 `next-scan` 的 `--greater` / `--less` | 同上 | 已确认(P7,2026-09-20) |
 
 ---
 
-*本文件随 Phase 04 落地;如需求变更,先修订开发指南(`docs/plan/first-mvp-guide.md`,走评审)再修订本文件。*
+*本文件已随 Phase 04 落地(2026-09-21 合并);如需求变更,先修订开发指南(`docs/plan/first-mvp-guide.md`,走评审)再修订本文件。*
