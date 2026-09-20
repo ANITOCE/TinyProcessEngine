@@ -140,7 +140,7 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 
 | Phase | 名称 | 目标(一句话) | 依赖 | 产出 | 状态 |
 |---|---|---|---|---|---|
-| Phase 04 | CLI 交互重构 | 按《CLI 交互规范》落地终端旗标命令、REPL、startup 分层与 Test.exe,废弃旧交互流程 | 无(前置 Phase 01–03 已完成) | `specs/004-cli-interaction-refactor` | `planned` |
+| Phase 04 | CLI 交互重构 | 按《CLI 交互规范》落地终端旗标命令、REPL、startup 分层与 Test.exe,废弃旧交互流程 | 无(前置 Phase 01–03 已完成) | `specs/004-cli-interaction-refactor` | `merged`(2026-09-21) |
 | Phase 05 | 遗留缺陷修复 | 清零 Phase 01–03 审计的 7 项功能性缺陷,每项先复现后修复并带回归测试 | Phase 04 | `specs/005-defect-remediation` | `planned` |
 | Phase 06 | 规范符合性收敛 | 收敛审计规范偏差:命名空间、头文件风格、库层异常、构建告警 | Phase 05 | `specs/006-spec-compliance` | `planned` |
 | Phase 07 | 功能补齐 → MVP | 补齐 `--unknown`/`--greater`/`--less` 首扫、`list` 实时重读,占位清零,完成 MVP 验收 | Phase 06 | `specs/007-mvp-completion` | `planned` |
@@ -158,7 +158,7 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 - **依赖**: 无(前置 Phase 01–03 已完成)。
 - **交付物**: `specs/004-*` 制品;更新后的本路线图状态;CLI 测试与手工验证记录。
 - **验收**: §11.2 各命令行为与退出码逐项符合;REPL 命令与提示符状态(§11.3–§11.8)按规范工作;`startup` / `startup_cli` / `startup_gui`(占位)分层落地;Test.exe 可用并与扫描流程联调通过;旧交互流程无残留;全量测试通过(附输出)。
-- **状态**: `planned`
+- **状态**: `merged`(2026-09-21 本地合并至 `feat/first-mvp`,**无 PR**;验证证据:需求方人工验证完全通过 + 全量测试 **187 通过 / 0 失败**;Phase 文档与制品位于私有区 `docs/phases/first-mvp-phase-04.md`、`specs/004-cli-interaction-refactor/`;遗留的 Phase 05 依赖项见 Phase 文档 P10 移交记录)
 
 #### Phase 05:遗留缺陷修复(Phase 01–03 审计)
 
@@ -254,6 +254,7 @@ Phase 04 → 05 → 06 → 07 为**硬依赖链,全部串行**:修复基于重�
 | 版本 | 日期 | 变更内容 | 修订人 | 评审人 |
 |---|---|---|---|---|
 | 1.0.0 | 2026-09-18 | 初始创建:取代旧《DEVELOPMENT_GUIDE.md》v0.2.0;第 11 章 CLI 交互规范迁移为 `docs/plan/cli-interaction-spec.md`;审计缺陷与规范偏差修复插入为 Phase 05/06(CLI 重构后优先);删除 `docs/temp/`(含 `CE_UI.png`) | GitHub Copilot | anitoce |
+| 1.0.0 | 2026-09-21 | 路线图回写:P04 状态 `planned` → `merged`(本地合并至 `feat/first-mvp`,无 PR;验证证据:人工验证通过 + 全量测试 187 通过 / 0 失败);同批公开提交 `docs: update dev guide roadmap (phase 04)` | GitHub Copilot | anitoce |
 
 ---
 
