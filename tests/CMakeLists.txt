@@ -29,6 +29,8 @@ add_executable(tpe_tests
   test_scanner.cpp
   test_session.cpp
   test_cli_parser.cpp
+  test_value_parser.cpp
+  test_repl_state.cpp
 )
 
 target_link_libraries(tpe_tests PRIVATE
@@ -44,3 +46,9 @@ target_include_directories(tpe_tests PRIVATE
 )
 
 add_test(NAME tpe_tests COMMAND tpe_tests)
+
+# 手工测试工具 Test.exe 门控（规范 §11.10）：
+# 仅当 TPE_BUILD_TESTS=ON 时构建（默认 OFF；目标定义见 tests/tools/CMakeLists.txt）
+if(TPE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools")
+  add_subdirectory(tools)
+endif()

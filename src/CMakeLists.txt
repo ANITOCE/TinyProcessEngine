@@ -4,8 +4,13 @@ add_subdirectory(TinyProcessEngine)
 
 # 定义源文件（建议后续明确列出各模块源文件）
 # file(GLOB_RECURSE SOURCES "*.cpp")
-# 定义目标
-add_executable(${PROJECT_NAME} main.cpp)
+# 定义目标（startup 启动分层见 specs/004-cli-interaction-refactor plan.md）
+add_executable(${PROJECT_NAME}
+    main.cpp
+    startup/startup.cpp
+    startup/startup_cli.cpp
+    startup/startup_gui.cpp
+)
 
 # 设置输出位置
 set_target_properties(${PROJECT_NAME} PROPERTIES
@@ -17,6 +22,7 @@ target_include_directories(${PROJECT_NAME} PUBLIC
     ${CMAKE_SOURCE_DIR}/include # 项目根目录的include文件夹
     ${CMAKE_SOURCE_DIR}/include/Platform
     ${CMAKE_SOURCE_DIR}/include/TinyProcessEngine
+    ${CMAKE_CURRENT_SOURCE_DIR}/startup # startup 分层头文件(入口 main.cpp 引用)
 )
 
 # 使用 target_compile_features 指定 C++17 支持

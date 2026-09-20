@@ -103,3 +103,38 @@ TEST(StringTest, RepresentationCopyChars) {
         EXPECT_EQ(mem[i], static_cast<tpe::Byte>(value[i]));
     }
 }
+
+// ============================================================
+// byteWidth tests (T022a)
+//   固定宽度类型必须与实际序列化宽度一致;string 为变长(0)。
+//   注:u8 的序列化宽度缺陷属 Phase 05;本测试不钉具体值,
+//   只钉“byteWidth 与 parse 产物一致”这一不变式。
+// ============================================================
+TEST(ByteWidthTest, FixedWidthTypesMatchParseOutput)
+{
+    const UnsignedByte u8;
+    const Int16 i16;
+    const Int32 i32;
+    const Int64 i64;
+    const Float f;
+    const Double d;
+
+    std::string error;
+    for (const ValueType* type : {static_cast<const ValueType*>(&u8),
+                                  static_cast<const ValueType*>(&i16),
+                                  static_cast<const ValueType*>(&i32),
+                                  static_cast<const ValueType*>(&i64),
+                                  static_cast<const ValueType*>(&f),
+                                  static_cast<const ValueType*>(&d)}) {
+        error.clear();
+        const auto parsed = type->parse("42", error);
+        ASSERT_TRUE(parsed.has_value()) << type->name << ": " << error;
+        EXPECT_EQ(type->byteWidth(), parsed->size()) << type->name;
+    }
+}
+
+TEST(ByteWidthTest, StringIsVariableLength)
+{
+    const String s;
+    EXPECT_EQ(s.byteWidth(), 0u);
+}

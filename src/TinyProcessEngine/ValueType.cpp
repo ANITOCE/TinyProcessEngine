@@ -16,6 +16,12 @@ namespace {
     }
 }
 
+std::optional<tpe::Memory> ValueType::parse(std::string_view, std::string &error) const
+{
+    error = "value type '" + name + "' does not support text parsing";
+    return std::nullopt;
+}
+
 const std::vector<std::unique_ptr<ValueType>> TYPES = createTypes();
 
 const std::size_t TYPES_COUNT = std::distance(std::begin(TYPES), std::end(TYPES));

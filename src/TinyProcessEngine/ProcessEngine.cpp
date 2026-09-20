@@ -25,19 +25,19 @@ std::shared_ptr<PlatformProcess> ProcessEngine::openProcess(Pid_t pid)
     return m_currentProcess;
 }
 
-std::string ProcessEngine::searchProcess(Pid_t pid) const
+std::optional<std::string> ProcessEngine::searchProcess(Pid_t pid) const
 {
     for(auto process : m_os->ProcessList)
     {
         if (process->getPid() == pid)
         {
-            return "Pid: " + std::to_string(pid) + " ProcessName:" + process->getProcessName();
+            return process->getProcessName();
         }
     }
-    return "Not Found";
+    return std::nullopt;
 }
 
-uint64_t ProcessEngine::searchMemory(const ValueType& type)
+uint64_t ProcessEngine::searchMemory(const ValueType& type, const tpe::Memory& pattern)
 {
     if (!m_currentProcess) {
         std::cerr << "No process opened. Use 'open-process <PID>' first." << std::endl;
@@ -48,9 +48,9 @@ uint64_t ProcessEngine::searchMemory(const ValueType& type)
     m_session = std::make_unique<ScanSession>(m_currentProcess);
     m_session->beginScan(type);
 
-    // Execute first scan
+    // Execute first scan (pattern is provided by the caller; no interactive prompt)
     ScanOptions options;
-    auto results = m_scanner.firstScan(*m_currentProcess, type, options);
+    auto results = m_scanner.firstScan(*m_currentProcess, type, pattern, options);
 
     // Commit results to session
     m_session->commitFirstScan(std::move(results));

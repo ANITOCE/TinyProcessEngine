@@ -20,18 +20,23 @@ class MemoryScanner {
 public:
     MemoryScanner() = default;
 
-    /// 首轮全量扫描：遍历目标进程所有可读页，搜索匹配值。
+    /// 首轮全量扫描：遍历目标进程所有可读页，搜索匹配值（非交互）。
+    /// @param process 目标进程
+    /// @param type    值类型（用于浮点容差与变长判断）
+    /// @param pattern 搜索模式（显式传入；宽度即搜索步进，不再交互追问）
     /// @return 匹配的 ScanRecord 列表（不含快照，snapshot_size=0）
     std::vector<ScanRecord> firstScan(
         PlatformProcess& process,
         const ValueType& type,
+        const tpe::Memory& pattern,
         const ScanOptions& options = {}
     );
 
-    /// 增量过滤扫描：在上一轮结果基础上按条件筛选。
+    /// 增量过滤扫描：在上一轮结果基础上按条件筛选（非交互）。
+    /// 读取宽度取自 `type.byteWidth()`（变长类型由 `newValue` 或既有快照决定）。
     /// @param previousResults 上一轮匹配记录
     /// @param condition      过滤条件
-    /// @param type           值类型（用于数值解析）
+    /// @param type           值类型（用于数值解析与读取宽度）
     /// @param newValue       条件为 ExactValue 时的目标值
     /// @return              过滤后的 ScanRecord 列表
     std::vector<ScanRecord> nextScan(

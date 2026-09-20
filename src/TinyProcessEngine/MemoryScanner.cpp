@@ -59,17 +59,16 @@ static bool floatTolerantMatch(const uint8_t* memBytes, const uint8_t* searchByt
 // firstScan — Full linear scan of all readable pages
 // ============================================================
 std::vector<ScanRecord> MemoryScanner::firstScan(
-    PlatformProcess& process, const ValueType& type, const ScanOptions& options)
+    PlatformProcess& process, const ValueType& type, const tpe::Memory& pattern,
+    const ScanOptions& options)
 {
     std::vector<ScanRecord> results;
-    tpe::Memory pattern = type.askValue();
     if (pattern.empty()) return results;
 
     size_t typeWidth = pattern.size();
     bool isFloat  = (type.name.find("float")  != std::string::npos && typeWidth == 4);
     bool isDouble = (type.name.find("double") != std::string::npos && typeWidth == 8);
     bool isFloatingPoint = isFloat || isDouble;
-    bool isVariableLen = (typeWidth > 8 || type.name.find("string") != std::string::npos);
 
     auto pages = process.getCheatablePages();
     // Filter by address range
@@ -80,11 +79,9 @@ std::vector<ScanRecord> MemoryScanner::firstScan(
         filteredPages.push_back(page);
     }
 
-    size_t pageIdx = 0, totalPages = filteredPages.size();
     tpe::Memory overlapBuf;
 
     for (auto& page : filteredPages) {
-        ++pageIdx;
         size_t remaining = page.size;
         tpe::Address currAddr = page.start;
 
@@ -153,11 +150,15 @@ std::vector<ScanRecord> MemoryScanner::nextScan(
     std::vector<ScanRecord> filtered;
     if (previousResults.empty()) return filtered;
 
-    size_t typeWidth = type.askValue().size();
+    // 读取宽度来自类型显式声明(取代交互式 askValue().size());
+    // 0 = 变长类型(如 string):由待比较值决定;两者皆无时无宽度信息,无法执行比较扫描。
+    size_t typeWidth = type.byteWidth();
+    if (typeWidth == 0) {
+        if (!newValue.has_value() || newValue->empty()) return filtered;
+        typeWidth = newValue->size();
+    }
     bool isFloat  = (type.name.find("float")  != std::string::npos && typeWidth == 4);
     bool isDouble = (type.name.find("double") != std::string::npos && typeWidth == 8);
-    bool needsComparison = (condition == ScanCondition::Increased ||
-                            condition == ScanCondition::Decreased);
 
     for (const auto& prev : previousResults) {
         // Read current value at this address
