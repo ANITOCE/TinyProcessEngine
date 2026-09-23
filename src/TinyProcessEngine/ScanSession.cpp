@@ -3,7 +3,6 @@
 
 #include <fstream>
 #include <stdexcept>
-#include <algorithm>
 
 // ============================================================
 // Construction
