@@ -143,4 +143,94 @@ TEST(LinuxPermissionHandlingTest, InaccessibleProcessReturnsPermissionError)
     }
 }
 
+// ============================================================
+// US2(缺陷④): ProcMem 后端读写顺序无关性(FR-011/FR-012;C-P2)
+//
+// 根因(修复前): 读路径以 O_RDONLY 建立并缓存 fd,后续写路径复用该只读 fd
+// → pwrite EBADF。本组用例经测试接缝强制 ProcMem 后端,覆盖两种操作顺序。
+// ============================================================
+class LinuxProcMemTest : public ::testing::Test {
+protected:
+    pid_t m_childPid = -1;
+
+    void SetUp() override {
+        m_childPid = fork();
+        if (m_childPid == 0) {
+            execl("./tests/tpe_test_target", "tpe_test_target", nullptr);
+            execl("tpe_test_target", "tpe_test_target", nullptr);
+            _exit(127);
+        }
+        ASSERT_GT(m_childPid, 0) << "fork failed";
+        usleep(100000);  // 等子进程初始化
+    }
+
+    void TearDown() override {
+        if (m_childPid > 0) {
+            kill(m_childPid, SIGTERM);
+            waitpid(m_childPid, nullptr, 0);
+            m_childPid = -1;
+        }
+    }
+
+    /// 强制 ProcMem 后端的进程对象(生产默认 AutoDetect 不变)。
+    std::unique_ptr<LinuxProcess> makeProcMemProcess() const {
+        auto proc = std::make_unique<LinuxProcess>(
+            static_cast<Pid_t>(m_childPid), "tpe_test_target");
+        proc->setMemBackendForTesting(MemBackend::ProcMem);
+        return proc;
+    }
+
+    /// 取首个可写页内的 8 字节测试地址(页内偏移 256;越界则回退页首)。
+    static tpe::Address pickTestAddress(const std::vector<MemoryPage>& pages) {
+        const MemoryPage& page = pages[0];
+        tpe::Address addr = page.start + 0x100;
+        if (addr + 8 > page.start + page.size) {
+            addr = page.start;
+        }
+        return addr;
+    }
+};
+
+/// 先读后写:修复前读路径缓存 O_RDONLY 句柄 → 写 pwrite EBADF;修复后句柄升级并写入成功。
+TEST_F(LinuxProcMemTest, ProcMemWriteAfterReadSucceeds)
+{
+    auto proc = makeProcMemProcess();
+    auto pages = proc->getCheatablePages();
+    ASSERT_GT(pages.size(), 0u) << "Expected at least 1 cheatable page";
+    const tpe::Address addr = pickTestAddress(pages);
+
+    // 1) 先读:修复前该路径以 O_RDONLY 建立并缓存 fd
+    auto readResult = proc->read(MemoryPage(addr, 8));
+    ASSERT_TRUE(readResult) << "read failed: " << readResult.error().message;
+
+    // 2) 再写:修复前复用只读 fd → 失败;修复后必须成功
+    const tpe::Memory newValue = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88};
+    auto writeResult = proc->write(addr, newValue);
+    ASSERT_TRUE(writeResult) << "write after read failed: " << writeResult.error().message;
+
+    // 3) 复核写入生效
+    auto verify = proc->read(MemoryPage(addr, 8));
+    ASSERT_TRUE(verify) << "verify read failed: " << verify.error().message;
+    EXPECT_EQ(verify.value(), newValue);
+}
+
+/// 先写后读:写路径建立 O_RDWR 句柄后,读路径复用句柄仍可读(顺序无关性)。
+TEST_F(LinuxProcMemTest, ProcMemReadAfterWriteSucceeds)
+{
+    auto proc = makeProcMemProcess();
+    auto pages = proc->getCheatablePages();
+    ASSERT_GT(pages.size(), 0u) << "Expected at least 1 cheatable page";
+    const tpe::Address addr = pickTestAddress(pages);
+
+    // 1) 先写:fd<0 → O_RDWR
+    const tpe::Memory newValue = {0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11};
+    auto writeResult = proc->write(addr, newValue);
+    ASSERT_TRUE(writeResult) << "write failed: " << writeResult.error().message;
+
+    // 2) 再读:须复用已有句柄读回
+    auto readResult = proc->read(MemoryPage(addr, 8));
+    ASSERT_TRUE(readResult) << "read after write failed: " << readResult.error().message;
+    EXPECT_EQ(readResult.value(), newValue);
+}
+
 #endif // __linux__

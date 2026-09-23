@@ -32,6 +32,10 @@ public:
     Result<tpe::Memory, PlatformError> read(MemoryPage page) const override;
     Result<void, PlatformError> write(tpe::Address address, const tpe::Memory &value) override;
 
+    // 测试接缝(US2/缺陷④):强制指定内存读写后端以覆盖 ProcMem 降级路径。
+    // 仅赋值 m_memBackend,生产默认(AutoDetect)不变;生产代码不得调用。
+    void setMemBackendForTesting(MemBackend backend) { m_memBackend = backend; }
+
 private:
     // --- 内存页权限过滤 ---
     static bool isCheatablePage(const std::string& perms);
