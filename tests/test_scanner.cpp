@@ -372,3 +372,96 @@ TEST(NonInteractiveScan, NextScanExactValueStoresFreshSnapshot)
     EXPECT_EQ(kept[0].snapshot_data[2], 0);
     EXPECT_EQ(kept[0].snapshot_data[3], 0);
 }
+
+// ============================================================
+// US1 — 无快照记录排除与变化/未变化字节语义
+//   C-S2:Changed/Unchanged 以快照 memcmp 判定;无快照记录一律排除
+//   (FR-002 / INV-S4;修复前 keep=true 兜底为缺陷本源)
+// ============================================================
+
+TEST(NonInteractiveScan, ChangedExcludesRecordsWithoutSnapshot)
+{
+    // 无快照记录:无论地址处值是否变化,均不得默认保留
+    FakeProcess process(0x1000, 0x100);
+    Int32 type;
+    MemoryScanner scanner;
+    process.bytes()[0x08] = 100; // 值未变
+    process.bytes()[0x0C] = 101; // 值已变
+
+    std::vector<ScanRecord> previous{ScanRecord(0x1008), ScanRecord(0x100C)};
+    EXPECT_TRUE(scanner.nextScan(process, previous, ScanCondition::Changed, type).empty())
+        << "无快照记录不得默认保留(C-S2/FR-002)";
+    EXPECT_TRUE(scanner.nextScan(process, previous, ScanCondition::Unchanged, type).empty())
+        << "无快照记录不得默认保留(Unchanged 同样适用)";
+}
+
+TEST(NonInteractiveScan, UnchangedKeepsAllWhenValuesIdentical)
+{
+    // 目标未变:--unchanged 全保留、--changed 为空;保留记录携带当轮实值快照
+    FakeProcess process(0x1000, 0x100);
+    Int32 type;
+    MemoryScanner scanner;
+    process.bytes()[0x08] = 100;
+    process.bytes()[0x0C] = 100;
+
+    std::string error;
+    const auto v100 = type.parse("100", error);
+    ASSERT_TRUE(v100.has_value()) << error;
+    const std::vector<ScanRecord> first = scanner.firstScan(process, type, *v100);
+    ASSERT_EQ(first.size(), 2u);
+
+    const std::vector<ScanRecord> unchanged =
+        scanner.nextScan(process, first, ScanCondition::Unchanged, type);
+    ASSERT_EQ(unchanged.size(), 2u);
+    EXPECT_EQ(unchanged[0].address, 0x1008u);
+    EXPECT_EQ(unchanged[1].address, 0x100Cu);
+    for (const ScanRecord& rec : unchanged) {
+        ASSERT_EQ(rec.snapshot_size, 4u);
+        EXPECT_EQ(rec.snapshot_data[0], 100);
+    }
+    EXPECT_TRUE(scanner.nextScan(process, first, ScanCondition::Changed, type).empty());
+}
+
+// ============================================================
+// US1 — 链式过滤的比较基准(C-S4 / FR-004):
+//   每轮以上一轮实值为基准;快照逐轮更新
+// ============================================================
+
+TEST(NonInteractiveScan, ChainedFiltersUseLatestValueAsBaseline)
+{
+    FakeProcess process(0x1000, 0x100);
+    Int32 type;
+    MemoryScanner scanner;
+    std::string error;
+    const auto v100 = type.parse("100", error);
+    ASSERT_TRUE(v100.has_value()) << error;
+    std::copy(v100->begin(), v100->end(), process.bytes().begin() + 0x08);
+
+    const std::vector<ScanRecord> first = scanner.firstScan(process, type, *v100);
+    ASSERT_EQ(first.size(), 1u);
+
+    // 轮 2:100 → 102 ⇒ --greater 命中(基准 = 首轮实值 100)
+    const auto v102 = type.parse("102", error);
+    ASSERT_TRUE(v102.has_value()) << error;
+    std::copy(v102->begin(), v102->end(), process.bytes().begin() + 0x08);
+    const std::vector<ScanRecord> second =
+        scanner.nextScan(process, first, ScanCondition::Increased, type);
+    ASSERT_EQ(second.size(), 1u);
+    ASSERT_EQ(second[0].snapshot_size, 4u);
+    EXPECT_EQ(second[0].snapshot_data[0], 102); // 快照更新为上一轮实值
+
+    // 轮 3:102 → 105 ⇒ --greater 命中、--less 不命中
+    const auto v105 = type.parse("105", error);
+    ASSERT_TRUE(v105.has_value()) << error;
+    std::copy(v105->begin(), v105->end(), process.bytes().begin() + 0x08);
+    ASSERT_EQ(scanner.nextScan(process, second, ScanCondition::Increased, type).size(), 1u);
+    EXPECT_TRUE(scanner.nextScan(process, second, ScanCondition::Decreased, type).empty());
+
+    // 轮 3':102 → 101 ⇒ --less 命中、--greater 不命中
+    //(若比较基准停留在首轮值 100,101 会被判为递增 ⇒ 本双断言钉住"上一轮实值"基准)
+    const auto v101 = type.parse("101", error);
+    ASSERT_TRUE(v101.has_value()) << error;
+    std::copy(v101->begin(), v101->end(), process.bytes().begin() + 0x08);
+    ASSERT_EQ(scanner.nextScan(process, second, ScanCondition::Decreased, type).size(), 1u);
+    EXPECT_TRUE(scanner.nextScan(process, second, ScanCondition::Increased, type).empty());
+}
