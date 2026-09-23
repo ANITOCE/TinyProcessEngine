@@ -142,6 +142,88 @@ std::vector<ScanRecord> MemoryScanner::firstScan(
 }
 
 // ============================================================
+// Numeric comparison helpers — 快照与当前读值的数值比较
+//   (Phase 05 缺陷 ①;C-S2/S3:比较宽度=类型宽度,按 NumericKind 分派)
+// ============================================================
+
+namespace {
+
+/// 数值比较前置条件:Other(如 string)、无快照、宽度为 0/超 8 字节、
+/// 快照或当前读值不足类型宽度时均不可比较 ⇒ 排除(不保留)。
+bool canCompareNumeric(NumericKind kind, const ScanRecord& prev,
+                       const tpe::Memory& current, size_t width)
+{
+    return kind != NumericKind::Other && width > 0 && width <= sizeof(prev.snapshot_data) &&
+           prev.snapshot_size >= width && current.size() >= width;
+}
+
+/// 小端读取 width(1/2/4/8)字节并零扩展至 64 位。
+uint64_t readUnsignedLittleEndian(const uint8_t* bytes, size_t width)
+{
+    uint64_t raw = 0;
+    std::memcpy(&raw, bytes, width);
+    return raw;
+}
+
+/// 小端读取 width(1/2/4/8)字节并按最高有效位符号扩展至 64 位。
+int64_t readSignedLittleEndian(const uint8_t* bytes, size_t width)
+{
+    uint64_t raw = readUnsignedLittleEndian(bytes, width);
+    const unsigned bits = static_cast<unsigned>(width) * 8u;
+    if (bits < 64u) {
+        const uint64_t signMask = uint64_t{1} << (bits - 1u);
+        if (raw & signMask) {
+            raw |= ~((uint64_t{1} << bits) - 1u);
+        }
+    }
+    return static_cast<int64_t>(raw);
+}
+
+/// 按浮点宽度解码两个小端值:cur > prev(Increased)或 cur < prev(Decreased)。
+template <class T>
+bool compareFloatingAs(ScanCondition condition, const uint8_t* prevBytes, const uint8_t* curBytes,
+                       size_t width)
+{
+    if (width != sizeof(T)) return false;
+    T prevVal{}, curVal{};
+    std::memcpy(&prevVal, prevBytes, width);
+    std::memcpy(&curVal, curBytes, width);
+    return (condition == ScanCondition::Increased) ? (curVal > prevVal) : (curVal < prevVal);
+}
+
+/// Increased/Decreased 的统一判定:按 NumericKind 分派;不可比较时一律不保留。
+bool compareNumeric(ScanCondition condition, NumericKind kind, const ScanRecord& prev,
+                    const tpe::Memory& current, size_t width)
+{
+    if (!canCompareNumeric(kind, prev, current, width)) return false;
+
+    switch (kind) {
+    case NumericKind::SignedInteger: {
+        const int64_t prevVal = readSignedLittleEndian(prev.snapshot_data, width);
+        const int64_t curVal = readSignedLittleEndian(current.data(), width);
+        return (condition == ScanCondition::Increased) ? (curVal > prevVal) : (curVal < prevVal);
+    }
+    case NumericKind::UnsignedInteger: {
+        const uint64_t prevVal = readUnsignedLittleEndian(prev.snapshot_data, width);
+        const uint64_t curVal = readUnsignedLittleEndian(current.data(), width);
+        return (condition == ScanCondition::Increased) ? (curVal > prevVal) : (curVal < prevVal);
+    }
+    case NumericKind::FloatingPoint:
+        if (width == sizeof(float)) {
+            return compareFloatingAs<float>(condition, prev.snapshot_data, current.data(), width);
+        }
+        if (width == sizeof(double)) {
+            return compareFloatingAs<double>(condition, prev.snapshot_data, current.data(), width);
+        }
+        return false; // 其他浮点宽度不可比较
+    default:
+        return false;
+    }
+}
+
+} // namespace
+
+// ============================================================
 // nextScan — Incremental filtering
 // ============================================================
 std::vector<ScanRecord> MemoryScanner::nextScan(
@@ -194,52 +276,10 @@ std::vector<ScanRecord> MemoryScanner::nextScan(
             break;
         }
         case ScanCondition::Increased:
-        case ScanCondition::Decreased: {
-            // 数值语义(FR-003 / C-S3):比较宽度 = 类型宽度,按 NumericKind 分派;
-            // Other(如 string)、无快照、宽度不足或超限 ⇒ 不保留。
-            if (kind == NumericKind::Other || typeWidth == 0 ||
-                typeWidth > sizeof(prev.snapshot_data) ||
-                prev.snapshot_size < typeWidth || currentBytes.size() < typeWidth) {
-                break;
-            }
-            if (kind == NumericKind::FloatingPoint) {
-                if (typeWidth == sizeof(float)) {
-                    float prevVal = 0.0f, curVal = 0.0f;
-                    std::memcpy(&prevVal, prev.snapshot_data, typeWidth);
-                    std::memcpy(&curVal, currentBytes.data(), typeWidth);
-                    keep = (condition == ScanCondition::Increased) ? (curVal > prevVal)
-                                                                   : (curVal < prevVal);
-                } else if (typeWidth == sizeof(double)) {
-                    double prevVal = 0.0, curVal = 0.0;
-                    std::memcpy(&prevVal, prev.snapshot_data, typeWidth);
-                    std::memcpy(&curVal, currentBytes.data(), typeWidth);
-                    keep = (condition == ScanCondition::Increased) ? (curVal > prevVal)
-                                                                   : (curVal < prevVal);
-                }
-                break; // 其他浮点宽度不可比较 ⇒ 不保留
-            }
-            // 整数:按符号性扩展至 64 位后比较
-            uint64_t prevRaw = 0, curRaw = 0;
-            std::memcpy(&prevRaw, prev.snapshot_data, typeWidth);
-            std::memcpy(&curRaw, currentBytes.data(), typeWidth);
-            if (kind == NumericKind::SignedInteger) {
-                const unsigned bits = static_cast<unsigned>(typeWidth) * 8u;
-                if (bits < 64u) {
-                    const uint64_t signMask = uint64_t{1} << (bits - 1u);
-                    const uint64_t fillMask = ~((uint64_t{1} << bits) - 1u);
-                    if (prevRaw & signMask) prevRaw |= fillMask;
-                    if (curRaw & signMask) curRaw |= fillMask;
-                }
-                const int64_t prevVal = static_cast<int64_t>(prevRaw);
-                const int64_t curVal = static_cast<int64_t>(curRaw);
-                keep = (condition == ScanCondition::Increased) ? (curVal > prevVal)
-                                                               : (curVal < prevVal);
-            } else { // UnsignedInteger:零扩展(原样读取)
-                keep = (condition == ScanCondition::Increased) ? (curRaw > prevRaw)
-                                                               : (curRaw < prevRaw);
-            }
+        case ScanCondition::Decreased:
+            // 数值语义(FR-003 / C-S3):比较宽度 = 类型宽度,按 NumericKind 分派
+            keep = compareNumeric(condition, kind, prev, currentBytes, typeWidth);
             break;
-        }
         default:
             break;
         }
