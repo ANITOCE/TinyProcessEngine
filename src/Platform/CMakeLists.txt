@@ -1,7 +1,7 @@
 # 公共源文件
 add_library(PlatformLib STATIC Platform.cpp)
 
-# 平台选择
+# 平台选择（用 UNIX 谓词：LINUX 变量为 CMake 3.25+ 引入，本项目基线 3.10 下恒为假）
 if(WIN32)
     add_subdirectory(Windows)
 
@@ -11,7 +11,7 @@ if(WIN32)
     
     target_include_directories(PlatformLib PUBLIC ${CMAKE_SOURCE_DIR}/include/Platform/Windows)
     
-elseif(LINUX)
+elseif(UNIX)
     add_subdirectory(Linux)
 
     # 添加 Linux平台相关源文件
