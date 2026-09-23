@@ -19,12 +19,15 @@ void ScanSession::beginScan(const ValueType& type, ScanOptions /*options*/) {
     m_state = SessionState::Scanning;
     m_round = 0;
     m_valueType = &type;
-    m_results.clear();
-    m_prevResults.reset();
+    m_storage = ResultStorage{};
+    m_prevStorage.reset();
 }
 
 void ScanSession::commitFirstScan(std::vector<ScanRecord> results) {
-    m_results = std::move(results);
+    m_storage = ResultStorage{};
+    for (const auto& record : results) {
+        m_storage.append(record);
+    }
     m_round = 1;
     m_condition = ScanCondition::ExactValue;
     m_state = SessionState::Ready;
@@ -34,8 +37,11 @@ void ScanSession::commitNextScan(ScanCondition condition, std::vector<ScanRecord
     if (m_state != SessionState::Ready) {
         throw std::runtime_error("Session not in Ready state");
     }
-    m_prevResults = std::move(m_results);
-    m_results = std::move(results);
+    m_prevStorage = std::move(m_storage);
+    m_storage = ResultStorage{};
+    for (const auto& record : results) {
+        m_storage.append(record);
+    }
     ++m_round;
     m_condition = condition;
 }
@@ -44,16 +50,16 @@ void ScanSession::undo() {
     if (!canUndo()) {
         throw std::runtime_error("Nothing to undo");
     }
-    m_results = std::move(*m_prevResults);
-    m_prevResults.reset();
+    m_storage = std::move(*m_prevStorage);
+    m_prevStorage.reset();
     --m_round;
 }
 
 void ScanSession::close() {
     m_state = SessionState::Idle;
     m_round = 0;
-    m_results.clear();
-    m_prevResults.reset();
+    m_storage = ResultStorage{};
+    m_prevStorage.reset();
     m_valueType = nullptr;
 }
 
@@ -61,23 +67,22 @@ void ScanSession::close() {
 // Queries
 // ============================================================
 uint64_t ScanSession::resultCount() const {
-    return static_cast<uint64_t>(m_results.size());
+    return m_storage.totalCount();
 }
 
 bool ScanSession::canUndo() const {
-    return m_state == SessionState::Ready && m_round >= 2 && m_prevResults.has_value();
+    return m_state == SessionState::Ready && m_round >= 2 && m_prevStorage.has_value();
 }
 
 bool ScanSession::isDiskBacked() const {
-    return false; // ResultStorage integration deferred to Phase 6
+    return m_storage.isDiskBacked();
 }
 
 // ============================================================
 // Result access
 // ============================================================
 std::optional<ScanRecord> ScanSession::resultAt(uint64_t index) const {
-    if (index >= m_results.size()) return std::nullopt;
-    return m_results[static_cast<size_t>(index)];
+    return m_storage.readAt(index);
 }
 
 // ============================================================
@@ -106,7 +111,8 @@ Result<void, PlatformError> ScanSession::writeMemory(tpe::Address addr, const tp
 // Export
 // ============================================================
 void ScanSession::exportTo(const std::filesystem::path& path, std::string_view format) const {
-    if (m_results.empty()) {
+    const uint64_t total = m_storage.totalCount();
+    if (total == 0) {
         throw std::runtime_error("No results to export");
     }
 
@@ -131,10 +137,12 @@ void ScanSession::exportTo(const std::filesystem::path& path, std::string_view f
 
     if (fmt == "csv" || outPath.extension() == ".csv") {
         file << "Address,Value,Type,PageBase,PageSize\n";
-        for (const auto& rec : m_results) {
-            file << "0x" << std::hex << rec.address << std::dec << ",";
-            if (rec.hasSnapshot()) {
-                file << static_cast<int>(rec.snapshot_data[0]);
+        for (uint64_t i = 0; i < total; ++i) {
+            auto rec = m_storage.readAt(i);
+            if (!rec.has_value()) break;
+            file << "0x" << std::hex << rec->address << std::dec << ",";
+            if (rec->hasSnapshot()) {
+                file << static_cast<int>(rec->snapshot_data[0]);
             } else {
                 file << "?";
             }
@@ -142,10 +150,12 @@ void ScanSession::exportTo(const std::filesystem::path& path, std::string_view f
         }
     } else {
         // TXT format
-        for (const auto& rec : m_results) {
-            file << "0x" << std::hex << rec.address << std::dec << ": ";
-            if (rec.hasSnapshot()) {
-                file << static_cast<int>(rec.snapshot_data[0]);
+        for (uint64_t i = 0; i < total; ++i) {
+            auto rec = m_storage.readAt(i);
+            if (!rec.has_value()) break;
+            file << "0x" << std::hex << rec->address << std::dec << ": ";
+            if (rec->hasSnapshot()) {
+                file << static_cast<int>(rec->snapshot_data[0]);
             } else {
                 file << "?";
             }

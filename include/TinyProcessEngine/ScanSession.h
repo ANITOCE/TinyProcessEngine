@@ -4,6 +4,7 @@
 #include "Platform.h"
 #include "ScanTypes.h"
 #include "ValueType.h"
+#include "ResultStorage.h"
 
 #include <memory>
 #include <vector>
@@ -57,9 +58,9 @@ private:
     ScanCondition m_condition = ScanCondition::ExactValue;
     const ValueType* m_valueType = nullptr;
 
-    // ResultStorage will be added in Phase 2 (T005-T009)
-    std::vector<ScanRecord> m_results;           // temporary in-memory storage
-    std::optional<std::vector<ScanRecord>> m_prevResults;  // for single-level undo
+    // 结果集存储:超过阈值(1,000,000 条)自动切换磁盘后端(缺陷⑤/FR-013)
+    ResultStorage m_storage;                      // 当前轮结果集(内存块 / 磁盘临时文件)
+    std::optional<ResultStorage> m_prevStorage;   // 上一轮结果集(单级 undo)
 };
 
 #endif // TPE_SCAN_SESSION_H_
