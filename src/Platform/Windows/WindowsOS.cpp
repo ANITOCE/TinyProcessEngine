@@ -25,8 +25,10 @@ Result<std::vector<Pid_t>, PlatformError> WindowsOS::getAllProcessesPid() {
     DWORD cbNeeded = 0;
     if (!EnumProcesses(processIds.data(), processIds.size() * sizeof(Pid_t), &cbNeeded))
     {
-        // 红阶段(TDD,行为等价):失败仍返回空列表;绿色提交改为上报枚举错误。
-        return Result<std::vector<Pid_t>, PlatformError>::success({});
+        // 缺陷⑧(FR-023/C-P5):枚举失败上报错误,不得以空列表伪装成功。
+        const PlatformError err = PlatformError::from_last_error("EnumProcesses", 0);
+        m_enumerationError = err;
+        return Result<std::vector<Pid_t>, PlatformError>::error(err);
     }
     size_t count = cbNeeded / sizeof(DWORD);
     processIds.resize(count);
