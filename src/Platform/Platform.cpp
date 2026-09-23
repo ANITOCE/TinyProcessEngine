@@ -9,6 +9,7 @@
 #include "Platform/Linux/LinuxOS.h"
 #include "Platform/Linux/LinuxProcess.h"
 #include <cerrno>
+#include <cstring>
 #endif
 
 PlatformError PlatformError::from_last_error(std::string op, unsigned long pid_val) {
@@ -17,12 +18,28 @@ PlatformError PlatformError::from_last_error(std::string op, unsigned long pid_v
     err.pid         = pid_val;
 #ifdef _WIN32
     err.native_code = static_cast<int>(GetLastError());
-#else
-    err.native_code = errno;
-#endif
     err.message     = "Operation '" + err.operation
                     + "' failed on PID " + std::to_string(err.pid)
                     + " (native code: " + std::to_string(err.native_code) + ")";
+#else
+    err.native_code = errno;
+    // 缺陷⑦(FR-020/C-P4):Linux 消息恒定包含 strerror 原文(native code 与文本一致)
+    err.message     = "Operation '" + err.operation
+                    + "' failed on PID " + std::to_string(err.pid)
+                    + " (native code: " + std::to_string(err.native_code)
+                    + ", " + std::strerror(err.native_code) + ")";
+#endif
+    return err;
+}
+
+PlatformError PlatformError::from_last_error(std::string op, unsigned long pid_val,
+                                             std::string_view advice) {
+    PlatformError err = from_last_error(std::move(op), pid_val);
+    if (!advice.empty()) {
+        // 缺陷⑦(C-P4):strerror 原文在前、可操作建议在后
+        err.message += "; ";
+        err.message.append(advice);
+    }
     return err;
 }
 
