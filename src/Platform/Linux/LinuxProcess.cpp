@@ -213,16 +213,45 @@ Result<void, PlatformError> LinuxProcess::writeViaProcessVm(
 }
 
 // ============================================================
+// /proc/PID/mem 句柄惰性升级(缺陷④;FR-011/FR-012/C-P2)
+// ============================================================
+bool LinuxProcess::ensureProcMemFd(bool needWrite) const {
+    const std::string path = "/proc/" + std::to_string(m_pid) + "/mem";
+
+    if (m_procMemFd >= 0) {
+        if (!needWrite || m_procMemFdWritable) {
+            return true;
+        }
+        // 已有只读句柄但本次需要写入:关闭后以 O_RDWR 升级重开
+        close(m_procMemFd);
+        m_procMemFd = -1;
+        m_procMemFdWritable = false;
+    }
+
+    if (needWrite) {
+        m_procMemFd = open(path.c_str(), O_RDWR);
+        m_procMemFdWritable = (m_procMemFd >= 0);
+    } else {
+        // 读路径:优先可写句柄(后续写入免重开);无写权限时降级只读
+        m_procMemFd = open(path.c_str(), O_RDWR);
+        if (m_procMemFd >= 0) {
+            m_procMemFdWritable = true;
+        } else {
+            m_procMemFd = open(path.c_str(), O_RDONLY);
+            m_procMemFdWritable = false;
+        }
+    }
+
+    return m_procMemFd >= 0;
+}
+
+// ============================================================
 // /proc/PID/mem 降级读写
 // ============================================================
 Result<tpe::Memory, PlatformError> LinuxProcess::readViaProcMem(MemoryPage page) const {
-    if (m_procMemFd < 0) {
-        std::string path = "/proc/" + std::to_string(m_pid) + "/mem";
-        m_procMemFd = open(path.c_str(), O_RDONLY);
-        if (m_procMemFd < 0) {
-            return Result<tpe::Memory, PlatformError>::error(
-                PlatformError::from_last_error("open /proc/PID/mem", m_pid));
-        }
+    if (!ensureProcMemFd(/*needWrite=*/false)) {
+        return Result<tpe::Memory, PlatformError>::error(
+            PlatformError::from_last_error("open /proc/PID/mem", m_pid));
     }
 
     tpe::Memory buffer(page.size);
@@ -244,13 +273,10 @@ Result<tpe::Memory, PlatformError> LinuxProcess::readViaProcMem(MemoryPage page)
 Result<void, PlatformError> LinuxProcess::writeViaProcMem(
     tpe::Address address, const tpe::Memory& value) const
 {
-    if (m_procMemFd < 0) {
-        std::string path = "/proc/" + std::to_string(m_pid) + "/mem";
-        m_procMemFd = open(path.c_str(), O_RDWR);
-        if (m_procMemFd < 0) {
-            return Result<void, PlatformError>::error(
-                PlatformError::from_last_error("open /proc/PID/mem for write", m_pid));
-        }
+    // fd 不存在或为只读时升级为 O_RDWR;升级失败返回明确错误(不使用 EBADF 只读句柄)
+    if (!ensureProcMemFd(/*needWrite=*/true)) {
+        return Result<void, PlatformError>::error(
+            PlatformError::from_last_error("open /proc/PID/mem for write", m_pid));
     }
 
     ssize_t nwritten = pwrite(m_procMemFd, value.data(), value.size(),
