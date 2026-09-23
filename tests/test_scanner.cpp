@@ -3,6 +3,7 @@
 #include "ScanTypes.h"
 #include "ValueType.h"
 #include "AobPattern.h"
+#include "ScanSession.h"
 
 #include <algorithm>
 #include <cstring>
@@ -592,4 +593,30 @@ TEST(NonInteractiveScan, IncreasedDecreasedCompareFloats)
     ASSERT_EQ(doubleLess.size(), 1u);
     EXPECT_TRUE(
         scanner.nextScan(doubleProcess, doubleFirst, ScanCondition::Increased, doubleType).empty());
+}
+
+// ============================================================
+// US3(Phase 05,缺陷 ②)— u8 单字节写入(C-S5 / FR-006)
+//   经 ScanSession::writeMemory 写入 u8 解析产物:仅目标 1 字节被修改,
+//   相邻 3 字节保持原值(修复前:4 字节写入覆盖相邻字节)。
+// ============================================================
+
+TEST(ScanSessionWrite, WriteU8WritesSingleByte)
+{
+    auto process = std::make_shared<FakeProcess>(0x1000, 0x40);
+    std::fill(process->bytes().begin(), process->bytes().end(), static_cast<tpe::Byte>(0xAA));
+
+    UnsignedByte type;
+    std::string error;
+    const auto parsed = type.parse("200", error);
+    ASSERT_TRUE(parsed.has_value()) << error;
+
+    ScanSession session(process);
+    const Result<void, PlatformError> written = session.writeMemory(0x1008, *parsed);
+    ASSERT_TRUE(written) << written.error().message;
+
+    EXPECT_EQ(process->bytes()[0x08], 200); // 0xC8
+    EXPECT_EQ(process->bytes()[0x09], 0xAA) << "相邻字节不得被写入覆盖(FR-006)";
+    EXPECT_EQ(process->bytes()[0x0A], 0xAA) << "相邻字节不得被写入覆盖(FR-006)";
+    EXPECT_EQ(process->bytes()[0x0B], 0xAA) << "相邻字节不得被写入覆盖(FR-006)";
 }

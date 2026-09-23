@@ -406,6 +406,19 @@ TEST(ValueFormatter, FormatsUnsignedByteAsUnsignedDecimal)
     EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0xFF}), cliType("u8")), "255");
 }
 
+// Phase 05 US3(缺陷 ②)/ FR-006 / C-S5:u8.parse 产出的快照必须可按 1 字节
+// 解码为十进制(修复前:parse 产 4 字节 → 宽度不符 → 回退十六进制字节串)
+TEST(ValueFormatter, ShowsNumberForSingleByteU8Snapshot)
+{
+    const tpe::cli::CliValueType& u8 = cliType("u8");
+    std::string error;
+    const auto parsed = u8.type->parse("200", error);
+    ASSERT_TRUE(parsed.has_value()) << error;
+
+    const ScanRecord record(0x1008, *parsed);
+    EXPECT_EQ(tpe::cli::formatValue(record, u8), "200");
+}
+
 TEST(ValueFormatter, FormatsFloatingPointWithDefaultStreamFormatting)
 {
     EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0x00, 0x00, 0xC0, 0x3F}), cliType("float")), "1.5");

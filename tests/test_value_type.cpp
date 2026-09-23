@@ -23,6 +23,17 @@ TEST(UnsignedByteTest, RepresentationSingleByte) {
     EXPECT_EQ(mem[0], static_cast<tpe::Byte>(65));
 }
 
+// Phase 05 US3(缺陷 ②)/ FR-006 / C-S5:parse 必须产出 1 字节表示
+//(修复前:旧 representation 签名不构成 override → 虚派发走基类 uint32 的 4 字节)
+TEST(UnsignedByteTest, UnsignedByteParseProducesSingleByte) {
+    UnsignedByte ub;
+    std::string error;
+    const auto parsed = ub.parse("200", error);
+    ASSERT_TRUE(parsed.has_value()) << error;
+    ASSERT_EQ(parsed->size(), 1u) << "u8 解析产物必须为 1 字节(FR-006)";
+    EXPECT_EQ((*parsed)[0], 200);
+}
+
 // ============================================================
 // Int16 tests
 // ============================================================
