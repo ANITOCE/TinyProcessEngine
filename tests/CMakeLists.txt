@@ -31,6 +31,8 @@ set(TPE_TEST_SOURCES
   test_cli_parser.cpp
   test_value_parser.cpp
   test_repl_state.cpp
+  # Windows 写路径用例(US2/缺陷③):整文件 _WIN32 门控,其它平台为空翻译单元
+  test_windows_memory.cpp
 )
 
 # Linux 集成测试（缺陷⑥）：仅 Linux 构建纳入源列表；Windows 下整文件被 __linux__ 包裹
