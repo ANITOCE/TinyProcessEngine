@@ -97,11 +97,18 @@ struct UnsignedByte : SimpleValueType<std::uint32_t>
     {
         return value <= 255; // check that it is 8 bits
     }
-    tpe::Memory representation(const int32_t &value) const
+
+    /// Phase 05 缺陷 ②/FR-006:签名必须与基类虚函数一致(`const std::uint32_t &`)
+    /// 才构成 override;旧签名 `const int32_t &` 不覆盖基类,`parse()`/`askValue()`
+    /// 虚派发走基类 4 字节实现。函数体保持等价:只取最低 1 字节。
+    tpe::Memory representation(const std::uint32_t &value) const override
     {
         uint8_t byte = value;
         return {static_cast<tpe::Byte>(byte)}; // only extract 1 byte
     }
+
+    /// 类型宽度 = 1 字节(基类 `SimpleValueType<std::uint32_t>` 默认 4,必须覆写)。
+    std::size_t byteWidth() const override { return 1; }
 };
 
 struct Character : SimpleValueType<char>
