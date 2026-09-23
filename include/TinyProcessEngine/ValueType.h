@@ -83,7 +83,7 @@ struct SimpleValueType : public ValueType
     std::optional<tpe::Memory> parse(std::string_view text, std::string &error) const override;
 
     virtual tpe::Memory representation(const T &value) const;
-    virtual bool isValid(const T &value) const { return true; }
+    virtual bool isValid(const T & /*value*/) const { return true; }
     virtual std::istream &read(std::istream &in, T &t) const { return in >> t; }
 };
 
@@ -95,7 +95,7 @@ struct UnsignedByte : SimpleValueType<std::uint32_t>
 
     bool isValid(const std::uint32_t &value) const override
     {
-        return 0 <= value && value <= 255; // check that it is 8 bits
+        return value <= 255; // check that it is 8 bits
     }
     tpe::Memory representation(const int32_t &value) const
     {
