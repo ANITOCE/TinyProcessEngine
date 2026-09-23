@@ -71,6 +71,20 @@ Result<tpe::Memory, PlatformError> WindowsProcess::read(MemoryPage page) const {
 }
 
 Result<void, PlatformError> WindowsProcess::write(tpe::Address address, const tpe::Memory &value) {
+    // 缺陷③(FR-009,C-P1):降级只读会话不调用 WriteProcessMemory,
+    // 返回明确错误(消息含 read-only;native code = ERROR_ACCESS_DENIED)。
+    if (m_readOnly) {
+        PlatformError err;
+        err.operation   = "WriteProcessMemory";
+        err.pid         = m_pid;
+        err.native_code = static_cast<int>(ERROR_ACCESS_DENIED);
+        err.message     = "Operation '" + err.operation
+                        + "' failed on PID " + std::to_string(err.pid)
+                        + " (native code: " + std::to_string(err.native_code) + "): "
+                          "session opened read-only; write access was denied at open";
+        return Result<void, PlatformError>::error(std::move(err));
+    }
+
     if (!WriteProcessMemory(this->m_processHandle.get(), reinterpret_cast<LPVOID>(address), value.data(), value.size(), nullptr))
     {
         return Result<void, PlatformError>::error(

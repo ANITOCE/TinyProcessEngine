@@ -31,11 +31,27 @@ std::vector<Pid_t> WindowsOS::getAllProcessesPid() {
 
 std::shared_ptr<PlatformProcess> WindowsOS::open(Pid_t pid)
 {
-    ScopedHandle hProcess(OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid));
+    // 缺陷③(FR-008/FR-009,C-P1):读写权限优先;被拒则降级只读(读取零退化);
+    // 都失败返回 nullptr(既有失败路径不变)。
+    constexpr DWORD kReadWriteAccess = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ
+                                     | PROCESS_VM_WRITE | PROCESS_VM_OPERATION;
+    constexpr DWORD kReadOnlyAccess  = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ;
+
+    ScopedHandle hProcess(OpenProcess(kReadWriteAccess, FALSE, pid));
+    bool readOnly = false;
+    if (!hProcess) {
+        hProcess = ScopedHandle(OpenProcess(kReadOnlyAccess, FALSE, pid));
+        readOnly = true;
+    }
     if (!hProcess) {
         return nullptr;
     }
-    return std::make_shared<WindowsProcess>(pid, "Unknown", std::move(hProcess));
+
+    auto process = std::make_shared<WindowsProcess>(pid, "Unknown", std::move(hProcess));
+    if (readOnly) {
+        process->markReadOnly();
+    }
+    return process;
 }
 
 // std::vector<std::shared_ptr<PlatformProcess>> WindowsOS::getAllProcesses(std::vector<Pid_t> AllProcessesPid)
