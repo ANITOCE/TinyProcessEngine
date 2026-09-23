@@ -3,6 +3,7 @@
 #include "ScanTypes.h"
 #include "ValueType.h"
 #include "AobPattern.h"
+#include "ScanSession.h"
 
 #include <algorithm>
 #include <cstring>
@@ -151,6 +152,10 @@ public:
     }
 
     std::size_t byteWidth() const override { return 4; } // 模拟 4 字节类型
+
+    /// 数值分派对齐真实整数类型(Phase 05 T013):替身按无符号整数语义参与
+    /// --greater/--less;修复前实现按零扩展无符号比较,故两者语义等价。
+    NumericKind numericKind() const override { return NumericKind::UnsignedInteger; }
 
     mutable int m_askCalls = 0;
 };
@@ -302,4 +307,316 @@ TEST(NonInteractiveScan, NextScanDoesNotCallAskValue)
 
     (void)scanner.nextScan(process, previous, ScanCondition::Changed, type);
     EXPECT_EQ(type.m_askCalls, 0);
+}
+
+// ============================================================
+// US1(Phase 05,缺陷 ①)— 值快照写入
+//   C-S1:所有轮次写当轮实值快照;FR-001 / FR-004 / INV-S1/S2/S3
+// ============================================================
+
+TEST(NonInteractiveScan, FirstScanStoresValueSnapshot)
+{
+    // 精确命中:快照 == 命中地址处的当轮实读字节,宽度 == 类型宽度(4)
+    FakeProcess process(0x1000, 0x100);
+    Int32 type;
+    MemoryScanner scanner;
+    process.bytes()[0x04] = 0x2A;
+    process.bytes()[0x10] = 0x2A;
+
+    const tpe::Memory pattern = {0x2A, 0x00, 0x00, 0x00};
+    const std::vector<ScanRecord> results = scanner.firstScan(process, type, pattern);
+
+    ASSERT_EQ(results.size(), 2u);
+    for (const ScanRecord& rec : results) {
+        ASSERT_EQ(rec.snapshot_size, 4u) << "address " << rec.address;
+        const std::size_t offset = static_cast<std::size_t>(rec.address - 0x1000);
+        for (std::size_t i = 0; i < 4; ++i) {
+            EXPECT_EQ(rec.snapshot_data[i], process.bytes()[offset + i])
+                << "address " << rec.address << " byte " << i;
+        }
+    }
+    EXPECT_EQ(results[0].snapshot_data[0], 0x2A);
+
+    // 浮点容差命中:快照必须是内存实值而非搜索 pattern(INV-S3)
+    FakeProcess tolerant(0x2000, 0x40);
+    Float floatType;
+    const tpe::Memory searchValue = {0x00, 0x00, 0xC0, 0x3F}; // 1.5f
+    const tpe::Memory actualValue = {0x01, 0x00, 0xC0, 0x3F}; // 1.5000001f(差 ~1.2e-7 < 1e-6 容差)
+    std::copy(actualValue.begin(), actualValue.end(), tolerant.bytes().begin() + 0x08);
+
+    const std::vector<ScanRecord> floatHits = scanner.firstScan(tolerant, floatType, searchValue);
+    ASSERT_EQ(floatHits.size(), 1u);
+    EXPECT_EQ(floatHits[0].address, 0x2008u);
+    ASSERT_EQ(floatHits[0].snapshot_size, 4u);
+    for (std::size_t i = 0; i < 4; ++i) {
+        EXPECT_EQ(floatHits[0].snapshot_data[i], actualValue[i]) << "byte " << i;
+    }
+}
+
+TEST(NonInteractiveScan, NextScanExactValueStoresFreshSnapshot)
+{
+    // --equal 轮同样写当轮实值快照(取代 Phase 02 FR-028 豁免;FR-001)
+    FakeProcess process(0x1000, 0x100);
+    Int32 type;
+    MemoryScanner scanner;
+    process.bytes()[0x08] = 42;
+
+    std::string error;
+    const auto wanted = type.parse("42", error);
+    ASSERT_TRUE(wanted.has_value()) << error;
+
+    std::vector<ScanRecord> previous{ScanRecord(0x1008)};
+    const std::vector<ScanRecord> kept =
+        scanner.nextScan(process, previous, ScanCondition::ExactValue, type, wanted);
+
+    ASSERT_EQ(kept.size(), 1u);
+    EXPECT_EQ(kept[0].address, 0x1008u);
+    ASSERT_EQ(kept[0].snapshot_size, 4u);
+    EXPECT_EQ(kept[0].snapshot_data[0], 42);
+    EXPECT_EQ(kept[0].snapshot_data[1], 0);
+    EXPECT_EQ(kept[0].snapshot_data[2], 0);
+    EXPECT_EQ(kept[0].snapshot_data[3], 0);
+}
+
+// ============================================================
+// US1 — 无快照记录排除与变化/未变化字节语义
+//   C-S2:Changed/Unchanged 以快照 memcmp 判定;无快照记录一律排除
+//   (FR-002 / INV-S4;修复前 keep=true 兜底为缺陷本源)
+// ============================================================
+
+TEST(NonInteractiveScan, ChangedExcludesRecordsWithoutSnapshot)
+{
+    // 无快照记录:无论地址处值是否变化,均不得默认保留
+    FakeProcess process(0x1000, 0x100);
+    Int32 type;
+    MemoryScanner scanner;
+    process.bytes()[0x08] = 100; // 值未变
+    process.bytes()[0x0C] = 101; // 值已变
+
+    std::vector<ScanRecord> previous{ScanRecord(0x1008), ScanRecord(0x100C)};
+    EXPECT_TRUE(scanner.nextScan(process, previous, ScanCondition::Changed, type).empty())
+        << "无快照记录不得默认保留(C-S2/FR-002)";
+    EXPECT_TRUE(scanner.nextScan(process, previous, ScanCondition::Unchanged, type).empty())
+        << "无快照记录不得默认保留(Unchanged 同样适用)";
+}
+
+TEST(NonInteractiveScan, UnchangedKeepsAllWhenValuesIdentical)
+{
+    // 目标未变:--unchanged 全保留、--changed 为空;保留记录携带当轮实值快照
+    FakeProcess process(0x1000, 0x100);
+    Int32 type;
+    MemoryScanner scanner;
+    process.bytes()[0x08] = 100;
+    process.bytes()[0x0C] = 100;
+
+    std::string error;
+    const auto v100 = type.parse("100", error);
+    ASSERT_TRUE(v100.has_value()) << error;
+    const std::vector<ScanRecord> first = scanner.firstScan(process, type, *v100);
+    ASSERT_EQ(first.size(), 2u);
+
+    const std::vector<ScanRecord> unchanged =
+        scanner.nextScan(process, first, ScanCondition::Unchanged, type);
+    ASSERT_EQ(unchanged.size(), 2u);
+    EXPECT_EQ(unchanged[0].address, 0x1008u);
+    EXPECT_EQ(unchanged[1].address, 0x100Cu);
+    for (const ScanRecord& rec : unchanged) {
+        ASSERT_EQ(rec.snapshot_size, 4u);
+        EXPECT_EQ(rec.snapshot_data[0], 100);
+    }
+    EXPECT_TRUE(scanner.nextScan(process, first, ScanCondition::Changed, type).empty());
+}
+
+// ============================================================
+// US1 — 链式过滤的比较基准(C-S4 / FR-004):
+//   每轮以上一轮实值为基准;快照逐轮更新
+// ============================================================
+
+TEST(NonInteractiveScan, ChainedFiltersUseLatestValueAsBaseline)
+{
+    FakeProcess process(0x1000, 0x100);
+    Int32 type;
+    MemoryScanner scanner;
+    std::string error;
+    const auto v100 = type.parse("100", error);
+    ASSERT_TRUE(v100.has_value()) << error;
+    std::copy(v100->begin(), v100->end(), process.bytes().begin() + 0x08);
+
+    const std::vector<ScanRecord> first = scanner.firstScan(process, type, *v100);
+    ASSERT_EQ(first.size(), 1u);
+
+    // 轮 2:100 → 102 ⇒ --greater 命中(基准 = 首轮实值 100)
+    const auto v102 = type.parse("102", error);
+    ASSERT_TRUE(v102.has_value()) << error;
+    std::copy(v102->begin(), v102->end(), process.bytes().begin() + 0x08);
+    const std::vector<ScanRecord> second =
+        scanner.nextScan(process, first, ScanCondition::Increased, type);
+    ASSERT_EQ(second.size(), 1u);
+    ASSERT_EQ(second[0].snapshot_size, 4u);
+    EXPECT_EQ(second[0].snapshot_data[0], 102); // 快照更新为上一轮实值
+
+    // 轮 3:102 → 105 ⇒ --greater 命中、--less 不命中
+    const auto v105 = type.parse("105", error);
+    ASSERT_TRUE(v105.has_value()) << error;
+    std::copy(v105->begin(), v105->end(), process.bytes().begin() + 0x08);
+    ASSERT_EQ(scanner.nextScan(process, second, ScanCondition::Increased, type).size(), 1u);
+    EXPECT_TRUE(scanner.nextScan(process, second, ScanCondition::Decreased, type).empty());
+
+    // 轮 3':102 → 101 ⇒ --less 命中、--greater 不命中
+    //(若比较基准停留在首轮值 100,101 会被判为递增 ⇒ 本双断言钉住"上一轮实值"基准)
+    const auto v101 = type.parse("101", error);
+    ASSERT_TRUE(v101.has_value()) << error;
+    std::copy(v101->begin(), v101->end(), process.bytes().begin() + 0x08);
+    ASSERT_EQ(scanner.nextScan(process, second, ScanCondition::Decreased, type).size(), 1u);
+    EXPECT_TRUE(scanner.nextScan(process, second, ScanCondition::Increased, type).empty());
+}
+
+// ============================================================
+// US1 — 数值比较按类型语义(C-S3 / FR-003)
+//   有符号按符号扩展、无符号按零扩展、浮点按浮点(string 不参与)
+// ============================================================
+
+TEST(NonInteractiveScan, IncreasedComparesSignedIntegers)
+{
+    FakeProcess process(0x1000, 0x100);
+    Int32 type;
+    MemoryScanner scanner;
+    std::string error;
+
+    // 场景 1:-5 → -3(数值变大)⇒ --greater 命中、--less 不命中
+    const auto minus5 = type.parse("-5", error);
+    ASSERT_TRUE(minus5.has_value()) << error;
+    std::copy(minus5->begin(), minus5->end(), process.bytes().begin() + 0x08);
+    std::vector<ScanRecord> first{ScanRecord(0x1008, *minus5)};
+
+    const auto minus3 = type.parse("-3", error);
+    ASSERT_TRUE(minus3.has_value()) << error;
+    std::copy(minus3->begin(), minus3->end(), process.bytes().begin() + 0x08);
+
+    ASSERT_EQ(scanner.nextScan(process, first, ScanCondition::Increased, type).size(), 1u);
+    EXPECT_TRUE(scanner.nextScan(process, first, ScanCondition::Decreased, type).empty());
+
+    // 场景 2:跨符号边界 5 → -3(数值变小)⇒ --less 命中、--greater 不命中
+    //(零扩展无符号比较会把 0xFFFFFFFD 判为最大值 ⇒ 方向反转,即缺陷本源)
+    const auto plus5 = type.parse("5", error);
+    ASSERT_TRUE(plus5.has_value()) << error;
+    std::copy(plus5->begin(), plus5->end(), process.bytes().begin() + 0x10);
+    std::vector<ScanRecord> second{ScanRecord(0x1010, *plus5)};
+    std::copy(minus3->begin(), minus3->end(), process.bytes().begin() + 0x10);
+
+    const std::vector<ScanRecord> less =
+        scanner.nextScan(process, second, ScanCondition::Decreased, type);
+    ASSERT_EQ(less.size(), 1u);
+    EXPECT_EQ(less[0].address, 0x1010u);
+    EXPECT_TRUE(scanner.nextScan(process, second, ScanCondition::Increased, type).empty());
+}
+
+TEST(NonInteractiveScan, IncreasedComparesUnsignedBytes)
+{
+    // u8:250 → 5(无符号回绕,5 < 250)⇒ --less 命中、--greater 不命中
+    FakeProcess process(0x1000, 0x100);
+    UnsignedByte type;
+    MemoryScanner scanner;
+    std::string error;
+
+    const auto v250 = type.parse("250", error);
+    ASSERT_TRUE(v250.has_value()) << error;
+    std::copy(v250->begin(), v250->end(), process.bytes().begin() + 0x08);
+    const std::vector<ScanRecord> first = scanner.firstScan(process, type, *v250);
+    ASSERT_EQ(first.size(), 1u);
+
+    const auto v5 = type.parse("5", error);
+    ASSERT_TRUE(v5.has_value()) << error;
+    std::copy(v5->begin(), v5->end(), process.bytes().begin() + 0x08);
+
+    const std::vector<ScanRecord> less =
+        scanner.nextScan(process, first, ScanCondition::Decreased, type);
+    ASSERT_EQ(less.size(), 1u);
+    EXPECT_EQ(less[0].address, 0x1008u);
+    EXPECT_TRUE(scanner.nextScan(process, first, ScanCondition::Increased, type).empty());
+}
+
+TEST(NonInteractiveScan, StringNeverMatchesIncreasedOrDecreased)
+{
+    // 变长类型(string → NumericKind::Other)不参与 --greater/--less,一律不保留(C-S3)
+    FakeProcess process(0x1000, 0x100);
+    String type;
+    MemoryScanner scanner;
+    const tpe::Memory text = {'a', 'b', 'c'};
+    std::copy(text.begin(), text.end(), process.bytes().begin() + 0x08);
+    std::vector<ScanRecord> previous{ScanRecord(0x1008, text)};
+
+    EXPECT_TRUE(scanner.nextScan(process, previous, ScanCondition::Increased, type).empty());
+    EXPECT_TRUE(scanner.nextScan(process, previous, ScanCondition::Decreased, type).empty());
+}
+
+TEST(NonInteractiveScan, IncreasedDecreasedCompareFloats)
+{
+    // float:1.5 → 1.4 ⇒ --less 命中、--greater 不命中
+    FakeProcess process(0x1000, 0x100);
+    Float type;
+    MemoryScanner scanner;
+    std::string error;
+
+    const auto v1_5 = type.parse("1.5", error);
+    ASSERT_TRUE(v1_5.has_value()) << error;
+    std::copy(v1_5->begin(), v1_5->end(), process.bytes().begin() + 0x08);
+    const std::vector<ScanRecord> first = scanner.firstScan(process, type, *v1_5);
+    ASSERT_EQ(first.size(), 1u);
+
+    const auto v1_4 = type.parse("1.4", error);
+    ASSERT_TRUE(v1_4.has_value()) << error;
+    std::copy(v1_4->begin(), v1_4->end(), process.bytes().begin() + 0x08);
+
+    const std::vector<ScanRecord> less =
+        scanner.nextScan(process, first, ScanCondition::Decreased, type);
+    ASSERT_EQ(less.size(), 1u);
+    EXPECT_EQ(less[0].address, 0x1008u);
+    EXPECT_TRUE(scanner.nextScan(process, first, ScanCondition::Increased, type).empty());
+
+    // double 同型:2.5 → 2.25 ⇒ --less 命中、--greater 不命中
+    FakeProcess doubleProcess(0x3000, 0x100);
+    Double doubleType;
+    const auto v2_5 = doubleType.parse("2.5", error);
+    ASSERT_TRUE(v2_5.has_value()) << error;
+    std::copy(v2_5->begin(), v2_5->end(), doubleProcess.bytes().begin() + 0x18);
+    const std::vector<ScanRecord> doubleFirst =
+        scanner.firstScan(doubleProcess, doubleType, *v2_5);
+    ASSERT_EQ(doubleFirst.size(), 1u);
+
+    const auto v2_25 = doubleType.parse("2.25", error);
+    ASSERT_TRUE(v2_25.has_value()) << error;
+    std::copy(v2_25->begin(), v2_25->end(), doubleProcess.bytes().begin() + 0x18);
+
+    const std::vector<ScanRecord> doubleLess =
+        scanner.nextScan(doubleProcess, doubleFirst, ScanCondition::Decreased, doubleType);
+    ASSERT_EQ(doubleLess.size(), 1u);
+    EXPECT_TRUE(
+        scanner.nextScan(doubleProcess, doubleFirst, ScanCondition::Increased, doubleType).empty());
+}
+
+// ============================================================
+// US3(Phase 05,缺陷 ②)— u8 单字节写入(C-S5 / FR-006)
+//   经 ScanSession::writeMemory 写入 u8 解析产物:仅目标 1 字节被修改,
+//   相邻 3 字节保持原值(修复前:4 字节写入覆盖相邻字节)。
+// ============================================================
+
+TEST(ScanSessionWrite, WriteU8WritesSingleByte)
+{
+    auto process = std::make_shared<FakeProcess>(0x1000, 0x40);
+    std::fill(process->bytes().begin(), process->bytes().end(), static_cast<tpe::Byte>(0xAA));
+
+    UnsignedByte type;
+    std::string error;
+    const auto parsed = type.parse("200", error);
+    ASSERT_TRUE(parsed.has_value()) << error;
+
+    ScanSession session(process);
+    const Result<void, PlatformError> written = session.writeMemory(0x1008, *parsed);
+    ASSERT_TRUE(written) << written.error().message;
+
+    EXPECT_EQ(process->bytes()[0x08], 200); // 0xC8
+    EXPECT_EQ(process->bytes()[0x09], 0xAA) << "相邻字节不得被写入覆盖(FR-006)";
+    EXPECT_EQ(process->bytes()[0x0A], 0xAA) << "相邻字节不得被写入覆盖(FR-006)";
+    EXPECT_EQ(process->bytes()[0x0B], 0xAA) << "相邻字节不得被写入覆盖(FR-006)";
 }

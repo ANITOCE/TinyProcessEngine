@@ -41,11 +41,13 @@ public:
     ResultStorage() = default;
     ~ResultStorage();
 
-    // Non-copyable; movable
+    // Non-copyable; movable (custom: move operations release the target's
+    // previous resources — close file + delete temp file — and leave the
+    // source in an empty state so nothing is leaked or double-deleted)
     ResultStorage(const ResultStorage&) = delete;
     ResultStorage& operator=(const ResultStorage&) = delete;
-    ResultStorage(ResultStorage&&) noexcept = default;
-    ResultStorage& operator=(ResultStorage&&) noexcept = default;
+    ResultStorage(ResultStorage&& other) noexcept;
+    ResultStorage& operator=(ResultStorage&& other) noexcept;
 
     // ── Write ──
 
@@ -92,6 +94,10 @@ private:
 
     size_t   m_chunkCount = 0;
     uint64_t m_totalCount = 0;
+
+    /// Close the file (if any), delete the temp file (if any) and reset to an
+    /// empty InMemory state. Used by the destructor and by move assignment.
+    void releaseResources();
 
     void writeRecordToDisk(const ScanRecord& record);
     ScanRecord readRecordFromDisk(std::streamoff offset) const;

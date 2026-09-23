@@ -3,6 +3,14 @@ cmake_minimum_required(VERSION 3.10)
 # 定义项目名称和语言
 project(TinyProcessEngine LANGUAGES CXX)
 
+# 测试基础设施（缺陷⑥）：顶层注册 ctest，使任意构建目录可运行 ctest
+enable_testing()
+
+# 测试辅助进程 tpe_test_target 为 C 语言源文件（仅 Linux 构建需要）
+if(UNIX)
+    enable_language(C)
+endif()
+
 # 设置 C++ 标准
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

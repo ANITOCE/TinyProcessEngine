@@ -17,6 +17,18 @@
 #include "MemoryPage.h"
 #include "HelpFunction.h"
 
+/// 数值类型类别:决定增量扫描的数值比较语义(Phase 05 缺陷 ①/FR-003):
+/// - SignedInteger:按有符号数值比较(符号扩展);
+/// - UnsignedInteger:按无符号数值比较(零扩展);
+/// - FloatingPoint:按浮点数值比较;
+/// - Other:非数值(如 string),不参与变大/变小比较。
+enum class NumericKind {
+    SignedInteger,
+    UnsignedInteger,
+    FloatingPoint,
+    Other,
+};
+
 struct ValueType
 {
     static const ValueType &choose_type();
@@ -34,6 +46,10 @@ struct ValueType
     /// 供非交互扫描确定读取宽度,替代交互式 askValue().size()(spec 004 T022a)。
     virtual std::size_t byteWidth() const { return 0; }
 
+    /// 数值类别(默认 Other;`SimpleValueType<T>` 按 traits 派生):
+    /// `Increased`/`Decreased` 按此分派数值比较语义(Phase 05 缺陷 ①/FR-003)。
+    virtual NumericKind numericKind() const { return NumericKind::Other; }
+
     virtual ~ValueType() = default;
 };
 
@@ -49,12 +65,25 @@ struct SimpleValueType : public ValueType
     /// 固定宽度类型:内存宽度即 sizeof(T)。
     std::size_t byteWidth() const override { return sizeof(T); }
 
+    /// traits 派生数值类别:浮点 → FloatingPoint;整数按符号性;其余(如 string)→ Other。
+    NumericKind numericKind() const override
+    {
+        if constexpr (std::is_floating_point_v<T>) {
+            return NumericKind::FloatingPoint;
+        } else if constexpr (std::is_integral_v<T>) {
+            return std::is_signed_v<T> ? NumericKind::SignedInteger
+                                       : NumericKind::UnsignedInteger;
+        } else {
+            return NumericKind::Other;
+        }
+    }
+
     /// 通用非交互解析:整数按 int64 解析后按 T 范围与 isValid 校验;
     /// 浮点等其它类型按 T 直接解析;两者都必须完整消费输入文本。
     std::optional<tpe::Memory> parse(std::string_view text, std::string &error) const override;
 
     virtual tpe::Memory representation(const T &value) const;
-    virtual bool isValid(const T &value) const { return true; }
+    virtual bool isValid(const T & /*value*/) const { return true; }
     virtual std::istream &read(std::istream &in, T &t) const { return in >> t; }
 };
 
@@ -66,13 +95,20 @@ struct UnsignedByte : SimpleValueType<std::uint32_t>
 
     bool isValid(const std::uint32_t &value) const override
     {
-        return 0 <= value && value <= 255; // check that it is 8 bits
+        return value <= 255; // check that it is 8 bits
     }
-    tpe::Memory representation(const int32_t &value) const
+
+    /// Phase 05 缺陷 ②/FR-006:签名必须与基类虚函数一致(`const std::uint32_t &`)
+    /// 才构成 override;旧签名 `const int32_t &` 不覆盖基类,`parse()`/`askValue()`
+    /// 虚派发走基类 4 字节实现。函数体保持等价:只取最低 1 字节。
+    tpe::Memory representation(const std::uint32_t &value) const override
     {
         uint8_t byte = value;
         return {static_cast<tpe::Byte>(byte)}; // only extract 1 byte
     }
+
+    /// 类型宽度 = 1 字节(基类 `SimpleValueType<std::uint32_t>` 默认 4,必须覆写)。
+    std::size_t byteWidth() const override { return 1; }
 };
 
 struct Character : SimpleValueType<char>

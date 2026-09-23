@@ -1,6 +1,12 @@
 #include "ProcessEngine.h"
 
 ProcessEngine::ProcessEngine()
+    : m_os(createPlatformOS())
+{
+}
+
+ProcessEngine::ProcessEngine(std::unique_ptr<PlatformOS> os)
+    : m_os(std::move(os))
 {
 }
 
@@ -8,12 +14,18 @@ ProcessEngine::~ProcessEngine()
 {
 }
 
-void ProcessEngine::getProcessList() const
+Result<void, PlatformError> ProcessEngine::getProcessList() const
 {
+    // 缺陷⑧(FR-023/C-P5):平台枚举失败优先上报;不得以空列表伪装成功。
+    const std::optional<PlatformError>& enumerationError = m_os->enumerationError();
+    if (enumerationError.has_value()) {
+        return Result<void, PlatformError>::error(*enumerationError);
+    }
     for(auto process : m_os->ProcessList)
     {
         std::cout << "PID: " << process->getPid() << " ProcessName: " << process->getProcessName() << std::endl;
     }
+    return Result<void, PlatformError>::success();
 }
 
 std::shared_ptr<PlatformProcess> ProcessEngine::openProcess(Pid_t pid)

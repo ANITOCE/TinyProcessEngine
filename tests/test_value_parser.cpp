@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <initializer_list>
@@ -9,6 +10,7 @@
 
 #include "CliParser.h"
 #include "CliValueType.h"
+#include "MemoryScanner.h"
 #include "ValueFormatter.h"
 #include "ValueType.h"
 
@@ -404,6 +406,19 @@ TEST(ValueFormatter, FormatsUnsignedByteAsUnsignedDecimal)
     EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0xFF}), cliType("u8")), "255");
 }
 
+// Phase 05 US3(缺陷 ②)/ FR-006 / C-S5:u8.parse 产出的快照必须可按 1 字节
+// 解码为十进制(修复前:parse 产 4 字节 → 宽度不符 → 回退十六进制字节串)
+TEST(ValueFormatter, ShowsNumberForSingleByteU8Snapshot)
+{
+    const tpe::cli::CliValueType& u8 = cliType("u8");
+    std::string error;
+    const auto parsed = u8.type->parse("200", error);
+    ASSERT_TRUE(parsed.has_value()) << error;
+
+    const ScanRecord record(0x1008, *parsed);
+    EXPECT_EQ(tpe::cli::formatValue(record, u8), "200");
+}
+
 TEST(ValueFormatter, FormatsFloatingPointWithDefaultStreamFormatting)
 {
     EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0x00, 0x00, 0xC0, 0x3F}), cliType("float")), "1.5");
@@ -458,4 +473,86 @@ TEST(ListRendering, FormatsMatchesTotalLine)
 TEST(ListRendering, FormatsTruncationNotice)
 {
     EXPECT_EQ(tpe::cli::formatTruncationNotice(5234), "... and 5234 more");
+}
+
+// ---------------------------------------------------------------------------
+// 首扫快照端到端(Phase 05 US1 T012 / FR-005 / SC-003):
+// `firstScan` 产出的记录必须可直接经 `formatListEntry` 显示数值;
+// 修复前首扫不写快照 → 值列空白(C-S1)。
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// 单页内存进程替身(test_scanner.cpp 的 FakeProcess 最小同构实现)。
+class FirstScanProcess : public PlatformProcess
+{
+public:
+    FirstScanProcess(tpe::Address base, tpe::Size size)
+        : PlatformProcess(static_cast<Pid_t>(5252)),
+          m_base(base),
+          m_size(size),
+          m_bytes(static_cast<std::size_t>(size), 0) {}
+
+    tpe::Memory& bytes() { return m_bytes; }
+
+    std::vector<MemoryPage> getCheatablePages() const override
+    {
+        return {MemoryPage(m_base, m_size)};
+    }
+
+    Result<tpe::Memory, PlatformError> read(MemoryPage page) const override
+    {
+        if (!contains(page.start, page.size)) {
+            return Result<tpe::Memory, PlatformError>::error(makeError());
+        }
+        const std::size_t offset = static_cast<std::size_t>(page.start - m_base);
+        return Result<tpe::Memory, PlatformError>::success(
+            tpe::Memory(m_bytes.begin() + offset, m_bytes.begin() + offset + page.size));
+    }
+
+    Result<void, PlatformError> write(tpe::Address address, const tpe::Memory& value) override
+    {
+        if (!contains(address, value.size())) {
+            return Result<void, PlatformError>::error(makeError());
+        }
+        std::copy(value.begin(), value.end(),
+                  m_bytes.begin() + static_cast<std::size_t>(address - m_base));
+        return Result<void, PlatformError>::success();
+    }
+
+private:
+    bool contains(tpe::Address address, tpe::Size length) const
+    {
+        if (address < m_base) return false;
+        const tpe::Size offset = address - m_base;
+        return offset <= m_size && length <= m_size - offset;
+    }
+
+    PlatformError makeError() const
+    {
+        return PlatformError{"FirstScanProcess", static_cast<unsigned long>(getPid()), 0,
+                              "out of range"};
+    }
+
+    tpe::Address m_base;
+    tpe::Size m_size;
+    tpe::Memory m_bytes;
+};
+
+} // namespace
+
+TEST(ValueFormatter, ShowsNumberForFirstScanSnapshot)
+{
+    FirstScanProcess process(0x1000, 0x40);
+    MemoryScanner scanner;
+    process.bytes()[0x08] = 42;
+
+    const tpe::cli::CliValueType& i32 = cliType("i32");
+    std::string error;
+    const auto pattern = i32.type->parse("42", error);
+    ASSERT_TRUE(pattern.has_value()) << error;
+
+    const std::vector<ScanRecord> records = scanner.firstScan(process, *i32.type, *pattern);
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(tpe::cli::formatListEntry(records[0], i32), "  0x0000000000001008 | 42");
 }
