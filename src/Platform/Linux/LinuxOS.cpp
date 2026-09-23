@@ -62,12 +62,12 @@ std::string LinuxOS::readProcessName(Pid_t pid)
 // ============================================================
 // 进程枚举
 // ============================================================
-std::vector<Pid_t> LinuxOS::getAllProcessesPid()
+Result<std::vector<Pid_t>, PlatformError> LinuxOS::getAllProcessesPid()
 {
     std::vector<Pid_t> pids;
     DIR *dir = opendir("/proc");
     if (!dir)
-        return pids;
+        return Result<std::vector<Pid_t>, PlatformError>::success(std::move(pids));
     struct dirent *entry;
     while ((entry = readdir(dir)) != nullptr)
     {
@@ -79,7 +79,7 @@ std::vector<Pid_t> LinuxOS::getAllProcessesPid()
         }
     }
     closedir(dir);
-    return pids;
+    return Result<std::vector<Pid_t>, PlatformError>::success(std::move(pids));
 }
 
 void LinuxOS::getAllProcesses(std::vector<Pid_t> allPid)

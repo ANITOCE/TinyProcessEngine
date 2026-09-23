@@ -272,16 +272,21 @@ int runRepl(ProcessEngine& engine, const std::string& processName)
 
 } // namespace
 
-int runCli(const std::vector<std::string>& args)
+int runCliWithEngine(const std::vector<std::string>& args, ProcessEngine& engine)
 {
     const tpe::cli::TerminalCommand command = tpe::cli::parseTerminalCommand(args);
 
-    ProcessEngine engine;
-
     switch (command.kind) {
-    case tpe::cli::TerminalCommandKind::AllProcesses:
-        engine.getProcessList(); // 契约 C-T1:沿用 “PID: N ProcessName: X” 输出
+    case tpe::cli::TerminalCommandKind::AllProcesses: {
+        // 契约 C-T1/C-P5:成功 → 沿用 “PID: N ProcessName: X” 输出 + 退出码 0;
+        // 枚举失败 → stderr 一行 + 运行期失败退出码。
+        const Result<void, PlatformError> listed = engine.getProcessList();
+        if (!listed.has_value()) {
+            std::cerr << "Failed to enumerate processes: " << listed.error().message << std::endl;
+            return tpe::cli::kExitRuntimeError;
+        }
         return tpe::cli::kExitOk;
+    }
 
     case tpe::cli::TerminalCommandKind::SearchProcess: {
         const std::optional<std::string> name = engine.searchProcess(command.pid);
@@ -312,6 +317,12 @@ int runCli(const std::vector<std::string>& args)
         // run() 仅转发三类执行命令到此处;其余分类(含 UsageError)在此不可达。
         return tpe::cli::kExitUsageError;
     }
+}
+
+int runCli(const std::vector<std::string>& args)
+{
+    ProcessEngine engine;
+    return runCliWithEngine(args, engine);
 }
 
 } // namespace tpe::app

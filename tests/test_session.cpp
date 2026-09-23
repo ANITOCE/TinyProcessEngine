@@ -589,3 +589,99 @@ TEST(ScanSessionTest, SessionUndoAcrossBackendsKeepsContentAndCleansFiles) {
     EXPECT_FALSE(session2.isDiskBacked());
     EXPECT_EQ(countTempScanFiles(), filesBefore);
 }
+
+// ============================================================
+// US6(缺陷⑧)— 平台枚举替身与枚举失败信号(FR-023; C-P5)
+// ============================================================
+#include "Platform.h"
+#include "ProcessEngine.h"
+
+#include <memory>
+#include <utility>
+#include <vector>
+
+namespace {
+
+/// 伪进程:仅承载 PID 与名称(引擎列表展示路径)。
+class FakePlatformProcess : public PlatformProcess {
+public:
+    FakePlatformProcess(Pid_t pid, std::string name)
+        : PlatformProcess(pid, std::move(name)) {}
+
+    std::vector<MemoryPage> getCheatablePages() const override { return {}; }
+
+    Result<tpe::Memory, PlatformError> read(MemoryPage) const override
+    {
+        return Result<tpe::Memory, PlatformError>::error(notSupported());
+    }
+
+    Result<void, PlatformError> write(tpe::Address, const tpe::Memory&) override
+    {
+        return Result<void, PlatformError>::error(notSupported());
+    }
+
+private:
+    PlatformError notSupported() const
+    {
+        return PlatformError{"FakePlatformProcess",
+                             static_cast<unsigned long>(getPid()), 0, "not supported"};
+    }
+};
+
+/// 平台替身(US6/缺陷⑧):可配置进程列表 / 枚举错误 / open 结果。
+class FakePlatformOS : public PlatformOS {
+public:
+    void setProcessList(std::vector<std::pair<Pid_t, std::string>> entries)
+    {
+        ProcessList.clear();
+        for (const auto& entry : entries) {
+            ProcessList.push_back(
+                std::make_shared<FakePlatformProcess>(entry.first, entry.second));
+        }
+    }
+
+    /// 模拟平台枚举失败:平台实现于失败时填充 enumerationError(缺陷⑧契约)。
+    void setEnumerationError(PlatformError err) { m_enumerationError = std::move(err); }
+
+    void setOpenResult(std::shared_ptr<PlatformProcess> process)
+    {
+        m_openResult = std::move(process);
+    }
+
+    std::shared_ptr<PlatformProcess> open(Pid_t) override { return m_openResult; }
+
+    Result<std::vector<Pid_t>, PlatformError> getAllProcessesPid() override
+    {
+        if (m_enumerationError.has_value()) {
+            return Result<std::vector<Pid_t>, PlatformError>::error(*m_enumerationError);
+        }
+        std::vector<Pid_t> pids;
+        for (const auto& process : ProcessList) {
+            pids.push_back(process->getPid());
+        }
+        return Result<std::vector<Pid_t>, PlatformError>::success(std::move(pids));
+    }
+
+    void getAllProcesses(std::vector<Pid_t>) override {}
+
+private:
+    std::shared_ptr<PlatformProcess> m_openResult;
+};
+
+} // namespace
+
+/// FR-023/C-P5:平台枚举失败必须作为可判定信号上达引擎,不得以空列表伪装成功。
+TEST(ProcessEngineTest, GetProcessListSurfacesEnumerationFailure)
+{
+    auto os = std::make_unique<FakePlatformOS>();
+    os->setEnumerationError(
+        PlatformError{"EnumProcesses", 0, 5, "EnumProcesses failed (simulated)"});
+    ProcessEngine engine(std::move(os));
+
+    const Result<void, PlatformError> listed = engine.getProcessList();
+
+    EXPECT_FALSE(listed.has_value()) << "enumeration failure must surface as a Result error";
+    if (!listed.has_value()) {
+        EXPECT_EQ(listed.error().message, "EnumProcesses failed (simulated)");
+    }
+}

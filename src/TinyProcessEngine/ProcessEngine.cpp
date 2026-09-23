@@ -1,19 +1,30 @@
 #include "ProcessEngine.h"
 
 ProcessEngine::ProcessEngine()
+    : m_os(createPlatformOS())
 {
+}
+
+ProcessEngine::ProcessEngine(std::unique_ptr<PlatformOS> os)
+    // 红阶段(TDD):注入接缝已建、尚未接通——保持默认平台创建(行为等价);
+    // 绿色提交改为持有注入的 OS(缺陷⑧)。
+    : m_os(createPlatformOS())
+{
+    (void)os;
 }
 
 ProcessEngine::~ProcessEngine()
 {
 }
 
-void ProcessEngine::getProcessList() const
+Result<void, PlatformError> ProcessEngine::getProcessList() const
 {
     for(auto process : m_os->ProcessList)
     {
         std::cout << "PID: " << process->getPid() << " ProcessName: " << process->getProcessName() << std::endl;
     }
+    // 红阶段(TDD):恒成功(行为等价);绿色提交改为先上报 enumerationError。
+    return Result<void, PlatformError>::success();
 }
 
 std::shared_ptr<PlatformProcess> ProcessEngine::openProcess(Pid_t pid)

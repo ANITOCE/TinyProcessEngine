@@ -9,7 +9,10 @@
 
 WindowsOS::WindowsOS()
 {
-    getAllProcesses(getAllProcessesPid());
+    auto pids = getAllProcessesPid();
+    if (pids) {
+        getAllProcesses(pids.value());
+    }
 }
 
 WindowsOS::~WindowsOS()
@@ -17,16 +20,17 @@ WindowsOS::~WindowsOS()
     
 }
 
-std::vector<Pid_t> WindowsOS::getAllProcessesPid() {
+Result<std::vector<Pid_t>, PlatformError> WindowsOS::getAllProcessesPid() {
     std::vector<Pid_t> processIds(1024);
     DWORD cbNeeded = 0;
     if (!EnumProcesses(processIds.data(), processIds.size() * sizeof(Pid_t), &cbNeeded))
     {
-        return {};
+        // 红阶段(TDD,行为等价):失败仍返回空列表;绿色提交改为上报枚举错误。
+        return Result<std::vector<Pid_t>, PlatformError>::success({});
     }
     size_t count = cbNeeded / sizeof(DWORD);
     processIds.resize(count);
-    return processIds;
+    return Result<std::vector<Pid_t>, PlatformError>::success(std::move(processIds));
 }
 
 std::shared_ptr<PlatformProcess> WindowsOS::open(Pid_t pid)

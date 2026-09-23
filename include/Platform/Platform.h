@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -50,10 +51,18 @@ public:
     std::vector<std::shared_ptr<PlatformProcess>> ProcessList;
 
     virtual std::shared_ptr<PlatformProcess> open(Pid_t pid) = 0;
-    virtual std::vector<Pid_t> getAllProcessesPid() = 0;
+    // 缺陷⑧(FR-023;C-P5):枚举失败通过返回值上报,不得以空列表伪装成功。
+    virtual Result<std::vector<Pid_t>, PlatformError> getAllProcessesPid() = 0;
     virtual void getAllProcesses(std::vector<Pid_t> allPid)= 0;
 
+    /// 最近一次枚举失败的原因(缺陷⑧):枚举成功(含空列表)时为空。
+    const std::optional<PlatformError>& enumerationError() const { return m_enumerationError; }
+
     virtual ~PlatformOS() = default;
+
+protected:
+    // 由平台实现在枚举失败时填充(缺陷⑧;C-P5)。
+    std::optional<PlatformError> m_enumerationError;
 };
 
 std::shared_ptr<PlatformProcess> createPlatformProcess(Pid_t pid, std::string p_name);

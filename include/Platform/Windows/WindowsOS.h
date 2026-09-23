@@ -14,7 +14,8 @@ public:
     ~WindowsOS();
     std::shared_ptr<PlatformProcess> open(Pid_t pid) override;
 
-    std::vector<Pid_t> getAllProcessesPid() override;
+    // 缺陷⑧(FR-023/C-P5):枚举失败经返回值与 enumerationError() 上报。
+    Result<std::vector<Pid_t>, PlatformError> getAllProcessesPid() override;
 
     void getAllProcesses(std::vector<Pid_t> allPid) override;
 };
