@@ -4,6 +4,30 @@
 
 #include <filesystem>
 #include <cstring>
+#include <string>
+#include <system_error>
+
+// Count temp files created by ResultStorage disk migration (tpe_scan_*.tmp)
+static size_t countTempScanFiles() {
+    size_t count = 0;
+    std::error_code ec;
+    const auto dir = std::filesystem::temp_directory_path(ec);
+    if (ec) return 0;
+    std::filesystem::directory_iterator it(dir, ec);
+    const std::filesystem::directory_iterator end;
+    while (!ec && it != end) {
+        const auto& entry = *it;
+        std::error_code entryEc;
+        if (entry.is_regular_file(entryEc) && !entryEc) {
+            const std::string name = entry.path().filename().string();
+            if (name.rfind("tpe_scan_", 0) == 0 && entry.path().extension() == ".tmp") {
+                ++count;
+            }
+        }
+        it.increment(ec);
+    }
+    return count;
+}
 
 // ============================================================
 // ResultStorage — Append + Read Back
@@ -381,4 +405,187 @@ TEST(ScanSessionTest, ExportTextFormat) {
 
     file.close();
     std::filesystem::remove(tmpPath, ec);
+}
+
+// ============================================================
+// US4 (缺陷⑤) — ResultStorage move semantics
+// ============================================================
+TEST(ResultStorageTest, MoveAssignmentReleasesPreviousResources) {
+    const auto tempDir = std::filesystem::temp_directory_path();
+
+    ResultStorage a;
+    for (size_t i = 0; i < 3; ++i) {
+        a.append(ScanRecord(static_cast<tpe::Address>(0xA000 + i)));
+    }
+    auto errA = a.migrateToDisk(tempDir);
+    ASSERT_FALSE(errA.has_value()) << errA.value_or("");
+    const auto oldPathA = a.diskPath();
+    ASSERT_FALSE(oldPathA.empty());
+    ASSERT_TRUE(std::filesystem::exists(oldPathA));
+
+    ResultStorage b;
+    for (size_t i = 0; i < 2; ++i) {
+        b.append(ScanRecord(static_cast<tpe::Address>(0xB000 + i)));
+    }
+    auto errB = b.migrateToDisk(tempDir);
+    ASSERT_FALSE(errB.has_value()) << errB.value_or("");
+    const auto pathB = b.diskPath();
+    ASSERT_FALSE(pathB.empty());
+    ASSERT_TRUE(std::filesystem::exists(pathB));
+
+    a = std::move(b);
+
+    // Move assignment must release the previous resources of the target
+    EXPECT_FALSE(std::filesystem::exists(oldPathA))
+        << "move assignment must delete the previous temp file of the target";
+
+    // Target now owns the source resources
+    EXPECT_EQ(a.totalCount(), 2u);
+    EXPECT_TRUE(a.isDiskBacked());
+    EXPECT_EQ(a.diskPath(), pathB);
+    auto a0 = a.readAt(0);
+    ASSERT_TRUE(a0.has_value());
+    EXPECT_EQ(a0->address, 0xB000ULL);
+    auto a1 = a.readAt(1);
+    ASSERT_TRUE(a1.has_value());
+    EXPECT_EQ(a1->address, 0xB001ULL);
+
+    // Source is left empty
+    EXPECT_EQ(b.totalCount(), 0u);
+    EXPECT_EQ(b.backend(), StorageBackend::InMemory);
+    EXPECT_FALSE(b.isDiskBacked());
+    EXPECT_TRUE(b.diskPath().empty());
+
+    // Red-run hygiene: remove leaked file if move assignment failed to do so
+    std::error_code cleanupEc;
+    std::filesystem::remove(oldPathA, cleanupEc);
+}
+
+// ============================================================
+// US4 (缺陷⑤) — Disk backend threshold (FR-013)
+//   exactly 1,000,000 records stay in memory;
+//   the 1,000,001st record switches to disk before being stored
+// ============================================================
+TEST(ScanSessionTest, SessionMigratesToDiskBeyondThreshold) {
+    constexpr uint64_t kThreshold = 1'000'000;
+
+    // Boundary: exactly 1,000,000 records -> in-memory, no temp file created
+    const size_t filesBefore = countTempScanFiles();
+    {
+        ScanSession session(makeNullProcess());
+        MockValueType mockType;
+        session.beginScan(mockType);
+
+        std::vector<ScanRecord> results;
+        results.reserve(static_cast<size_t>(kThreshold));
+        for (uint64_t i = 0; i < kThreshold; ++i) {
+            results.emplace_back(static_cast<tpe::Address>(0x10000 + i));
+        }
+        session.commitFirstScan(std::move(results));
+
+        EXPECT_EQ(session.resultCount(), kThreshold);
+        EXPECT_FALSE(session.isDiskBacked());
+        EXPECT_EQ(countTempScanFiles(), filesBefore);
+
+        auto first = session.resultAt(0);
+        ASSERT_TRUE(first.has_value());
+        EXPECT_EQ(first->address, static_cast<tpe::Address>(0x10000));
+        auto last = session.resultAt(kThreshold - 1);
+        ASSERT_TRUE(last.has_value());
+        EXPECT_EQ(last->address, static_cast<tpe::Address>(0x10000 + kThreshold - 1));
+    }
+    EXPECT_EQ(countTempScanFiles(), filesBefore);
+
+    // Beyond threshold: 1,000,001 records -> disk-backed, one temp file exists
+    {
+        ScanSession session(makeNullProcess());
+        MockValueType mockType;
+        session.beginScan(mockType);
+
+        std::vector<ScanRecord> results;
+        results.reserve(static_cast<size_t>(kThreshold) + 1);
+        for (uint64_t i = 0; i <= kThreshold; ++i) {
+            results.emplace_back(static_cast<tpe::Address>(0x20000 + i));
+        }
+        session.commitFirstScan(std::move(results));
+
+        EXPECT_EQ(session.resultCount(), kThreshold + 1);
+        EXPECT_TRUE(session.isDiskBacked());
+        EXPECT_EQ(countTempScanFiles(), filesBefore + 1);
+
+        auto first = session.resultAt(0);
+        ASSERT_TRUE(first.has_value());
+        EXPECT_EQ(first->address, static_cast<tpe::Address>(0x20000));
+        auto last = session.resultAt(kThreshold);
+        ASSERT_TRUE(last.has_value());
+        EXPECT_EQ(last->address, static_cast<tpe::Address>(0x20000 + kThreshold));
+    }
+    // Session destructor must delete the temp file
+    EXPECT_EQ(countTempScanFiles(), filesBefore);
+}
+
+// ============================================================
+// US4 (缺陷⑤) — Undo across backends (FR-014/FR-015)
+// ============================================================
+TEST(ScanSessionTest, SessionUndoAcrossBackendsKeepsContentAndCleansFiles) {
+    constexpr uint64_t kBig = 1'000'001;
+    const size_t filesBefore = countTempScanFiles();
+
+    ScanSession session(makeNullProcess());
+    MockValueType mockType;
+    session.beginScan(mockType);
+
+    // Round 1: small in-memory result set
+    std::vector<ScanRecord> r1;
+    r1.emplace_back(ScanRecord(0x1000));
+    r1.emplace_back(ScanRecord(0x2000));
+    r1.emplace_back(ScanRecord(0x3000));
+    session.commitFirstScan(std::move(r1));
+    EXPECT_FALSE(session.isDiskBacked());
+
+    // Round 2: beyond threshold -> disk backend
+    std::vector<ScanRecord> r2;
+    r2.reserve(static_cast<size_t>(kBig));
+    for (uint64_t i = 0; i < kBig; ++i) {
+        r2.emplace_back(static_cast<tpe::Address>(0x40000 + i));
+    }
+    session.commitNextScan(ScanCondition::Changed, std::move(r2));
+    EXPECT_TRUE(session.isDiskBacked());
+    EXPECT_EQ(session.resultCount(), kBig);
+    EXPECT_EQ(countTempScanFiles(), filesBefore + 1);
+
+    // Undo: content returns to round 1; round-2 disk file is deleted
+    session.undo();
+    EXPECT_FALSE(session.isDiskBacked());
+    EXPECT_EQ(session.resultCount(), 3u);
+    auto u0 = session.resultAt(0);
+    ASSERT_TRUE(u0.has_value());
+    EXPECT_EQ(u0->address, 0x1000ULL);
+    auto u2 = session.resultAt(2);
+    ASSERT_TRUE(u2.has_value());
+    EXPECT_EQ(u2->address, 0x3000ULL);
+    EXPECT_FALSE(session.resultAt(3).has_value());
+    EXPECT_EQ(countTempScanFiles(), filesBefore);
+
+    // close() releases everything with no residue
+    session.close();
+    EXPECT_EQ(session.resultCount(), 0u);
+    EXPECT_EQ(countTempScanFiles(), filesBefore);
+
+    // beginScan() after a disk-backed round also cleans up
+    ScanSession session2(makeNullProcess());
+    session2.beginScan(mockType);
+    std::vector<ScanRecord> r3;
+    r3.reserve(static_cast<size_t>(kBig));
+    for (uint64_t i = 0; i < kBig; ++i) {
+        r3.emplace_back(static_cast<tpe::Address>(0x80000 + i));
+    }
+    session2.commitFirstScan(std::move(r3));
+    EXPECT_TRUE(session2.isDiskBacked());
+    EXPECT_EQ(countTempScanFiles(), filesBefore + 1);
+
+    session2.beginScan(mockType);
+    EXPECT_EQ(session2.resultCount(), 0u);
+    EXPECT_FALSE(session2.isDiskBacked());
+    EXPECT_EQ(countTempScanFiles(), filesBefore);
 }
