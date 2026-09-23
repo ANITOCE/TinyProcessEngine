@@ -152,6 +152,10 @@ public:
 
     std::size_t byteWidth() const override { return 4; } // 模拟 4 字节类型
 
+    /// 数值分派对齐真实整数类型(Phase 05 T013):替身按无符号整数语义参与
+    /// --greater/--less;修复前实现按零扩展无符号比较,故两者语义等价。
+    NumericKind numericKind() const override { return NumericKind::UnsignedInteger; }
+
     mutable int m_askCalls = 0;
 };
 
