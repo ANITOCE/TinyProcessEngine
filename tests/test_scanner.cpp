@@ -465,3 +465,127 @@ TEST(NonInteractiveScan, ChainedFiltersUseLatestValueAsBaseline)
     ASSERT_EQ(scanner.nextScan(process, second, ScanCondition::Decreased, type).size(), 1u);
     EXPECT_TRUE(scanner.nextScan(process, second, ScanCondition::Increased, type).empty());
 }
+
+// ============================================================
+// US1 — 数值比较按类型语义(C-S3 / FR-003)
+//   有符号按符号扩展、无符号按零扩展、浮点按浮点(string 不参与)
+// ============================================================
+
+TEST(NonInteractiveScan, IncreasedComparesSignedIntegers)
+{
+    FakeProcess process(0x1000, 0x100);
+    Int32 type;
+    MemoryScanner scanner;
+    std::string error;
+
+    // 场景 1:-5 → -3(数值变大)⇒ --greater 命中、--less 不命中
+    const auto minus5 = type.parse("-5", error);
+    ASSERT_TRUE(minus5.has_value()) << error;
+    std::copy(minus5->begin(), minus5->end(), process.bytes().begin() + 0x08);
+    std::vector<ScanRecord> first{ScanRecord(0x1008, *minus5)};
+
+    const auto minus3 = type.parse("-3", error);
+    ASSERT_TRUE(minus3.has_value()) << error;
+    std::copy(minus3->begin(), minus3->end(), process.bytes().begin() + 0x08);
+
+    ASSERT_EQ(scanner.nextScan(process, first, ScanCondition::Increased, type).size(), 1u);
+    EXPECT_TRUE(scanner.nextScan(process, first, ScanCondition::Decreased, type).empty());
+
+    // 场景 2:跨符号边界 5 → -3(数值变小)⇒ --less 命中、--greater 不命中
+    //(零扩展无符号比较会把 0xFFFFFFFD 判为最大值 ⇒ 方向反转,即缺陷本源)
+    const auto plus5 = type.parse("5", error);
+    ASSERT_TRUE(plus5.has_value()) << error;
+    std::copy(plus5->begin(), plus5->end(), process.bytes().begin() + 0x10);
+    std::vector<ScanRecord> second{ScanRecord(0x1010, *plus5)};
+    std::copy(minus3->begin(), minus3->end(), process.bytes().begin() + 0x10);
+
+    const std::vector<ScanRecord> less =
+        scanner.nextScan(process, second, ScanCondition::Decreased, type);
+    ASSERT_EQ(less.size(), 1u);
+    EXPECT_EQ(less[0].address, 0x1010u);
+    EXPECT_TRUE(scanner.nextScan(process, second, ScanCondition::Increased, type).empty());
+}
+
+TEST(NonInteractiveScan, IncreasedComparesUnsignedBytes)
+{
+    // u8:250 → 5(无符号回绕,5 < 250)⇒ --less 命中、--greater 不命中
+    FakeProcess process(0x1000, 0x100);
+    UnsignedByte type;
+    MemoryScanner scanner;
+    std::string error;
+
+    const auto v250 = type.parse("250", error);
+    ASSERT_TRUE(v250.has_value()) << error;
+    std::copy(v250->begin(), v250->end(), process.bytes().begin() + 0x08);
+    const std::vector<ScanRecord> first = scanner.firstScan(process, type, *v250);
+    ASSERT_EQ(first.size(), 1u);
+
+    const auto v5 = type.parse("5", error);
+    ASSERT_TRUE(v5.has_value()) << error;
+    std::copy(v5->begin(), v5->end(), process.bytes().begin() + 0x08);
+
+    const std::vector<ScanRecord> less =
+        scanner.nextScan(process, first, ScanCondition::Decreased, type);
+    ASSERT_EQ(less.size(), 1u);
+    EXPECT_EQ(less[0].address, 0x1008u);
+    EXPECT_TRUE(scanner.nextScan(process, first, ScanCondition::Increased, type).empty());
+}
+
+TEST(NonInteractiveScan, StringNeverMatchesIncreasedOrDecreased)
+{
+    // 变长类型(string → NumericKind::Other)不参与 --greater/--less,一律不保留(C-S3)
+    FakeProcess process(0x1000, 0x100);
+    String type;
+    MemoryScanner scanner;
+    const tpe::Memory text = {'a', 'b', 'c'};
+    std::copy(text.begin(), text.end(), process.bytes().begin() + 0x08);
+    std::vector<ScanRecord> previous{ScanRecord(0x1008, text)};
+
+    EXPECT_TRUE(scanner.nextScan(process, previous, ScanCondition::Increased, type).empty());
+    EXPECT_TRUE(scanner.nextScan(process, previous, ScanCondition::Decreased, type).empty());
+}
+
+TEST(NonInteractiveScan, IncreasedDecreasedCompareFloats)
+{
+    // float:1.5 → 1.4 ⇒ --less 命中、--greater 不命中
+    FakeProcess process(0x1000, 0x100);
+    Float type;
+    MemoryScanner scanner;
+    std::string error;
+
+    const auto v1_5 = type.parse("1.5", error);
+    ASSERT_TRUE(v1_5.has_value()) << error;
+    std::copy(v1_5->begin(), v1_5->end(), process.bytes().begin() + 0x08);
+    const std::vector<ScanRecord> first = scanner.firstScan(process, type, *v1_5);
+    ASSERT_EQ(first.size(), 1u);
+
+    const auto v1_4 = type.parse("1.4", error);
+    ASSERT_TRUE(v1_4.has_value()) << error;
+    std::copy(v1_4->begin(), v1_4->end(), process.bytes().begin() + 0x08);
+
+    const std::vector<ScanRecord> less =
+        scanner.nextScan(process, first, ScanCondition::Decreased, type);
+    ASSERT_EQ(less.size(), 1u);
+    EXPECT_EQ(less[0].address, 0x1008u);
+    EXPECT_TRUE(scanner.nextScan(process, first, ScanCondition::Increased, type).empty());
+
+    // double 同型:2.5 → 2.25 ⇒ --less 命中、--greater 不命中
+    FakeProcess doubleProcess(0x3000, 0x100);
+    Double doubleType;
+    const auto v2_5 = doubleType.parse("2.5", error);
+    ASSERT_TRUE(v2_5.has_value()) << error;
+    std::copy(v2_5->begin(), v2_5->end(), doubleProcess.bytes().begin() + 0x18);
+    const std::vector<ScanRecord> doubleFirst =
+        scanner.firstScan(doubleProcess, doubleType, *v2_5);
+    ASSERT_EQ(doubleFirst.size(), 1u);
+
+    const auto v2_25 = doubleType.parse("2.25", error);
+    ASSERT_TRUE(v2_25.has_value()) << error;
+    std::copy(v2_25->begin(), v2_25->end(), doubleProcess.bytes().begin() + 0x18);
+
+    const std::vector<ScanRecord> doubleLess =
+        scanner.nextScan(doubleProcess, doubleFirst, ScanCondition::Decreased, doubleType);
+    ASSERT_EQ(doubleLess.size(), 1u);
+    EXPECT_TRUE(
+        scanner.nextScan(doubleProcess, doubleFirst, ScanCondition::Increased, doubleType).empty());
+}
