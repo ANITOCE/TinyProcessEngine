@@ -141,7 +141,7 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 | Phase | 名称 | 目标(一句话) | 依赖 | 产出 | 状态 |
 |---|---|---|---|---|---|
 | Phase 04 | CLI 交互重构 | 按《CLI 交互规范》落地终端旗标命令、REPL、startup 分层与 Test.exe,废弃旧交互流程 | 无(前置 Phase 01–03 已完成) | `specs/004-cli-interaction-refactor` | `merged`(2026-09-21) |
-| Phase 05 | 遗留缺陷修复 | 清零 7 项审计缺陷 + 1 项 Phase 04 移交缺陷(`--all-processes` 枚举失败信号),每项先复现后修复并带回归测试 | Phase 04 | `specs/005-defect-remediation` | `planned` |
+| Phase 05 | 遗留缺陷修复 | 清零 7 项审计缺陷 + 1 项 Phase 04 移交缺陷(`--all-processes` 枚举失败信号),每项先复现后修复并带回归测试 | Phase 04 | `specs/005-defect-remediation` | `merged`(2026-09-24) |
 | Phase 06 | 规范符合性收敛 | 收敛审计规范偏差:命名空间、头文件风格、库层异常、构建告警 | Phase 05 | `specs/006-spec-compliance` | `planned` |
 | Phase 07 | 功能补齐 → MVP | 补齐 `--unknown`/`--greater`/`--less` 首扫、`list` 实时重读,占位清零,完成 MVP 验收 | Phase 06 | `specs/007-mvp-completion` | `planned` |
 
@@ -169,7 +169,7 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 - **依赖**: Phase 04。
 - **交付物**: `specs/005-*` 制品;缺陷—测试—证据对照表。
 - **验收**: 8 项逐项关闭并附复现/回归测试;顶层 `ctest` 可发现并运行全部用例(`N 通过 / 0 失败`);Windows 上 `modifyMemory` 写入流程可验证(附运行证据);Linux 相关项附复现证据,或按 §2.5 记录获批的证据缺口例外。
-- **状态**: `planned`
+- **状态**: `merged`(2026-09-24 本地合并至 `feat/first-mvp`,合并提交 `4db7b5f`,**无 PR**;验证证据:需求方人工验证**完全通过** + 全量测试 **Windows 208 通过 / 0 失败、Linux(容器)215 通过 / 0 失败、双平台 ctest 100% passed**;8 项缺陷逐项红→绿,缺陷—测试—证据对照表见私有区 `specs/005-defect-remediation/evidence-matrix.md`,Phase 文档见 `docs/phases/first-mvp-phase-05.md`;过程中附带修复 3 项既有缺陷(CMake `LINUX` 变量平台选择恒假致 Linux 平台源未入构、Linux 进程名测试 exec 竞态、`ValueType.h` 两处 -Werror 告警),详见 Phase 文档 P9 记录)
 
 #### Phase 06:规范符合性收敛
 
