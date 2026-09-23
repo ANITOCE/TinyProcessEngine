@@ -303,3 +303,72 @@ TEST(NonInteractiveScan, NextScanDoesNotCallAskValue)
     (void)scanner.nextScan(process, previous, ScanCondition::Changed, type);
     EXPECT_EQ(type.m_askCalls, 0);
 }
+
+// ============================================================
+// US1(Phase 05,缺陷 ①)— 值快照写入
+//   C-S1:所有轮次写当轮实值快照;FR-001 / FR-004 / INV-S1/S2/S3
+// ============================================================
+
+TEST(NonInteractiveScan, FirstScanStoresValueSnapshot)
+{
+    // 精确命中:快照 == 命中地址处的当轮实读字节,宽度 == 类型宽度(4)
+    FakeProcess process(0x1000, 0x100);
+    Int32 type;
+    MemoryScanner scanner;
+    process.bytes()[0x04] = 0x2A;
+    process.bytes()[0x10] = 0x2A;
+
+    const tpe::Memory pattern = {0x2A, 0x00, 0x00, 0x00};
+    const std::vector<ScanRecord> results = scanner.firstScan(process, type, pattern);
+
+    ASSERT_EQ(results.size(), 2u);
+    for (const ScanRecord& rec : results) {
+        ASSERT_EQ(rec.snapshot_size, 4u) << "address " << rec.address;
+        const std::size_t offset = static_cast<std::size_t>(rec.address - 0x1000);
+        for (std::size_t i = 0; i < 4; ++i) {
+            EXPECT_EQ(rec.snapshot_data[i], process.bytes()[offset + i])
+                << "address " << rec.address << " byte " << i;
+        }
+    }
+    EXPECT_EQ(results[0].snapshot_data[0], 0x2A);
+
+    // 浮点容差命中:快照必须是内存实值而非搜索 pattern(INV-S3)
+    FakeProcess tolerant(0x2000, 0x40);
+    Float floatType;
+    const tpe::Memory searchValue = {0x00, 0x00, 0xC0, 0x3F}; // 1.5f
+    const tpe::Memory actualValue = {0x01, 0x00, 0xC0, 0x3F}; // 1.5000001f(差 ~1.2e-7 < 1e-6 容差)
+    std::copy(actualValue.begin(), actualValue.end(), tolerant.bytes().begin() + 0x08);
+
+    const std::vector<ScanRecord> floatHits = scanner.firstScan(tolerant, floatType, searchValue);
+    ASSERT_EQ(floatHits.size(), 1u);
+    EXPECT_EQ(floatHits[0].address, 0x2008u);
+    ASSERT_EQ(floatHits[0].snapshot_size, 4u);
+    for (std::size_t i = 0; i < 4; ++i) {
+        EXPECT_EQ(floatHits[0].snapshot_data[i], actualValue[i]) << "byte " << i;
+    }
+}
+
+TEST(NonInteractiveScan, NextScanExactValueStoresFreshSnapshot)
+{
+    // --equal 轮同样写当轮实值快照(取代 Phase 02 FR-028 豁免;FR-001)
+    FakeProcess process(0x1000, 0x100);
+    Int32 type;
+    MemoryScanner scanner;
+    process.bytes()[0x08] = 42;
+
+    std::string error;
+    const auto wanted = type.parse("42", error);
+    ASSERT_TRUE(wanted.has_value()) << error;
+
+    std::vector<ScanRecord> previous{ScanRecord(0x1008)};
+    const std::vector<ScanRecord> kept =
+        scanner.nextScan(process, previous, ScanCondition::ExactValue, type, wanted);
+
+    ASSERT_EQ(kept.size(), 1u);
+    EXPECT_EQ(kept[0].address, 0x1008u);
+    ASSERT_EQ(kept[0].snapshot_size, 4u);
+    EXPECT_EQ(kept[0].snapshot_data[0], 42);
+    EXPECT_EQ(kept[0].snapshot_data[1], 0);
+    EXPECT_EQ(kept[0].snapshot_data[2], 0);
+    EXPECT_EQ(kept[0].snapshot_data[3], 0);
+}
