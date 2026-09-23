@@ -12,6 +12,7 @@
 #include <sys/mman.h>
 #include <signal.h>
 #include <unistd.h>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -140,6 +141,16 @@ TEST(LinuxPermissionHandlingTest, InaccessibleProcessReturnsPermissionError)
                            || msg.find("Permission") != std::string::npos);
         EXPECT_TRUE(hasDiagnostic)
             << "Error message should contain diagnostic info, got: " << msg;
+
+        // 缺陷⑦(FR-020/C-P4):strerror 原文与可操作建议必须进入错误消息本身
+        const bool hasStrerrorText =
+            (msg.find(std::strerror(EPERM)) != std::string::npos)
+            || (msg.find(std::strerror(EACCES)) != std::string::npos);
+        EXPECT_TRUE(hasStrerrorText)
+            << "Error message must include strerror text, got: " << msg;
+
+        EXPECT_NE(msg.find("ptrace_scope"), std::string::npos)
+            << "Error message must include actionable advice (ptrace_scope), got: " << msg;
     }
 }
 
