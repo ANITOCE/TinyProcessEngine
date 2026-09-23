@@ -86,9 +86,6 @@ std::shared_ptr<PlatformProcess> WindowsOS::open(Pid_t pid)
 
 void WindowsOS::getAllProcesses(std::vector<Pid_t> allPid)
 {
-    if(allPid.empty()) {
-       std::cerr << "PidList is empty!" << std::endl;
-    }
     // std::vector<std::shared_ptr<PlatformProcess>> processes;
     for (auto pid : allPid) {
         this->ProcessList.push_back(std::make_shared<WindowsProcess>(pid));

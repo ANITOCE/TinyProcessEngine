@@ -103,10 +103,6 @@ Result<std::vector<Pid_t>, PlatformError> LinuxOS::getAllProcessesPid()
 
 void LinuxOS::getAllProcesses(std::vector<Pid_t> allPid)
 {
-    if (allPid.empty()) {
-        std::cerr << "[WARN] PidList is empty!" << std::endl;
-        return;
-    }
     for (auto pid : allPid) {
         this->ProcessList.push_back(
             std::make_shared<LinuxProcess>(pid, readProcessName(pid)));
