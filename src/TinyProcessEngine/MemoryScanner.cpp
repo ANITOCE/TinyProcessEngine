@@ -112,7 +112,9 @@ std::vector<ScanRecord> MemoryScanner::firstScan(
                     if (ok) {
                         tpe::Address addr = overlapBuf.empty() ? currAddr + off
                             : currAddr + (off - overlapBuf.size());
-                        results.emplace_back(addr);
+                        // 快照 = 命中处当轮实读字节(浮点容差匹配下为内存实值;>8 字节由构造器截断)
+                        results.emplace_back(addr, tpe::Memory(searchBuf.begin() + off,
+                                                               searchBuf.begin() + off + typeWidth));
                     }
                 }
             } else {
@@ -120,7 +122,9 @@ std::vector<ScanRecord> MemoryScanner::firstScan(
                 for (auto off : offsets) {
                     tpe::Address addr = overlapBuf.empty() ? currAddr + off
                         : currAddr + (off - overlapBuf.size());
-                    results.emplace_back(addr);
+                    // 快照 = 命中处当轮实读字节(>8 字节由构造器截断)
+                    results.emplace_back(addr, tpe::Memory(searchBuf.begin() + off,
+                                                           searchBuf.begin() + off + typeWidth));
                 }
             }
 
@@ -157,8 +161,7 @@ std::vector<ScanRecord> MemoryScanner::nextScan(
         if (!newValue.has_value() || newValue->empty()) return filtered;
         typeWidth = newValue->size();
     }
-    bool isFloat  = (type.name.find("float")  != std::string::npos && typeWidth == 4);
-    bool isDouble = (type.name.find("double") != std::string::npos && typeWidth == 8);
+    const NumericKind kind = type.numericKind();
 
     for (const auto& prev : previousResults) {
         // Read current value at this address
@@ -178,58 +181,62 @@ std::vector<ScanRecord> MemoryScanner::nextScan(
             break;
         }
         case ScanCondition::Changed: {
-            // Compare with previous snapshot
-            if (prev.snapshot_size > 0 && prev.snapshot_size <= currentBytes.size()) {
-                keep = (std::memcmp(currentBytes.data(), prev.snapshot_data,
-                                    prev.snapshot_size) != 0);
-            } else {
-                keep = true; // No snapshot to compare against, keep by default
-            }
+            // 字节语义:无快照(或快照宽于当前读值)⇒ 排除,不得默认保留(FR-002 / C-S2)
+            if (prev.snapshot_size == 0 || prev.snapshot_size > currentBytes.size()) break;
+            keep = (std::memcmp(currentBytes.data(), prev.snapshot_data,
+                                prev.snapshot_size) != 0);
             break;
         }
         case ScanCondition::Unchanged: {
-            if (prev.snapshot_size > 0 && prev.snapshot_size <= currentBytes.size()) {
-                keep = (std::memcmp(currentBytes.data(), prev.snapshot_data,
-                                    prev.snapshot_size) == 0);
-            } else {
-                keep = true;
-            }
+            if (prev.snapshot_size == 0 || prev.snapshot_size > currentBytes.size()) break;
+            keep = (std::memcmp(currentBytes.data(), prev.snapshot_data,
+                                prev.snapshot_size) == 0);
             break;
         }
         case ScanCondition::Increased:
         case ScanCondition::Decreased: {
-            if (prev.snapshot_size == 0 || prev.snapshot_size > currentBytes.size()) {
-                keep = false; // No snapshot = can't compare
+            // 数值语义(FR-003 / C-S3):比较宽度 = 类型宽度,按 NumericKind 分派;
+            // Other(如 string)、无快照、宽度不足或超限 ⇒ 不保留。
+            if (kind == NumericKind::Other || typeWidth == 0 ||
+                typeWidth > sizeof(prev.snapshot_data) ||
+                prev.snapshot_size < typeWidth || currentBytes.size() < typeWidth) {
                 break;
             }
-            // Interpret as numeric values
-            if (isFloat) {
-                float prevVal, curVal;
-                std::memcpy(&prevVal, prev.snapshot_data, sizeof(float));
-                std::memcpy(&curVal, currentBytes.data(), sizeof(float));
-                if (condition == ScanCondition::Increased)
-                    keep = (curVal > prevVal);
-                else
-                    keep = (curVal < prevVal);
-            } else if (isDouble) {
-                double prevVal, curVal;
-                std::memcpy(&prevVal, prev.snapshot_data, sizeof(double));
-                std::memcpy(&curVal, currentBytes.data(), sizeof(double));
-                if (condition == ScanCondition::Increased)
-                    keep = (curVal > prevVal);
-                else
-                    keep = (curVal < prevVal);
-            } else {
-                // Integer comparison — convert both byte arrays to uint64_t for comparison
-                uint64_t prevVal = 0, curVal = 0;
-                std::memcpy(&prevVal, prev.snapshot_data,
-                            (std::min)(sizeof(prevVal), static_cast<size_t>(prev.snapshot_size)));
-                std::memcpy(&curVal, currentBytes.data(),
-                            (std::min)(sizeof(curVal), currentBytes.size()));
-                if (condition == ScanCondition::Increased)
-                    keep = (curVal > prevVal);
-                else
-                    keep = (curVal < prevVal);
+            if (kind == NumericKind::FloatingPoint) {
+                if (typeWidth == sizeof(float)) {
+                    float prevVal = 0.0f, curVal = 0.0f;
+                    std::memcpy(&prevVal, prev.snapshot_data, typeWidth);
+                    std::memcpy(&curVal, currentBytes.data(), typeWidth);
+                    keep = (condition == ScanCondition::Increased) ? (curVal > prevVal)
+                                                                   : (curVal < prevVal);
+                } else if (typeWidth == sizeof(double)) {
+                    double prevVal = 0.0, curVal = 0.0;
+                    std::memcpy(&prevVal, prev.snapshot_data, typeWidth);
+                    std::memcpy(&curVal, currentBytes.data(), typeWidth);
+                    keep = (condition == ScanCondition::Increased) ? (curVal > prevVal)
+                                                                   : (curVal < prevVal);
+                }
+                break; // 其他浮点宽度不可比较 ⇒ 不保留
+            }
+            // 整数:按符号性扩展至 64 位后比较
+            uint64_t prevRaw = 0, curRaw = 0;
+            std::memcpy(&prevRaw, prev.snapshot_data, typeWidth);
+            std::memcpy(&curRaw, currentBytes.data(), typeWidth);
+            if (kind == NumericKind::SignedInteger) {
+                const unsigned bits = static_cast<unsigned>(typeWidth) * 8u;
+                if (bits < 64u) {
+                    const uint64_t signMask = uint64_t{1} << (bits - 1u);
+                    const uint64_t fillMask = ~((uint64_t{1} << bits) - 1u);
+                    if (prevRaw & signMask) prevRaw |= fillMask;
+                    if (curRaw & signMask) curRaw |= fillMask;
+                }
+                const int64_t prevVal = static_cast<int64_t>(prevRaw);
+                const int64_t curVal = static_cast<int64_t>(curRaw);
+                keep = (condition == ScanCondition::Increased) ? (curVal > prevVal)
+                                                               : (curVal < prevVal);
+            } else { // UnsignedInteger:零扩展(原样读取)
+                keep = (condition == ScanCondition::Increased) ? (curRaw > prevRaw)
+                                                               : (curRaw < prevRaw);
             }
             break;
         }
@@ -238,16 +245,8 @@ std::vector<ScanRecord> MemoryScanner::nextScan(
         }
 
         if (keep) {
-            // Create new record with updated snapshot (FR-028: only for comparison conditions)
-            bool storeSnapshot = (condition == ScanCondition::Changed ||
-                                  condition == ScanCondition::Unchanged ||
-                                  condition == ScanCondition::Increased ||
-                                  condition == ScanCondition::Decreased);
-            if (storeSnapshot) {
-                filtered.emplace_back(prev.address, currentBytes);
-            } else {
-                filtered.emplace_back(prev.address);
-            }
+            // 所有轮次写当轮实值快照:下一轮比较基准 = 本轮实读字节(FR-001/FR-004 / C-S1)
+            filtered.emplace_back(prev.address, currentBytes);
         }
     }
 

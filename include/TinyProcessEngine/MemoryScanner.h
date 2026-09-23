@@ -24,7 +24,8 @@ public:
     /// @param process 目标进程
     /// @param type    值类型（用于浮点容差与变长判断）
     /// @param pattern 搜索模式（显式传入；宽度即搜索步进，不再交互追问）
-    /// @return 匹配的 ScanRecord 列表（不含快照，snapshot_size=0）
+    /// @return 匹配的 ScanRecord 列表；每条记录携带命中处当轮实读值的快照
+    ///         （宽度 = 搜索宽度，>8 字节由 ScanRecord 构造器截断）
     std::vector<ScanRecord> firstScan(
         PlatformProcess& process,
         const ValueType& type,
@@ -33,10 +34,15 @@ public:
     );
 
     /// 增量过滤扫描：在上一轮结果基础上按条件筛选（非交互）。
-    /// 读取宽度取自 `type.byteWidth()`（变长类型由 `newValue` 或既有快照决定）。
+    /// 读取宽度取自 `type.byteWidth()`（变长类型由 `newValue` 决定）。
+    /// 比较条件语义（Phase 05 缺陷 ①/FR-002/FR-003）：
+    /// - Changed/Unchanged：当前读值 vs 快照字节比较；无快照记录一律排除；
+    /// - Increased/Decreased：按 `type.numericKind()` 分派（有符号/无符号/浮点），
+    ///   比较宽度 = 类型宽度；Other（如 string）不保留。
+    /// 所有保留记录均写入当轮实读值快照，作为下一轮比较基准。
     /// @param previousResults 上一轮匹配记录
     /// @param condition      过滤条件
-    /// @param type           值类型（用于数值解析与读取宽度）
+    /// @param type           值类型（用于数值分派与读取宽度）
     /// @param newValue       条件为 ExactValue 时的目标值
     /// @return              过滤后的 ScanRecord 列表
     std::vector<ScanRecord> nextScan(
