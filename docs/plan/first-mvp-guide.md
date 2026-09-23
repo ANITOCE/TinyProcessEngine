@@ -11,11 +11,11 @@
 | 字段 | 内容 |
 |---|---|
 | 项目/功能名 | TinyProcessEngine — First MVP |
-| 指南版本 | 1.0.1 |
+| 指南版本 | 1.0.2 |
 | 状态 | `accepted`(2026-09-18 评审通过;全部 Phase 完成验收后置 `done(已封存,只读)`) |
 | 负责人(owner) | anitoce |
 | 创建日期 | 2026-09-18 |
-| 最近更新 | 2026-09-21 |
+| 最近更新 | 2026-09-24 |
 | 关联仓库 | 本地 Git 仓库(未配置远端;如建立公开远端,按第 3 节公开边界执行) |
 | 工具链 | VS Code Copilot Chat(不使用 Copilot CLI);spec-kit `0.16.1`(copilot 集成,PowerShell 脚本) |
 | 场景 | 存量迭代 |
@@ -26,7 +26,7 @@
 
 ### 1.1 背景与动机
 
-TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工具(类 Cheat Engine),当前提供 CLI 前端;CE_UI 图形界面与远程连接等长线方向由后续新指南承接。Phase 01–03(基础重构、核心内存扫描、Linux 平台支持)已交付,其制品位于主检出 `specs/001–003`(私有区);但 2026-09 的独立审计发现 7 项功能性缺陷(详见 §4.2 Phase 05)与若干规范偏差;CLI 旧式交互流程已在 Phase 04 完成重构(2026-09-21 合并)。本指南取代旧版《DEVELOPMENT_GUIDE.md》v0.2.0(`docs/temp/`,随本指南落地删除;其第 11 章 CLI 交互规范已迁移为 `docs/plan/cli-interaction-spec.md`),聚焦 **First MVP** 落地:CLI 交互重构 → 审计修复 → MVP 验收,为后续新指南建立干净基线。
+TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工具(类 Cheat Engine),当前提供 CLI 前端;CE_UI 图形界面与远程连接等长线方向由后续新指南承接。Phase 01–03(基础重构、核心内存扫描、Linux 平台支持)已交付,其制品位于主检出 `specs/001–003`(私有区);但 2026-09 的独立审计发现 7 项功能性缺陷(详见 §4.2 Phase 05)与若干规范偏差;**CLI 旧式交互流程已完成重构(Phase 04,2026-09-21 合并),审计缺陷已全部清零(Phase 05,2026-09-24 合并)**。本指南取代旧版《DEVELOPMENT_GUIDE.md》v0.2.0(`docs/temp/`,随本指南落地删除;其第 11 章 CLI 交互规范已迁移为 `docs/plan/cli-interaction-spec.md`),聚焦 **First MVP** 落地:CLI 交互重构(已完成)→ 审计修复(已完成)→ MVP 验收,为后续新指南建立干净基线。
 
 ### 1.2 目标
 
@@ -66,7 +66,7 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 ## 2. Constitution(项目治理准则)
 
 > **本节是最高开发准则,所有 Phase 的规格、计划、任务与实现都必须符合。**
-> 说明:本指南首次落地时 `.specify/memory/constitution.md` 为空模板,故本节按“新项目”方式给出全文,并已经 `/speckit.constitution` 落地为 `.specify/memory/constitution.md`(初次落地 2026-09-18;2026-09-21 修订为 v1.0.1);两处内容须保持同步。
+> 说明:本指南首次落地时 `.specify/memory/constitution.md` 为空模板,故本节按“新项目”方式给出全文,并已经 `/speckit.constitution` 落地为 `.specify/memory/constitution.md`(初次落地 2026-09-18;2026-09-21 修订为 v1.0.1;2026-09-24 修订为 v1.0.2);两处内容须保持同步。
 > 任何条款变更必须记录理由、评审人与日期(写入第 8 节),并同步落地文件。
 
 ### 2.1 测试准则(必填,NON-NEGOTIABLE)
@@ -108,7 +108,7 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 
 ### 2.5 其他条款
 
-- **证据缺口处理**:Linux 运行时验证受开发环境限制(见第 7 节-1);涉及 Linux 行为的修复必须给出可复现证据(WSL 或独立 Linux 机器),确无法验证时记录"证据缺口"并经人批准例外。
+- **证据缺口处理**:Linux 运行时验证受开发环境限制(见第 7 节-1);涉及 Linux 行为的修复必须给出可复现证据(WSL、Docker 容器或独立 Linux 机器;Phase 05 已实证容器流程),确无法验证时记录"证据缺口"并经人批准例外。
 - **公开边界**:公开提交只含代码、测试与 `docs/plan/` 公开文档;私有区文件(见第 3 节)绝不入库;公开 PR 可引用私有区路径,不得粘贴其内容。
 
 ### 2.6 修订流程
@@ -173,11 +173,11 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 
 #### Phase 06:规范符合性收敛
 
-- **目标**: 收敛审计列出的规范偏差:公共 API 归入 `tpe::` 命名空间;头文件 `.hpp` + `#pragma once`;库层异常使用清理(改为 `Result`/错误码);`FetchContent_Populate` 弃用替换;UTF-8 代码页告警清零。
-- **范围**: in-scope 命名空间与文件风格迁移、异常语义清理、CMake 现代化(弃用 API 替换)、构建告警清零;out-of-scope 任何行为变更(纯结构收敛,全量测试保持绿色通过)。
+- **目标**: 收敛审计列出的规范偏差:公共 API 归入 `tpe::` 命名空间;头文件 `.hpp` + `#pragma once`;库层异常使用清理(改为 `Result`/错误码);`FetchContent_Populate` 弃用替换;清零既有编译告警:UTF-8 代码页(C4819)、弃用 API(C4996)及 Phase 05 移交的转换告警(C4267)。
+- **范围**: in-scope 命名空间与文件风格迁移、异常语义清理、CMake 现代化(弃用 API 替换)、构建告警清零(含 Phase 05 移交的 C4819 / C4996 / C4267,清单见 `specs/005-defect-remediation/evidence-matrix.md`);out-of-scope 任何行为变更(纯结构收敛,全量测试保持绿色通过)。
 - **依赖**: Phase 05。
 - **交付物**: `specs/006-*` 制品;构建零告警证据。
-- **验收**: 全量构建无弃用与 UTF-8 告警(或仅剩经批准的例外);全量测试通过;公共 API 均在 `tpe::` 命名空间;头文件全部 `.hpp` + `#pragma once`。
+- **验收**: 全量构建零告警(覆盖 UTF-8 代码页、弃用 API 与 Phase 05 移交告警 C4819 / C4996 / C4267;或仅剩经批准的例外);全量测试通过;公共 API 均在 `tpe::` 命名空间;头文件全部 `.hpp` + `#pragma once`。
 - **状态**: `planned`
 
 #### Phase 07:功能补齐 → MVP
@@ -230,7 +230,7 @@ Phase 04 → 05 → 06 → 07 为**硬依赖链,全部串行**:修复基于重�
 ### 6.3 回归策略(存量迭代必填)
 
 - **开工基线**:每次 Phase 开工前运行全量测试建立基线,非绿色先报告、不得带病开发。
-- **测试口径**:Phase 05 完成 CTest 注册修复之前,以"全量构建 + 直接运行测试可执行文件"为准;Phase 05 起以顶层 `ctest --output-on-failure` 为准。
+- **测试口径**(自 2026-09-24,Phase 05 起):以顶层 `ctest` 为准(Windows 多配置需 `-C Debug`);Windows 本机与 Docker 容器(ubuntu:22.04)双平台执行;直跑 `tpe_tests.exe` 为 2026-09-24 前的历史口径。
 - **合并回归**:每个 Phase 合并后必须再跑一次全量测试;凡涉及旧行为的变更(命名空间迁移、文件重命名、异常语义变更等)必须在提交说明或 PR 中声明。
 - **证据留存**:每次全量测试保留"命令 + `N 通过 / 0 失败`"输出。
 
@@ -240,12 +240,13 @@ Phase 04 → 05 → 06 → 07 为**硬依赖链,全部串行**:修复基于重�
 
 | # | 风险/问题 | 影响 | 缓解措施 | 状态 |
 |---|---|---|---|---|
-| 1 | Linux 运行时验证环境缺失(当前开发机为 Windows) | Phase 05/07 中 Linux 相关缺陷无法本地复现验证 | 使用 WSL 或独立 Linux 机器补充验证;确无法验证时记录"证据缺口"并经人批准例外(§2.5) | `open` |
-| 2 | 本 worktree `.specify/` 缺 `feature.json`(及扩展) | Phase 04 P0 无法定位特性目录 | 已修复:`.specify/feature.json` 指向 `specs/004-*`(2026-09-20,Phase 04 P0);Phase 05 P0 需重指向 `specs/005-*` | `closed`(2026-09-20) |
+| 1 | Linux 运行时验证环境缺失(当前开发机为 Windows) | Linux 相关缺陷无法在本机 Windows 复现验证 | 已建立 **Docker 容器(ubuntu:22.04)双平台验证流程**(Phase 05 实证:容器 215 通过 / 0 失败、ctest 100%);后续 Phase 的 Linux 行为必须附容器证据(§2.5) | `open`(已缓解,2026-09-24) |
+| 2 | 本 worktree `.specify/` 缺 `feature.json`(及扩展) | Phase 04 P0 无法定位特性目录 | 已修复(2026-09-20,Phase 04 P0;Phase 05 P0 已按规则重指向 `specs/005-*`);各 Phase P0 须重指向当期特性目录(Phase 06 → `specs/006-*`) | `closed`(2026-09-20) |
 | 3 | CMake 4.4 弃用 `FetchContent_Populate`,现构建有弃用告警 | 未来 CMake 升级导致构建中断 | Phase 06 替换为 `FetchContent_MakeAvailable`(同步评估最低 CMake 版本) | `open` |
-| 4 | 测试基础设施待修复:CTest 未注册、Linux 测试未纳入目标 | 顶层 `ctest` 不可用,基线只能直接运行测试可执行文件 | 当前口径:直接运行测试可执行文件(Phase 04 已按此验证);Phase 05 修复后切换 `ctest`(§6.3) | `open` |
+| 4 | 测试基础设施待修复:CTest 未注册、Linux 测试未纳入目标 | 顶层 `ctest` 不可用,基线只能直接运行测试可执行文件 | **已修复(Phase 05 缺陷⑥)**:顶层 `enable_testing` + Linux 用例纳入;双平台 ctest 100% passed(2026-09-24);口径切换见 §6.3 | `closed`(2026-09-24) |
 | 5 | 长线方向(CE_UI、远程连接、工程完善、高级功能)不在本指南范围 | 后续工作暂无总纲可依 | MVP 验收封存后,按 §1.3/§1.4 划界新建开发指南 | `open` |
 | 6 | 既有 `specs/001–003` 为旧流程产物,与现行模板存在差异 | 追溯口径不完全一致 | 保持只读引用;新 Phase 一律走现行模板流程;发现不一致时以现行模板为准 | `open` |
+| 7 | 既有编译告警未清零:C4819(UTF-8 代码页)、C4996(弃用 API)、C4267(转换) | 与 §2.3"零新增告警"口径存在差距,构建噪声 | 已列入 Phase 06 告警清零范围(§4.2);明细见 `specs/005-defect-remediation/evidence-matrix.md` | `open` |
 
 ---
 
@@ -258,6 +259,7 @@ Phase 04 → 05 → 06 → 07 为**硬依赖链,全部串行**:修复基于重�
 | 1.0.0 | 2026-09-18 | 初始创建:取代旧《DEVELOPMENT_GUIDE.md》v0.2.0;第 11 章 CLI 交互规范迁移为 `docs/plan/cli-interaction-spec.md`;审计缺陷与规范偏差修复插入为 Phase 05/06(CLI 重构后优先);删除 `docs/temp/`(含 `CE_UI.png`) | GitHub Copilot | anitoce |
 | 1.0.0 | 2026-09-21 | 路线图回写:P04 状态 `planned` → `merged`(本地合并至 `feat/first-mvp`,无 PR;验证证据:人工验证通过 + 全量测试 187 通过 / 0 失败);同批公开提交 `docs: update dev guide roadmap (phase 04)` | GitHub Copilot | anitoce |
 | 1.0.1 | 2026-09-21 | 一致性修订(PATCH):spec-kit 版本勘误 `0.11.9` → `0.16.1`(文档信息/术语表/§3);单检出表述澄清(既有 worktree 内操作、不新建 worktree;§2.2/§3);§4.1 新增"合并策略"段;Phase 05 条目补充 Phase 04 移交缺陷 ⑧(§4.1/§4.2);§7 风险 #2 关闭、#4 措辞同步;文档信息版本/最近更新同步 | GitHub Copilot | anitoce |
+| 1.0.2 | 2026-09-24 | 一致性修订(PATCH):§1.1 完成状态与 §2.5 容器验证口径同步(constitution v1.0.2);§4.2 Phase 06 条目纳入 Phase 05 移交告警(C4819/C4996/C4267);§6.3 测试口径切换为顶层 `ctest`(Windows + Docker 双平台);§7 风险 #1 缓解更新、#2 注记、#4 关闭、新增 #7;文档信息版本/最近更新同步 | GitHub Copilot | anitoce |
 
 ---
 
