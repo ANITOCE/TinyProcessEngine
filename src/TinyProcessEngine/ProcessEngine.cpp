@@ -130,7 +130,7 @@ void ProcessEngine::modifyMemory() {
             } else {
                 std::cerr << "Write failed: " << result.error().message << std::endl;
             }
-        } catch (const std::exception &e) {
+        } catch (const std::exception &) {
             std::cerr << "Invalid input. Please try again." << std::endl;
         }
     }
