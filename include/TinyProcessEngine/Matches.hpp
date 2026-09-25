@@ -1,11 +1,10 @@
-#ifndef _MATCHES_H_
-#define _MATCHES_H_
+#pragma once
 
 #include <vector>
 #include <numeric>
 #include <cstdint>
 
-#include "MemoryPage.h"
+#include "MemoryPage.hpp"
 
 namespace tpe {
 
@@ -57,5 +56,3 @@ public:
 };
 
 } // namespace tpe
-
-#endif // _MATCHES_H_

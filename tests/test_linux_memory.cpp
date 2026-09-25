@@ -18,9 +18,9 @@
 #include <fstream>
 #include <sstream>
 
-#include "LinuxOS.h"
-#include "LinuxProcess.h"
-#include "MemoryPage.h"
+#include "LinuxOS.hpp"
+#include "LinuxProcess.hpp"
+#include "MemoryPage.hpp"
 
 using tpe::MemoryPage;
 using tpe::platform::LinuxOS;

@@ -5,7 +5,7 @@
 #include <string>
 #include <string_view>
 
-#include "CliValueType.h"
+#include "CliValueType.hpp"
 
 namespace tpe::cli {
 

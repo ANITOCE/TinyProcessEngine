@@ -1,7 +1,6 @@
-#ifndef _LINUX_PROCESS_H_
-#define _LINUX_PROCESS_H_
+#pragma once
 
-#include "Platform.h"
+#include "Platform.hpp"
 
 #ifdef __linux__
 
@@ -69,5 +68,3 @@ private:
 } // namespace tpe::platform
 
 #endif // __linux__
-
-#endif  // _LINUX_PROCESS_H_

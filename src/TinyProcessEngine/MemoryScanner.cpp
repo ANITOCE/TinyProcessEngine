@@ -1,5 +1,5 @@
-#include "MemoryScanner.h"
-#include "AobPattern.h"
+#include "MemoryScanner.hpp"
+#include "AobPattern.hpp"
 
 #include <algorithm>
 #include <array>

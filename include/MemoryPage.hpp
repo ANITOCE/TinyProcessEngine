@@ -1,5 +1,4 @@
-#ifndef MEMORY_PAGE_H
-#define MEMORY_PAGE_H
+#pragma once
 
 #include <cstddef>
 #include <cstdint>
@@ -26,5 +25,3 @@ struct MemoryPage
 };
 
 } // namespace tpe
-
-#endif

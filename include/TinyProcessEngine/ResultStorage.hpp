@@ -1,7 +1,6 @@
-#ifndef TPE_RESULT_STORAGE_H_
-#define TPE_RESULT_STORAGE_H_
+#pragma once
 
-#include "ScanTypes.h"
+#include "ScanTypes.hpp"
 
 #include <vector>
 #include <array>
@@ -106,5 +105,3 @@ private:
 };
 
 } // namespace tpe
-
-#endif // TPE_RESULT_STORAGE_H_

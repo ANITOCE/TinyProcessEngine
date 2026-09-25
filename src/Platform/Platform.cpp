@@ -1,13 +1,13 @@
-#include "Platform.h"
-#include "TinyProcessEngine/Result.h"
+#include "Platform.hpp"
+#include "TinyProcessEngine/Result.hpp"
 
 #ifdef _WIN32
-#include "Platform/Windows/WindowsOS.h"
-#include "Platform/Windows/WindowsProcess.h"
+#include "Platform/Windows/WindowsOS.hpp"
+#include "Platform/Windows/WindowsProcess.hpp"
 #include <Windows.h>
 #elif defined(__linux__)
-#include "Platform/Linux/LinuxOS.h"
-#include "Platform/Linux/LinuxProcess.h"
+#include "Platform/Linux/LinuxOS.hpp"
+#include "Platform/Linux/LinuxProcess.hpp"
 #include <cerrno>
 #include <cstring>
 #endif

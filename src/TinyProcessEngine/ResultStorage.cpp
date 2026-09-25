@@ -1,4 +1,4 @@
-#include "ResultStorage.h"
+#include "ResultStorage.hpp"
 
 #include <cstring>
 #include <chrono>

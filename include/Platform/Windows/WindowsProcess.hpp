@@ -1,9 +1,8 @@
-#ifndef _WINDOWS_PROCESS_H_
-#define _WINDOWS_PROCESS_H_
+#pragma once
 
-#include "Platform.h"
-#include "HelpFunction.h"
-#include "ScopedHandle.h"
+#include "Platform.hpp"
+#include "HelpFunction.hpp"
+#include "ScopedHandle.hpp"
 
 #ifdef _WIN32
 
@@ -35,5 +34,3 @@ protected:
 } // namespace tpe::platform
 
 #endif // _WIN32
-
-#endif // _WINDOWS_PROCESS_H_

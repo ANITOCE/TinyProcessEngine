@@ -1,6 +1,6 @@
 #include "startup.h"
 
-#include "CliParser.h"
+#include "CliParser.hpp"
 #include "startup_cli.h"
 
 #include <cstddef>

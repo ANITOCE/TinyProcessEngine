@@ -1,10 +1,9 @@
-#ifndef TPE_MEMORY_SCANNER_H_
-#define TPE_MEMORY_SCANNER_H_
+#pragma once
 
-#include "MemoryPage.h"
-#include "ValueType.h"
-#include "ScanTypes.h"
-#include "Platform.h"
+#include "MemoryPage.hpp"
+#include "ValueType.hpp"
+#include "ScanTypes.hpp"
+#include "Platform.hpp"
 
 #include <vector>
 #include <cstdint>
@@ -77,5 +76,3 @@ private:
 };
 
 } // namespace tpe
-
-#endif // TPE_MEMORY_SCANNER_H_

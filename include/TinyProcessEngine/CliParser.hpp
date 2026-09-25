@@ -6,10 +6,10 @@
 #include <string_view>
 #include <vector>
 
-#include "CliValueType.h"
-#include "Platform.h" // Pid_t
-#include "ReplState.h"
-#include "ScanTypes.h"
+#include "CliValueType.hpp"
+#include "Platform.hpp" // Pid_t
+#include "ReplState.hpp"
+#include "ScanTypes.hpp"
 
 namespace tpe::cli {
 

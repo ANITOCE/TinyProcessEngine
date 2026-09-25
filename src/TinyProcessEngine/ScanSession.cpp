@@ -1,5 +1,5 @@
-#include "ScanSession.h"
-#include "ResultStorage.h"
+#include "ScanSession.hpp"
+#include "ResultStorage.hpp"
 
 #include <fstream>
 #include <stdexcept>

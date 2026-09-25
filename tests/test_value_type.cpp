@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "ValueType.h"
+#include "ValueType.hpp"
 
 using tpe::Character;
 using tpe::Double;

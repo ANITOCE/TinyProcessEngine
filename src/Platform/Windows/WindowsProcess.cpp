@@ -1,6 +1,6 @@
 #ifdef _WIN32
 
-#include "WindowsProcess.h"
+#include "WindowsProcess.hpp"
 
 namespace tpe::platform {
 

@@ -1,5 +1,5 @@
-#include "ValueType.h"
-#include "HelpFunction.h"
+#include "ValueType.hpp"
+#include "HelpFunction.hpp"
 
 namespace tpe {
 

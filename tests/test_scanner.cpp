@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
-#include "MemoryScanner.h"
-#include "ScanTypes.h"
-#include "ValueType.h"
-#include "AobPattern.h"
-#include "ScanSession.h"
+#include "MemoryScanner.hpp"
+#include "ScanTypes.hpp"
+#include "ValueType.hpp"
+#include "AobPattern.hpp"
+#include "ScanSession.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -179,7 +179,7 @@ public:
     mutable int m_askCalls = 0;
 };
 
-/// 测试替身:单页内存缓冲进程(实现 Platform.h 的进程接口)。
+/// 测试替身:单页内存缓冲进程(实现 Platform.hpp 的进程接口)。
 class FakeProcess : public PlatformProcess {
 public:
     FakeProcess(tpe::Address base, tpe::Size size)

@@ -1,5 +1,4 @@
-#ifndef TPE_AOB_PATTERN_H_
-#define TPE_AOB_PATTERN_H_
+#pragma once
 
 #include <cstdint>
 #include <string>
@@ -40,5 +39,3 @@ struct AobPattern {
 };
 
 } // namespace tpe
-
-#endif // TPE_AOB_PATTERN_H_

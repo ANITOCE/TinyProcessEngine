@@ -1,10 +1,10 @@
 #include "startup_cli.h"
 
-#include "CliParser.h"
-#include "Platform.h"
-#include "ProcessEngine.h"
-#include "ReplState.h"
-#include "ValueFormatter.h"
+#include "CliParser.hpp"
+#include "Platform.hpp"
+#include "ProcessEngine.hpp"
+#include "ReplState.hpp"
+#include "ValueFormatter.hpp"
 
 #include <algorithm>
 #include <iostream>

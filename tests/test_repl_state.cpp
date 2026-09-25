@@ -3,9 +3,9 @@
 #include <optional>
 #include <string>
 
-#include "CliParser.h"
-#include "CliValueType.h"
-#include "ReplState.h"
+#include "CliParser.hpp"
+#include "CliValueType.hpp"
+#include "ReplState.hpp"
 
 using tpe::cli::CliValueType;
 using tpe::cli::ReplCommand;

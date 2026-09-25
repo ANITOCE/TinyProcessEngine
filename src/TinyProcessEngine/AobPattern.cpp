@@ -1,4 +1,4 @@
-#include "AobPattern.h"
+#include "AobPattern.hpp"
 
 #include <sstream>
 #include <cctype>

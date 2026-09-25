@@ -1,10 +1,9 @@
-#ifndef TPE_SCAN_SESSION_H_
-#define TPE_SCAN_SESSION_H_
+#pragma once
 
-#include "Platform.h"
-#include "ScanTypes.h"
-#include "ValueType.h"
-#include "ResultStorage.h"
+#include "Platform.hpp"
+#include "ScanTypes.hpp"
+#include "ValueType.hpp"
+#include "ResultStorage.hpp"
 
 #include <memory>
 #include <vector>
@@ -66,5 +65,3 @@ private:
 };
 
 } // namespace tpe
-
-#endif // TPE_SCAN_SESSION_H_

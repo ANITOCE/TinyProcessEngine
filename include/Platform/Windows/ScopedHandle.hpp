@@ -1,5 +1,4 @@
-#ifndef _SCOPED_HANDLE_H_
-#define _SCOPED_HANDLE_H_
+#pragma once
 
 #ifdef _WIN32
 
@@ -66,5 +65,3 @@ private:
 } // namespace tpe::platform
 
 #endif // _WIN32
-
-#endif // _SCOPED_HANDLE_H_

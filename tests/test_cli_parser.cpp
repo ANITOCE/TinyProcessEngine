@@ -3,7 +3,7 @@
 #include <limits>
 #include <string>
 
-#include "CliParser.h"
+#include "CliParser.hpp"
 
 using tpe::ScanCondition;
 using tpe::cli::CliParseResult;

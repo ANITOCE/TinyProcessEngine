@@ -1,5 +1,4 @@
-#ifndef _PLATFORM_H_
-#define _PLATFORM_H_
+#pragma once
 
 #include <iostream>
 #include <memory>
@@ -7,8 +6,8 @@
 #include <string>
 #include <vector>
 
-#include "MemoryPage.h"
-#include "TinyProcessEngine/Result.h"
+#include "MemoryPage.hpp"
+#include "TinyProcessEngine/Result.hpp"
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -73,5 +72,3 @@ std::unique_ptr<PlatformOS> createPlatformOS();
 Pid_t str_to_pid(std::string str);
 
 } // namespace tpe::platform
-
-#endif // _PLATFORM_H_

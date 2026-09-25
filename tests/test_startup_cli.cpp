@@ -13,9 +13,9 @@
 
 #include <gtest/gtest.h>
 
-#include "CliParser.h"
-#include "Platform.h"
-#include "ProcessEngine.h"
+#include "CliParser.hpp"
+#include "Platform.hpp"
+#include "ProcessEngine.hpp"
 #include "startup_cli.h"
 
 #include <memory>

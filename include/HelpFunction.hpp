@@ -1,5 +1,4 @@
-#ifndef _HELP_FUNCTION_H_
-#define _HELP_FUNCTION_H_
+#pragma once
 
 #include <string>
 #include <iostream>
@@ -101,5 +100,3 @@ T ask_for(const std::string &message, const std::string &error,
 }
 
 } // namespace tpe
-
-#endif // _HELP_FUNCTION_H_

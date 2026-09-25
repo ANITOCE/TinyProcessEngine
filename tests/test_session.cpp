@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
-#include "ScanTypes.h"
-#include "ResultStorage.h"
+#include "ScanTypes.hpp"
+#include "ResultStorage.hpp"
 
 #include <filesystem>
 #include <cstring>
@@ -232,7 +232,7 @@ TEST(ResultStorageTest, AppendWithoutSnapshot) {
 // doesn't call process methods until scan/read/write operations
 // ============================================================
 
-#include "ScanSession.h"
+#include "ScanSession.hpp"
 
 using tpe::ScanCondition;
 using tpe::ScanSession;
@@ -604,8 +604,8 @@ TEST(ScanSessionTest, SessionUndoAcrossBackendsKeepsContentAndCleansFiles) {
 // ============================================================
 // US6(缺陷⑧)— 平台枚举替身与枚举失败信号(FR-023; C-P5)
 // ============================================================
-#include "Platform.h"
-#include "ProcessEngine.h"
+#include "Platform.hpp"
+#include "ProcessEngine.hpp"
 
 #include <memory>
 #include <utility>

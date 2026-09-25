@@ -8,11 +8,11 @@
 #include <string>
 #include <vector>
 
-#include "CliParser.h"
-#include "CliValueType.h"
-#include "MemoryScanner.h"
-#include "ValueFormatter.h"
-#include "ValueType.h"
+#include "CliParser.hpp"
+#include "CliValueType.hpp"
+#include "MemoryScanner.hpp"
+#include "ValueFormatter.hpp"
+#include "ValueType.hpp"
 
 using tpe::Double;
 using tpe::Float;

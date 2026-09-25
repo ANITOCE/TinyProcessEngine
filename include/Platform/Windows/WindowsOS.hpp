@@ -1,9 +1,8 @@
-#ifndef _WINDOWS_OS_H
-#define _WINDOWS_OS_H
+#pragma once
 
-#include "Platform.h"
-#include "HelpFunction.h"
-#include "WindowsProcess.h"
+#include "Platform.hpp"
+#include "HelpFunction.hpp"
+#include "WindowsProcess.hpp"
 
 #ifdef _WIN32
 
@@ -25,5 +24,3 @@ public:
 } // namespace tpe::platform
 
 #endif // _WIN32
-
-#endif // _WINDOWS_OS_H

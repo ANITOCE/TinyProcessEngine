@@ -1,5 +1,4 @@
-#ifndef _RESULT_H_
-#define _RESULT_H_
+#pragma once
 
 #include <string>
 #include <string_view>
@@ -107,5 +106,3 @@ private:
 };
 
 } // namespace tpe
-
-#endif // _RESULT_H_

@@ -1,8 +1,8 @@
 #ifdef _WIN32
 
-#include "WindowsOS.h"
-#include "WindowsProcess.h"
-#include "HelpFunction.h"
+#include "WindowsOS.hpp"
+#include "WindowsProcess.hpp"
+#include "HelpFunction.hpp"
 
 #include <TlHelp32.h>
 #include <Psapi.h>

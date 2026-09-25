@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "Matches.h"
+#include "Matches.hpp"
 
 using tpe::Matches;
 using tpe::MemoryPage;

@@ -1,7 +1,7 @@
 #ifdef __linux__
 
-#include "LinuxOS.h"
-#include "LinuxProcess.h"
+#include "LinuxOS.hpp"
+#include "LinuxProcess.hpp"
 
 #include <dirent.h>
 #include <cstdlib>

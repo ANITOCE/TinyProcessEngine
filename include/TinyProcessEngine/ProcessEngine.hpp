@@ -1,12 +1,11 @@
-#ifndef _PROCESS_ENGINE_H_
-#define _PROCESS_ENGINE_H_
+#pragma once
 
-#include "Platform.h"
-#include "ValueType.h"
-#include "Matches.h"
-#include "ScanTypes.h"
-#include "ScanSession.h"
-#include "MemoryScanner.h"
+#include "Platform.hpp"
+#include "ValueType.hpp"
+#include "Matches.hpp"
+#include "ScanTypes.hpp"
+#include "ScanSession.hpp"
+#include "MemoryScanner.hpp"
 
 #include <vector>
 #include <memory>
@@ -58,5 +57,3 @@ public:
 };
 
 } // namespace tpe
-
-#endif // _PROCESS_ENGINE_H_
