@@ -34,12 +34,5 @@ target_include_directories(PlatformLib PUBLIC
 #     target_compile_definitions(${PROJECT_NAME} PRIVATE PLATFORM_LINUX)
 # endif()
 
-# 设置文件编码（MSVC 专用）
-if(MSVC)
-    add_compile_options(/source-charset:utf-8)
-else()
-    add_compile_options(-finput-charset=UTF-8)
-endif()
-
 # 模块相互依赖（Phase 1 修复：PlatformLib 为最底层，不依赖任何上层库）
 # 原 target_link_libraries(PlatformLib PUBLIC TinyProcessEngineLib) 已移除
