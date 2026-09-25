@@ -1,5 +1,7 @@
 #include "ProcessEngine.hpp"
 
+#include <cassert>
+
 namespace tpe {
 
 ProcessEngine::ProcessEngine()
@@ -95,8 +97,11 @@ uint64_t ProcessEngine::nextScan(ScanCondition condition, const ValueType& type,
     auto filteredResults = m_scanner.nextScan(*m_currentProcess, previousResults,
                                                condition, type, newValue);
 
-    // Commit to session
-    m_session->commitNextScan(condition, std::move(filteredResults));
+    // Commit to session(前置已检查 Ready,失败为不可达路径;C-E3)
+    const Result<void, SessionError> committed =
+        m_session->commitNextScan(condition, std::move(filteredResults));
+    assert(committed.has_value());
+    (void)committed;
 
     return m_session->resultCount();
 }

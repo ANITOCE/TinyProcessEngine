@@ -22,6 +22,14 @@ enum class SessionState {
 };
 
 // ============================================================
+// SessionError — 会话操作失败信息(FR-012–014;C-E1)
+// 库层失败经返回值报告,不依赖异常。
+// ============================================================
+struct SessionError {
+    std::string message;
+};
+
+// ============================================================
 // ScanSession — 管理一次完整搜索会话的生命周期
 // ============================================================
 class ScanSession {
@@ -31,8 +39,9 @@ public:
     // ── 会话生命周期 ──
     void beginScan(const ValueType& type, ScanOptions options = {});
     void commitFirstScan(std::vector<ScanRecord> results);
-    void commitNextScan(ScanCondition condition, std::vector<ScanRecord> results);
-    void undo();
+    [[nodiscard]] Result<void, SessionError> commitNextScan(ScanCondition condition,
+                                                            std::vector<ScanRecord> results);
+    [[nodiscard]] Result<void, SessionError> undo();
     void close();
 
     // ── 查询 ──
@@ -46,7 +55,8 @@ public:
 
     // ── 结果访问 ──
     std::optional<ScanRecord> resultAt(uint64_t index) const;
-    void exportTo(const std::filesystem::path& path, std::string_view format) const;
+    [[nodiscard]] Result<void, SessionError> exportTo(const std::filesystem::path& path,
+                                                      std::string_view format) const;
 
     // ── 直接内存操作 ──
     Result<tpe::Memory, PlatformError> readMemory(tpe::Address addr, tpe::Size size) const;

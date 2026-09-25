@@ -234,8 +234,10 @@ TEST(ResultStorageTest, AppendWithoutSnapshot) {
 
 #include "ScanSession.hpp"
 
+using tpe::Result;
 using tpe::ScanCondition;
 using tpe::ScanSession;
+using tpe::SessionError;
 using tpe::SessionState;
 using tpe::ValueType;
 using tpe::platform::PlatformProcess;
@@ -294,26 +296,20 @@ TEST(ScanSessionTest, CommitNextScanEnablesUndo) {
 
     std::vector<ScanRecord> r2;
     r2.emplace_back(0x2000ULL);
-    session.commitNextScan(ScanCondition::Changed, std::move(r2));
+    EXPECT_TRUE(session.commitNextScan(ScanCondition::Changed, std::move(r2)).has_value());
 
     EXPECT_EQ(session.round(), 2u);
     EXPECT_EQ(session.resultCount(), 1u);
     EXPECT_TRUE(session.canUndo());
 }
 
-// FR-012–014 (C-E1/C-E4):失败不得经异常逃逸——旧实现抛 std::runtime_error,
-// 本断言按预期失败(红);迁移后演进为 Result + 消息断言。
+// FR-012–014 (C-E1/C-E4):失败经返回值报告(Result),不得经异常逃逸。
 TEST(ScanSessionTest, CommitNextScanFailureDoesNotEscapeAsException) {
     ScanSession session(makeNullProcess());
 
-    bool escaped = false;
-    try {
-        session.commitNextScan(ScanCondition::Changed, {});
-    } catch (...) {
-        escaped = true;
-    }
-    EXPECT_FALSE(escaped)
-        << "commitNextScan failure must be reported via return value, not exceptions";
+    const Result<void, SessionError> result = session.commitNextScan(ScanCondition::Changed, {});
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().message, "Session not in Ready state");
 }
 
 TEST(ScanSessionTest, UndoRevertsToPreviousRound) {
@@ -331,18 +327,18 @@ TEST(ScanSessionTest, UndoRevertsToPreviousRound) {
     // Round 2: filtered to 1 result
     std::vector<ScanRecord> r2;
     r2.emplace_back(0x2000ULL);
-    session.commitNextScan(ScanCondition::Changed, std::move(r2));
+    EXPECT_TRUE(session.commitNextScan(ScanCondition::Changed, std::move(r2)).has_value());
     EXPECT_EQ(session.resultCount(), 1u);
     EXPECT_EQ(session.round(), 2u);
 
     // Undo back to round 1
-    session.undo();
+    EXPECT_TRUE(session.undo().has_value());
     EXPECT_EQ(session.round(), 1u);
     EXPECT_EQ(session.resultCount(), 3u);
     EXPECT_FALSE(session.canUndo());
 }
 
-TEST(ScanSessionTest, UndoAtFirstRoundThrows) {
+TEST(ScanSessionTest, UndoAtFirstRoundReturnsError) {
     ScanSession session(makeNullProcess());
     MockValueType mockType;
     session.beginScan(mockType);
@@ -351,20 +347,18 @@ TEST(ScanSessionTest, UndoAtFirstRoundThrows) {
     r1.emplace_back(0x1000ULL);
     session.commitFirstScan(std::move(r1));
 
-    EXPECT_THROW(session.undo(), std::runtime_error);
+    const Result<void, SessionError> result = session.undo();
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().message, "Nothing to undo");
 }
 
-// FR-012–014 (C-E1/C-E4):空会话 undo 失败不得经异常逃逸(红;绿后演进为 Result 断言)。
+// FR-012–014 (C-E1/C-E4):空会话 undo 失败经返回值报告(Result),不得经异常逃逸。
 TEST(ScanSessionTest, UndoFailureDoesNotEscapeAsException) {
     ScanSession session(makeNullProcess());
 
-    bool escaped = false;
-    try {
-        session.undo();
-    } catch (...) {
-        escaped = true;
-    }
-    EXPECT_FALSE(escaped) << "undo failure must be reported via return value, not exceptions";
+    const Result<void, SessionError> result = session.undo();
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().message, "Nothing to undo");
 }
 
 TEST(ScanSessionTest, CloseResetsState) {
@@ -395,22 +389,21 @@ TEST(ScanSessionTest, ResultAtOutOfRange) {
     EXPECT_FALSE(missing.has_value());
 }
 
-TEST(ScanSessionTest, ExportThrowsOnEmptyResults) {
+TEST(ScanSessionTest, ExportWithoutResultsReturnsError) {
     ScanSession session(makeNullProcess());
-    EXPECT_THROW(session.exportTo("test.txt", "txt"), std::runtime_error);
+
+    const Result<void, SessionError> result = session.exportTo("test.txt", "txt");
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().message, "No results to export");
 }
 
-// FR-012–014 (C-E1/C-E4):exportTo 无结果失败不得经异常逃逸(红;绿后演进为 Result 断言)。
+// FR-012–014 (C-E1/C-E4):exportTo 无结果失败经返回值报告(Result),不得经异常逃逸。
 TEST(ScanSessionTest, ExportFailureDoesNotEscapeAsException) {
     ScanSession session(makeNullProcess());
 
-    bool escaped = false;
-    try {
-        session.exportTo("tpe_export_no_results.csv", "csv");
-    } catch (...) {
-        escaped = true;
-    }
-    EXPECT_FALSE(escaped) << "export failure must be reported via return value, not exceptions";
+    const Result<void, SessionError> result = session.exportTo("tpe_export_no_results.csv", "csv");
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().message, "No results to export");
 }
 
 TEST(ScanSessionTest, ExportCreatesFile) {
@@ -427,7 +420,7 @@ TEST(ScanSessionTest, ExportCreatesFile) {
     std::error_code ec;
     std::filesystem::remove(tmpPath, ec);
 
-    EXPECT_NO_THROW(session.exportTo(tmpPath, "csv"));
+    EXPECT_TRUE(session.exportTo(tmpPath, "csv").has_value());
     EXPECT_TRUE(std::filesystem::exists(tmpPath));
     std::filesystem::remove(tmpPath, ec);
 }
@@ -446,7 +439,7 @@ TEST(ScanSessionTest, ExportTextFormat) {
     std::error_code ec;
     std::filesystem::remove(tmpPath, ec);
 
-    EXPECT_NO_THROW(session.exportTo(tmpPath, "txt"));
+    EXPECT_TRUE(session.exportTo(tmpPath, "txt").has_value());
     EXPECT_TRUE(std::filesystem::exists(tmpPath));
 
     std::ifstream file(tmpPath);
@@ -601,13 +594,13 @@ TEST(ScanSessionTest, SessionUndoAcrossBackendsKeepsContentAndCleansFiles) {
     for (uint64_t i = 0; i < kBig; ++i) {
         r2.emplace_back(static_cast<tpe::Address>(0x40000 + i));
     }
-    session.commitNextScan(ScanCondition::Changed, std::move(r2));
+    EXPECT_TRUE(session.commitNextScan(ScanCondition::Changed, std::move(r2)).has_value());
     EXPECT_TRUE(session.isDiskBacked());
     EXPECT_EQ(session.resultCount(), kBig);
     EXPECT_EQ(countTempScanFiles(), filesBefore + 1);
 
     // Undo: content returns to round 1; round-2 disk file is deleted
-    session.undo();
+    EXPECT_TRUE(session.undo().has_value());
     EXPECT_FALSE(session.isDiskBacked());
     EXPECT_EQ(session.resultCount(), 3u);
     auto u0 = session.resultAt(0);

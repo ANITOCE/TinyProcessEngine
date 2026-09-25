@@ -7,6 +7,7 @@
 #include "ValueFormatter.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -164,7 +165,10 @@ void executeUndo(tpe::cli::ReplState& state, ProcessEngine& engine)
                      "Usage: undo");
         return;
     }
-    session->undo();
+    // 前置 canUndo() 已保证成功;失败为不可达路径(C-E3)
+    const Result<void, SessionError> undone = session->undo();
+    assert(undone.has_value());
+    (void)undone;
     state.onUndo(session->resultCount());
 }
 

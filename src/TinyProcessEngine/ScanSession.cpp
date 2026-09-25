@@ -2,7 +2,6 @@
 #include "ResultStorage.hpp"
 
 #include <fstream>
-#include <stdexcept>
 
 namespace tpe {
 
@@ -34,9 +33,10 @@ void ScanSession::commitFirstScan(std::vector<ScanRecord> results) {
     m_state = SessionState::Ready;
 }
 
-void ScanSession::commitNextScan(ScanCondition condition, std::vector<ScanRecord> results) {
+Result<void, SessionError> ScanSession::commitNextScan(ScanCondition condition,
+                                                       std::vector<ScanRecord> results) {
     if (m_state != SessionState::Ready) {
-        throw std::runtime_error("Session not in Ready state");
+        return Result<void, SessionError>::error(SessionError{"Session not in Ready state"});
     }
     m_prevStorage = std::move(m_storage);
     m_storage = ResultStorage{};
@@ -45,15 +45,17 @@ void ScanSession::commitNextScan(ScanCondition condition, std::vector<ScanRecord
     }
     ++m_round;
     m_condition = condition;
+    return Result<void, SessionError>::success();
 }
 
-void ScanSession::undo() {
+Result<void, SessionError> ScanSession::undo() {
     if (!canUndo()) {
-        throw std::runtime_error("Nothing to undo");
+        return Result<void, SessionError>::error(SessionError{"Nothing to undo"});
     }
     m_storage = std::move(*m_prevStorage);
     m_prevStorage.reset();
     --m_round;
+    return Result<void, SessionError>::success();
 }
 
 void ScanSession::close() {
@@ -111,16 +113,18 @@ Result<void, PlatformError> ScanSession::writeMemory(tpe::Address addr, const tp
 // ============================================================
 // Export
 // ============================================================
-void ScanSession::exportTo(const std::filesystem::path& path, std::string_view format) const {
+Result<void, SessionError> ScanSession::exportTo(const std::filesystem::path& path,
+                                                 std::string_view format) const {
     const uint64_t total = m_storage.totalCount();
     if (total == 0) {
-        throw std::runtime_error("No results to export");
+        return Result<void, SessionError>::error(SessionError{"No results to export"});
     }
 
     // Validate parent directory
     auto parent = path.parent_path();
     if (!parent.empty() && !std::filesystem::exists(parent)) {
-        throw std::runtime_error("Directory does not exist: " + parent.string());
+        return Result<void, SessionError>::error(
+            SessionError{"Directory does not exist: " + parent.string()});
     }
 
     std::string fmt(format);
@@ -133,7 +137,8 @@ void ScanSession::exportTo(const std::filesystem::path& path, std::string_view f
 
     std::ofstream file(outPath, std::ios::out | std::ios::trunc);
     if (!file.is_open()) {
-        throw std::runtime_error("Failed to open file: " + outPath.string());
+        return Result<void, SessionError>::error(
+            SessionError{"Failed to open file: " + outPath.string()});
     }
 
     if (fmt == "csv" || outPath.extension() == ".csv") {
@@ -164,6 +169,7 @@ void ScanSession::exportTo(const std::filesystem::path& path, std::string_view f
         }
     }
     file.close();
+    return Result<void, SessionError>::success();
 }
 
 } // namespace tpe
