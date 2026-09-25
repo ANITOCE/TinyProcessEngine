@@ -23,7 +23,8 @@ WindowsOS::~WindowsOS()
 Result<std::vector<Pid_t>, PlatformError> WindowsOS::getAllProcessesPid() {
     std::vector<Pid_t> processIds(1024);
     DWORD cbNeeded = 0;
-    if (!EnumProcesses(processIds.data(), processIds.size() * sizeof(Pid_t), &cbNeeded))
+    // 显式窄化转换：缓冲区字节数（Windows API 要求 DWORD）（FR-005/C-B3）
+    if (!EnumProcesses(processIds.data(), static_cast<DWORD>(processIds.size() * sizeof(Pid_t)), &cbNeeded))
     {
         // 缺陷⑧(FR-023/C-P5):枚举失败上报错误,不得以空列表伪装成功。
         const PlatformError err = PlatformError::from_last_error("EnumProcesses", 0);
