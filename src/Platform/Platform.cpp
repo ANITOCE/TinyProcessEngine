@@ -64,7 +64,8 @@ std::unique_ptr<PlatformOS> createPlatformOS()
 Pid_t str_to_pid(std::string str)
 {
 #ifdef _WIN32
-    return std::stoull(str);
+    // 显式窄化转换：stoull 结果按 Pid_t 收敛（FR-005/C-B3）
+    return static_cast<Pid_t>(std::stoull(str));
 #elif defined(__linux__)
     return std::stoi(str);
 #endif
