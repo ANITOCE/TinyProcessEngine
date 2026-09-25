@@ -1,5 +1,7 @@
 #include "Matches.h"
 
+namespace tpe {
+
 void Matches::add(MemoryPage page, const std::vector<tpe::Offset> &offsets)
 {
     if (!offsets.empty())
@@ -15,3 +17,5 @@ std::vector<PageMatches>::size_type Matches::totalMatches() const
                                return acc + matches.getOffsets().size();
                            });
 }
+
+} // namespace tpe

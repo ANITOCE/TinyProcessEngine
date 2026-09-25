@@ -6,6 +6,8 @@
 #include <vector>
 #include <optional>
 
+namespace tpe {
+
 // ============================================================
 // AobPattern — Array of Bytes 模式
 //
@@ -36,5 +38,7 @@ struct AobPattern {
     /// Whether the entire pattern is wildcards (invalid for search).
     bool isAllWildcards() const { return segments.empty(); }
 };
+
+} // namespace tpe
 
 #endif // TPE_AOB_PATTERN_H_

@@ -12,6 +12,8 @@
 
 #include <string>
 
+namespace tpe::platform {
+
 // ============================================================
 // MemBackend — 内存读写后端选择
 // ============================================================
@@ -63,6 +65,8 @@ private:
     mutable int        m_procMemFd          = -1;    // /proc/PID/mem 文件描述符缓存
     mutable bool       m_procMemFdWritable  = false; // 当前 fd 是否以 O_RDWR 打开
 };
+
+} // namespace tpe::platform
 
 #endif // __linux__
 

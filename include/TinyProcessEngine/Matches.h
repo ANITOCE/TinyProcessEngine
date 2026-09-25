@@ -8,8 +8,8 @@
 #include "MemoryPage.h"
 
 namespace tpe {
+
 using Offset = unsigned int;
-} // namespace tpe
 
 class no_matches
 {
@@ -55,5 +55,7 @@ public:
     bool any() const { return totalMatches() > 0; }
 
 };
+
+} // namespace tpe
 
 #endif // _MATCHES_H_

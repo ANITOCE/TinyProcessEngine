@@ -14,6 +14,8 @@
 #include <cerrno>
 #include <fcntl.h>
 
+namespace tpe::platform {
+
 namespace {
 
 /// 权限类失败的可操作建议(缺陷⑦;FR-020/C-P4)
@@ -446,5 +448,7 @@ void LinuxProcess::ensurePtraceDetached() const {
     ptrace(PTRACE_DETACH, static_cast<pid_t>(m_pid), nullptr, nullptr);
     m_ptraceAttached = false;
 }
+
+} // namespace tpe::platform
 
 #endif // __linux__

@@ -23,6 +23,13 @@
 #include "WindowsOS.h"
 #include "WindowsProcess.h"
 
+using tpe::PlatformError;
+using tpe::Result;
+using tpe::platform::Pid_t;
+using tpe::platform::PlatformProcess;
+using tpe::platform::WindowsOS;
+using tpe::platform::WindowsProcess;
+
 namespace {
 
 /// 经生产打开路径(WindowsOS::open)打开指定进程,并转为具体类型以便操作只读标记。

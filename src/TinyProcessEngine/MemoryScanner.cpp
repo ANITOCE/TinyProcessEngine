@@ -10,6 +10,8 @@
 #include <iomanip>
 #include <optional>
 
+namespace tpe {
+
 // ============================================================
 // BMH: Build bad-character skip table
 // ============================================================
@@ -59,7 +61,7 @@ static bool floatTolerantMatch(const uint8_t* memBytes, const uint8_t* searchByt
 // firstScan — Full linear scan of all readable pages
 // ============================================================
 std::vector<ScanRecord> MemoryScanner::firstScan(
-    PlatformProcess& process, const ValueType& type, const tpe::Memory& pattern,
+    tpe::platform::PlatformProcess& process, const ValueType& type, const tpe::Memory& pattern,
     const ScanOptions& options)
 {
     std::vector<ScanRecord> results;
@@ -227,7 +229,7 @@ bool compareNumeric(ScanCondition condition, NumericKind kind, const ScanRecord&
 // nextScan — Incremental filtering
 // ============================================================
 std::vector<ScanRecord> MemoryScanner::nextScan(
-    PlatformProcess& process,
+    tpe::platform::PlatformProcess& process,
     const std::vector<ScanRecord>& previousResults,
     ScanCondition condition,
     const ValueType& type,
@@ -297,7 +299,7 @@ std::vector<ScanRecord> MemoryScanner::nextScan(
 // scanAOB — Array of Bytes pattern search
 // ============================================================
 std::vector<tpe::Address> MemoryScanner::scanAOB(
-    PlatformProcess& process,
+    tpe::platform::PlatformProcess& process,
     const AobPattern& pattern,
     const ScanOptions& options)
 {
@@ -374,3 +376,5 @@ std::vector<tpe::Address> MemoryScanner::scanAOB(
 
     return results;
 }
+
+} // namespace tpe

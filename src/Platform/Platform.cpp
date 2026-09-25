@@ -12,6 +12,8 @@
 #include <cstring>
 #endif
 
+namespace tpe {
+
 PlatformError PlatformError::from_last_error(std::string op, unsigned long pid_val) {
     PlatformError err;
     err.operation   = std::move(op);
@@ -43,6 +45,10 @@ PlatformError PlatformError::from_last_error(std::string op, unsigned long pid_v
     return err;
 }
 
+} // namespace tpe
+
+namespace tpe::platform {
+
 std::shared_ptr<PlatformProcess> createPlatformProcess(Pid_t pid, std::string p_name)
 {
 #ifdef _WIN32
@@ -71,3 +77,5 @@ Pid_t str_to_pid(std::string str)
 #endif
     
 }
+
+} // namespace tpe::platform

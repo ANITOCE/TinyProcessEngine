@@ -11,6 +11,8 @@
 #include <optional>
 #include <fstream>
 
+namespace tpe {
+
 // ============================================================
 // ResultStorage — 扫描结果的分块存储
 //
@@ -102,5 +104,7 @@ private:
     void writeRecordToDisk(const ScanRecord& record);
     ScanRecord readRecordFromDisk(std::streamoff offset) const;
 };
+
+} // namespace tpe
 
 #endif // TPE_RESULT_STORAGE_H_

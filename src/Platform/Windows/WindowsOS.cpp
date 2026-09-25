@@ -7,6 +7,8 @@
 #include <TlHelp32.h>
 #include <Psapi.h>
 
+namespace tpe::platform {
+
 WindowsOS::WindowsOS()
 {
     auto pids = getAllProcessesPid();
@@ -92,5 +94,7 @@ void WindowsOS::getAllProcesses(std::vector<Pid_t> allPid)
         this->ProcessList.push_back(std::make_shared<WindowsProcess>(pid));
     }
 }
+
+} // namespace tpe::platform
 
 #endif // _WIN32

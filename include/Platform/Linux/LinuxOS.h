@@ -7,6 +7,8 @@
 
 #include <string>
 
+namespace tpe::platform {
+
 class LinuxOS : public PlatformOS
 {
 public:
@@ -23,6 +25,8 @@ private:
     static std::string readProcessName(Pid_t pid);
     static std::string extractBasename(const std::string& path);
 };
+
+} // namespace tpe::platform
 
 #endif // __linux__
 

@@ -7,6 +7,8 @@
 
 #ifdef _WIN32
 
+namespace tpe::platform {
+
 class WindowsProcess : public PlatformProcess
 {
 public:
@@ -29,6 +31,8 @@ protected:
     ScopedHandle m_processHandle;
     bool m_readOnly = false;
 };
+
+} // namespace tpe::platform
 
 #endif // _WIN32
 

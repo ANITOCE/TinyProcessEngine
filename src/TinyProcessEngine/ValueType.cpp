@@ -1,6 +1,8 @@
 #include "ValueType.h"
 #include "HelpFunction.h"
 
+namespace tpe {
+
 namespace {
     std::vector<std::unique_ptr<ValueType>> createTypes() {
         std::vector<std::unique_ptr<ValueType>> types;
@@ -46,3 +48,5 @@ const ValueType& ValueType::choose_type()
     assert(0 <= index && index < TYPES_COUNT);
     return *TYPES[index];
 }
+
+} // namespace tpe

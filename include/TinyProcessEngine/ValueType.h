@@ -17,6 +17,8 @@
 #include "MemoryPage.h"
 #include "HelpFunction.h"
 
+namespace tpe {
+
 /// 数值类型类别:决定增量扫描的数值比较语义(Phase 05 缺陷 ①/FR-003):
 /// - SignedInteger:按有符号数值比较(符号扩展);
 /// - UnsignedInteger:按无符号数值比较(零扩展);
@@ -247,5 +249,7 @@ tpe::Memory SimpleValueType<T>::representation(const T &value) const
     auto bytes = reinterpret_cast<const tpe::Byte *>(&value);
     return tpe::Memory(bytes, bytes + sizeof(T));
 }
+
+} // namespace tpe
 
 #endif // _VALUETYPE_H_

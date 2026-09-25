@@ -12,8 +12,6 @@ using Address = std::uintptr_t;
 using Memory  = std::vector<Byte>;
 using Size    = std::size_t;
 
-} // namespace tpe
-
 /**
  * Memory page of the memory space of a process.
  * We read the memory of a process one page at a time.
@@ -26,5 +24,7 @@ struct MemoryPage
 
     MemoryPage(tpe::Address start, tpe::Size size) : start{start}, size{size} {}
 };
+
+} // namespace tpe
 
 #endif

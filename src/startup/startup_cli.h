@@ -3,7 +3,9 @@
 #include <string>
 #include <vector>
 
+namespace tpe {
 class ProcessEngine;
+}
 
 namespace tpe::app {
 

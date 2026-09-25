@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <optional>
 
+namespace tpe {
+
 // ============================================================
 // ScanCondition — 扫描条件枚举
 //   首轮: ExactValue, Unknown
@@ -69,5 +71,7 @@ struct ScanRecord {
 #pragma pack(pop)
 
 static_assert(sizeof(ScanRecord) == 17, "ScanRecord must be exactly 17 bytes (packed)");
+
+} // namespace tpe
 
 #endif // TPE_SCAN_TYPES_H_

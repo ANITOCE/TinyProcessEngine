@@ -7,6 +7,8 @@
 
 #ifdef _WIN32
 
+namespace tpe::platform {
+
 class WindowsOS : public PlatformOS
 {
 public:
@@ -19,6 +21,8 @@ public:
 
     void getAllProcesses(std::vector<Pid_t> allPid) override;
 };
+
+} // namespace tpe::platform
 
 #endif // _WIN32
 

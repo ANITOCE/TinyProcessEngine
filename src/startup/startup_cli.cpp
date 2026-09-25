@@ -20,8 +20,8 @@ namespace {
 
 /// 提示符展示用进程名:优先取进程列表中的真实名称。
 /// (平台层 open() 以占位名构造进程对象,故不以它作为唯一来源。)
-std::string promptProcessName(ProcessEngine& engine, Pid_t pid,
-                              const std::shared_ptr<PlatformProcess>& process)
+std::string promptProcessName(ProcessEngine& engine, tpe::platform::Pid_t pid,
+                              const std::shared_ptr<tpe::platform::PlatformProcess>& process)
 {
     const std::optional<std::string> listed = engine.searchProcess(pid);
     if (listed.has_value() && !listed->empty()) {
@@ -305,7 +305,7 @@ int runCliWithEngine(const std::vector<std::string>& args, ProcessEngine& engine
     }
 
     case tpe::cli::TerminalCommandKind::OpenProcess: {
-        const std::shared_ptr<PlatformProcess> process = engine.openProcess(command.pid);
+        const std::shared_ptr<tpe::platform::PlatformProcess> process = engine.openProcess(command.pid);
         if (!process) {
             // ProcessEngine::openProcess 已向 stderr 输出失败原因(契约 C-T3);不进入 REPL
             return tpe::cli::kExitRuntimeError;

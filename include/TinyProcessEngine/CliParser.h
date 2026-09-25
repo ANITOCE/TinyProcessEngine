@@ -60,7 +60,7 @@ enum class TerminalCommandKind {
 /// parseTerminalCommand 的结果;UsageError 时 error 保存英文原因。
 struct TerminalCommand {
     TerminalCommandKind kind = TerminalCommandKind::Help;
-    Pid_t pid = 0;
+    tpe::platform::Pid_t pid = 0;
     std::string error;
 };
 

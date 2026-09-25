@@ -4,10 +4,12 @@
 #include <fstream>
 #include <stdexcept>
 
+namespace tpe {
+
 // ============================================================
 // Construction
 // ============================================================
-ScanSession::ScanSession(std::shared_ptr<PlatformProcess> process)
+ScanSession::ScanSession(std::shared_ptr<tpe::platform::PlatformProcess> process)
     : m_process(std::move(process))
 {}
 
@@ -163,3 +165,5 @@ void ScanSession::exportTo(const std::filesystem::path& path, std::string_view f
     }
     file.close();
 }
+
+} // namespace tpe

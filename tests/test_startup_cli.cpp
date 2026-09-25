@@ -24,6 +24,14 @@
 #include <utility>
 #include <vector>
 
+using tpe::MemoryPage;
+using tpe::PlatformError;
+using tpe::ProcessEngine;
+using tpe::Result;
+using tpe::platform::Pid_t;
+using tpe::platform::PlatformOS;
+using tpe::platform::PlatformProcess;
+
 namespace {
 
 /// 伪进程:仅承载 PID 与名称(列表展示路径用)。

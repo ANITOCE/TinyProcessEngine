@@ -10,6 +10,25 @@
 #include <memory>
 #include <vector>
 
+using tpe::AobPattern;
+using tpe::Double;
+using tpe::Float;
+using tpe::Int32;
+using tpe::MemoryPage;
+using tpe::MemoryScanner;
+using tpe::NumericKind;
+using tpe::PlatformError;
+using tpe::Result;
+using tpe::ScanCondition;
+using tpe::ScanOptions;
+using tpe::ScanRecord;
+using tpe::ScanSession;
+using tpe::String;
+using tpe::UnsignedByte;
+using tpe::ValueType;
+using tpe::platform::Pid_t;
+using tpe::platform::PlatformProcess;
+
 // ============================================================
 // MemoryScanner::boyerMooreSearch — Algorithm tests
 // ============================================================

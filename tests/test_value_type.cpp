@@ -1,6 +1,16 @@
 #include <gtest/gtest.h>
 #include "ValueType.h"
 
+using tpe::Character;
+using tpe::Double;
+using tpe::Float;
+using tpe::Int16;
+using tpe::Int32;
+using tpe::Int64;
+using tpe::String;
+using tpe::UnsignedByte;
+using tpe::ValueType;
+
 // ============================================================
 // UnsignedByte tests
 // ============================================================

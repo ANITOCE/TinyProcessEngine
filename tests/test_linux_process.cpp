@@ -19,6 +19,9 @@
 #include "LinuxOS.h"
 #include "LinuxProcess.h"
 
+using tpe::platform::LinuxOS;
+using tpe::platform::Pid_t;
+
 // ============================================================
 // 测试 Fixture: 启动辅助进程，提供 PID 供测试
 // ============================================================

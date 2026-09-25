@@ -7,6 +7,8 @@
 #include <cassert>
 #include <cstdint>
 
+namespace tpe {
+
 // ============================================================
 // PlatformError — 平台操作错误信息
 // ============================================================
@@ -103,5 +105,7 @@ private:
     bool m_has_value = false;
     E m_error;
 };
+
+} // namespace tpe
 
 #endif // _RESULT_H_

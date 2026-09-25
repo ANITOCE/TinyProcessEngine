@@ -11,6 +11,8 @@
 #include <filesystem>
 #include <optional>
 
+namespace tpe {
+
 // ============================================================
 // SessionState — 扫描会话状态
 // ============================================================
@@ -25,7 +27,7 @@ enum class SessionState {
 // ============================================================
 class ScanSession {
 public:
-    explicit ScanSession(std::shared_ptr<PlatformProcess> process);
+    explicit ScanSession(std::shared_ptr<tpe::platform::PlatformProcess> process);
 
     // ── 会话生命周期 ──
     void beginScan(const ValueType& type, ScanOptions options = {});
@@ -52,7 +54,7 @@ public:
     Result<void, PlatformError> writeMemory(tpe::Address addr, const tpe::Memory& data) const;
 
 private:
-    std::shared_ptr<PlatformProcess> m_process;
+    std::shared_ptr<tpe::platform::PlatformProcess> m_process;
     SessionState m_state = SessionState::Idle;
     uint32_t m_round = 0;
     ScanCondition m_condition = ScanCondition::ExactValue;
@@ -62,5 +64,7 @@ private:
     ResultStorage m_storage;                      // 当前轮结果集(内存块 / 磁盘临时文件)
     std::optional<ResultStorage> m_prevStorage;   // 上一轮结果集(单级 undo)
 };
+
+} // namespace tpe
 
 #endif // TPE_SCAN_SESSION_H_

@@ -14,14 +14,17 @@
 #include <Windows.h>
 #include <Psapi.h>
 #include <TlHelp32.h>
-
-typedef DWORD Pid_t;
-typedef HANDLE pHandle_t;
-
 #elif defined(__linux__)
 #include <unistd.h>
-typedef int Pid_t;
+#endif // __linux__ or win32
 
+namespace tpe::platform {
+
+#ifdef _WIN32
+typedef DWORD Pid_t;
+typedef HANDLE pHandle_t;
+#elif defined(__linux__)
+typedef int Pid_t;
 #endif // __linux__ or win32
 
 class PlatformProcess
@@ -68,5 +71,7 @@ protected:
 std::shared_ptr<PlatformProcess> createPlatformProcess(Pid_t pid, std::string p_name);
 std::unique_ptr<PlatformOS> createPlatformOS();
 Pid_t str_to_pid(std::string str);
+
+} // namespace tpe::platform
 
 #endif // _PLATFORM_H_

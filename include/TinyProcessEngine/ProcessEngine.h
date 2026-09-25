@@ -12,12 +12,14 @@
 #include <memory>
 #include <optional>
 
+namespace tpe {
+
 class ProcessEngine
 {
 private:
     // 缺陷⑧(R9):由静态改为实例成员,支持测试注入平台实现。
-    std::unique_ptr<PlatformOS> m_os;
-    std::shared_ptr<PlatformProcess> m_currentProcess;
+    std::unique_ptr<tpe::platform::PlatformOS> m_os;
+    std::shared_ptr<tpe::platform::PlatformProcess> m_currentProcess;
     MemoryScanner m_scanner;
     std::unique_ptr<ScanSession> m_session;
 
@@ -25,15 +27,15 @@ public:
     ProcessEngine();
     /// 注入构造(缺陷⑧;R9 测试接缝):使用调用方提供的平台实现;
     /// 默认构造仍使用 createPlatformOS()。
-    explicit ProcessEngine(std::unique_ptr<PlatformOS> os);
+    explicit ProcessEngine(std::unique_ptr<tpe::platform::PlatformOS> os);
     ~ProcessEngine();
 
     /// 打印进程列表(格式不变);平台枚举失败时返回该错误(FR-023/FR-024)。
     Result<void, PlatformError> getProcessList() const;
-    std::shared_ptr<PlatformProcess> openProcess(Pid_t pid);
+    std::shared_ptr<tpe::platform::PlatformProcess> openProcess(tpe::platform::Pid_t pid);
 
     /// 按 PID 查找进程名(单行);未命中时返回 std::nullopt(契约 C-T2)。
-    std::optional<std::string> searchProcess(Pid_t pid) const;
+    std::optional<std::string> searchProcess(tpe::platform::Pid_t pid) const;
 
     /// Execute first scan on the currently opened process.
     /// @param type    值类型（决定浮点容差与展示）
@@ -54,5 +56,7 @@ public:
 
     void modifyMemory();
 };
+
+} // namespace tpe
 
 #endif // _PROCESS_ENGINE_H_

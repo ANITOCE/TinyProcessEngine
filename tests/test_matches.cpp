@@ -1,6 +1,11 @@
 #include <gtest/gtest.h>
 #include "Matches.h"
 
+using tpe::Matches;
+using tpe::MemoryPage;
+using tpe::PageMatches;
+using tpe::no_matches;
+
 // ============================================================
 // PageMatches tests
 // ============================================================

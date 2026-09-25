@@ -1,11 +1,13 @@
 #include "ProcessEngine.h"
 
+namespace tpe {
+
 ProcessEngine::ProcessEngine()
-    : m_os(createPlatformOS())
+    : m_os(tpe::platform::createPlatformOS())
 {
 }
 
-ProcessEngine::ProcessEngine(std::unique_ptr<PlatformOS> os)
+ProcessEngine::ProcessEngine(std::unique_ptr<tpe::platform::PlatformOS> os)
     : m_os(std::move(os))
 {
 }
@@ -28,7 +30,7 @@ Result<void, PlatformError> ProcessEngine::getProcessList() const
     return Result<void, PlatformError>::success();
 }
 
-std::shared_ptr<PlatformProcess> ProcessEngine::openProcess(Pid_t pid)
+std::shared_ptr<tpe::platform::PlatformProcess> ProcessEngine::openProcess(tpe::platform::Pid_t pid)
 {
     m_currentProcess = m_os->open(pid);
     if (!m_currentProcess) {
@@ -37,7 +39,7 @@ std::shared_ptr<PlatformProcess> ProcessEngine::openProcess(Pid_t pid)
     return m_currentProcess;
 }
 
-std::optional<std::string> ProcessEngine::searchProcess(Pid_t pid) const
+std::optional<std::string> ProcessEngine::searchProcess(tpe::platform::Pid_t pid) const
 {
     for(auto process : m_os->ProcessList)
     {
@@ -135,3 +137,5 @@ void ProcessEngine::modifyMemory() {
         }
     }
 }
+
+} // namespace tpe

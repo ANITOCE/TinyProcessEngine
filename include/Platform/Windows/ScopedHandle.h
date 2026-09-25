@@ -5,6 +5,8 @@
 
 #include <Windows.h>
 
+namespace tpe::platform {
+
 /**
  * RAII wrapper for Windows HANDLE.
  * Automatically calls CloseHandle on destruction.
@@ -60,6 +62,8 @@ public:
 private:
     HANDLE m_handle;
 };
+
+} // namespace tpe::platform
 
 #endif // _WIN32
 

@@ -16,6 +16,8 @@
     if (function == NULL)  \
     PrintError(#function)
 
+namespace tpe {
+
 #ifdef _WIN32
 // UTF-8 与 UTF-16 互转（Windows 平台；替代已弃用的 wstring_convert/codecvt，FR-003/C-B2）
 inline std::wstring to_wide_string(const std::string &input)
@@ -97,5 +99,7 @@ T ask_for(const std::string &message, const std::string &error,
 
     return t;
 }
+
+} // namespace tpe
 
 #endif // _HELP_FUNCTION_H_

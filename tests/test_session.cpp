@@ -7,6 +7,11 @@
 #include <string>
 #include <system_error>
 
+using tpe::CHUNK_RECORDS;
+using tpe::ResultStorage;
+using tpe::ScanRecord;
+using tpe::StorageBackend;
+
 // Count temp files created by ResultStorage disk migration (tpe_scan_*.tmp)
 static size_t countTempScanFiles() {
     size_t count = 0;
@@ -228,6 +233,12 @@ TEST(ResultStorageTest, AppendWithoutSnapshot) {
 // ============================================================
 
 #include "ScanSession.h"
+
+using tpe::ScanCondition;
+using tpe::ScanSession;
+using tpe::SessionState;
+using tpe::ValueType;
+using tpe::platform::PlatformProcess;
 
 // Mock ValueType for testing
 struct MockValueType : public ValueType {
@@ -599,6 +610,13 @@ TEST(ScanSessionTest, SessionUndoAcrossBackendsKeepsContentAndCleansFiles) {
 #include <memory>
 #include <utility>
 #include <vector>
+
+using tpe::MemoryPage;
+using tpe::PlatformError;
+using tpe::ProcessEngine;
+using tpe::Result;
+using tpe::platform::Pid_t;
+using tpe::platform::PlatformOS;
 
 namespace {
 

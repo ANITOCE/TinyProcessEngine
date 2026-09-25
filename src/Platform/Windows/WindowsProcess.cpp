@@ -2,6 +2,8 @@
 
 #include "WindowsProcess.h"
 
+namespace tpe::platform {
+
 bool can_cheat_page(const MEMORY_BASIC_INFORMATION &page)
 {
     return page.State == MEM_COMMIT &&
@@ -92,5 +94,7 @@ Result<void, PlatformError> WindowsProcess::write(tpe::Address address, const tp
     }
     return Result<void, PlatformError>::success();
 }
+
+} // namespace tpe::platform
 
 #endif // _WIN32

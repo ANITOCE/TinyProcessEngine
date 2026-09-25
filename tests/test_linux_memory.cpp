@@ -22,6 +22,13 @@
 #include "LinuxProcess.h"
 #include "MemoryPage.h"
 
+using tpe::MemoryPage;
+using tpe::platform::LinuxOS;
+using tpe::platform::LinuxProcess;
+using tpe::platform::MemBackend;
+using tpe::platform::Pid_t;
+using tpe::platform::PlatformProcess;
+
 // ============================================================
 // 测试 Fixture: 启动 tpe_test_target 辅助进程
 // ============================================================

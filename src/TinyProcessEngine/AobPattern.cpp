@@ -4,6 +4,8 @@
 #include <cctype>
 #include <algorithm>
 
+namespace tpe {
+
 // ============================================================
 // AobPattern::parse — tokenize "48 8B ?? 00" style pattern
 // ============================================================
@@ -96,3 +98,5 @@ size_t AobPattern::totalLength() const {
     const auto& last = segments.back();
     return last.offset + last.bytes.size();
 }
+
+} // namespace tpe
