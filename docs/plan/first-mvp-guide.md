@@ -142,7 +142,7 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 |---|---|---|---|---|---|
 | Phase 04 | CLI 交互重构 | 按《CLI 交互规范》落地终端旗标命令、REPL、startup 分层与 Test.exe,废弃旧交互流程 | 无(前置 Phase 01–03 已完成) | `specs/004-cli-interaction-refactor` | `merged`(2026-09-21) |
 | Phase 05 | 遗留缺陷修复 | 清零 7 项审计缺陷 + 1 项 Phase 04 移交缺陷(`--all-processes` 枚举失败信号),每项先复现后修复并带回归测试 | Phase 04 | `specs/005-defect-remediation` | `merged`(2026-09-24) |
-| Phase 06 | 规范符合性收敛 | 收敛审计规范偏差:命名空间、头文件风格、库层异常、构建告警 | Phase 05 | `specs/006-spec-compliance` | `planned` |
+| Phase 06 | 规范符合性收敛 | 收敛审计规范偏差:命名空间、头文件风格、库层异常、构建告警 | Phase 05 | `specs/006-spec-compliance` | `merged`(2026-09-26) |
 | Phase 07 | 功能补齐 → MVP | 补齐 `--unknown`/`--greater`/`--less` 首扫、`list` 实时重读,占位清零,完成 MVP 验收 | Phase 06 | `specs/007-mvp-completion` | `planned` |
 
 状态机: `planned → in-progress → in-review → merged → done`(由 Phase 收尾步骤更新)。
@@ -178,7 +178,7 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 - **依赖**: Phase 05。
 - **交付物**: `specs/006-*` 制品;构建零告警证据。
 - **验收**: 全量构建零告警(覆盖 UTF-8 代码页、弃用 API 与 Phase 05 移交告警 C4819 / C4996 / C4267;或仅剩经批准的例外);全量测试通过;公共 API 均在 `tpe::` 命名空间;头文件全部 `.hpp` + `#pragma once`。
-- **状态**: `planned`
+- **状态**: `merged`(2026-09-26 本地合并至 `feat/first-mvp`,合并提交 `3eb12a2`,**无 PR**;验证证据:需求方人工验证**完全通过** + 全量测试 **Windows 211 通过 / 0 失败、Linux(容器)218 通过 / 0 失败、双平台 ctest 100% passed**;五类编译告警 308→0、配置零弃用告警、外部行为零差异(对照 Phase 06 基线);收敛明细与 SC/FR 证据映射见私有区 `specs/006-spec-compliance/evidence-matrix.md`,Phase 文档见 `docs/phases/first-mvp-phase-06.md`)
 
 #### Phase 07:功能补齐 → MVP
 
