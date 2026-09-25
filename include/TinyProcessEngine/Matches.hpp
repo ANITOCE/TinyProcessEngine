@@ -3,16 +3,13 @@
 #include <vector>
 #include <numeric>
 #include <cstdint>
+#include <optional>
 
 #include "MemoryPage.hpp"
 
 namespace tpe {
 
 using Offset = unsigned int;
-
-class no_matches
-{
-};
 
 /**
  * Represents found matches within a memory page.
@@ -22,15 +19,22 @@ class PageMatches
     MemoryPage page;
     std::vector<tpe::Offset> offsets;
 
-public:
-    /**
-     * If no offsets are provided, a no_matches exception is thrown.
-     */
     PageMatches(MemoryPage page, const std::vector<tpe::Offset> &offsets)
         : page{page}, offsets{offsets}
     {
+    }
+
+public:
+    /**
+     * Creates a PageMatches; empty offsets are rejected via std::nullopt
+     * (failure is reported by return value; FR-014/C-E2).
+     */
+    [[nodiscard]] static std::optional<PageMatches> create(
+        MemoryPage page, const std::vector<tpe::Offset> &offsets)
+    {
         if (offsets.empty())
-            throw no_matches{};
+            return std::nullopt;
+        return PageMatches(page, offsets);
     }
 
     const MemoryPage &getPage() const { return page; }
