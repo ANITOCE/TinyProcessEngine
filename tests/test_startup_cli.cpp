@@ -16,7 +16,7 @@
 #include "CliParser.hpp"
 #include "Platform.hpp"
 #include "ProcessEngine.hpp"
-#include "startup_cli.h"
+#include "startup_cli.hpp"
 
 #include <memory>
 #include <sstream>

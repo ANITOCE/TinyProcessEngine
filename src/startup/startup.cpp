@@ -1,7 +1,7 @@
-#include "startup.h"
+#include "startup.hpp"
 
 #include "CliParser.hpp"
-#include "startup_cli.h"
+#include "startup_cli.hpp"
 
 #include <cstddef>
 #include <iostream>

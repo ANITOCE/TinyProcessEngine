@@ -36,7 +36,7 @@ set(TPE_TEST_SOURCES
   # US6(缺陷⑧):CLI 枚举失败信号用例(runCliWithEngine 注入接缝)
   test_startup_cli.cpp
   # US6(缺陷⑧):CLI 装配层以源文件形式编入测试目标(该文件同时被 exe 目标编译,
-  # 两目标互不冲突;注入接缝 runCliWithEngine 的声明见 src/startup/startup_cli.h)
+  # 两目标互不冲突;注入接缝 runCliWithEngine 的声明见 src/startup/startup_cli.hpp)
   ${CMAKE_SOURCE_DIR}/src/startup/startup_cli.cpp
 )
 
@@ -57,7 +57,7 @@ target_include_directories(tpe_tests PRIVATE
   ${CMAKE_SOURCE_DIR}/include
   ${CMAKE_SOURCE_DIR}/include/TinyProcessEngine
   ${CMAKE_SOURCE_DIR}/include/Platform
-  # US6(缺陷⑧):startup_cli.h 所在目录(runCliWithEngine 声明)
+  # US6(缺陷⑧):startup_cli.hpp 所在目录(runCliWithEngine 声明)
   ${CMAKE_SOURCE_DIR}/src/startup
 )
 
