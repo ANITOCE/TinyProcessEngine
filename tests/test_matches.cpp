@@ -21,10 +21,19 @@ TEST(PageMatchesTest, ConstructWithValidOffsets) {
     EXPECT_EQ(pm.getOffsets()[2], 32u);
 }
 
-TEST(PageMatchesTest, EmptyOffsetsThrows) {
+// FR-014 (C-E2/C-E4):空 offsets 拒绝不得经异常逃逸——旧实现抛 no_matches,
+// 本断言按预期失败(红);迁移后演进为 create() 工厂断言。
+TEST(PageMatchesTest, EmptyOffsetsRejected) {
     MemoryPage page(0x2000, 1024);
     std::vector<tpe::Offset> empty;
-    EXPECT_THROW(PageMatches(page, empty), no_matches);
+
+    bool escaped = false;
+    try {
+        PageMatches(page, empty);
+    } catch (...) {
+        escaped = true;
+    }
+    EXPECT_FALSE(escaped) << "empty offsets must be rejected without exceptions";
 }
 
 // ============================================================
