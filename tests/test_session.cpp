@@ -301,6 +301,21 @@ TEST(ScanSessionTest, CommitNextScanEnablesUndo) {
     EXPECT_TRUE(session.canUndo());
 }
 
+// FR-012–014 (C-E1/C-E4):失败不得经异常逃逸——旧实现抛 std::runtime_error,
+// 本断言按预期失败(红);迁移后演进为 Result + 消息断言。
+TEST(ScanSessionTest, CommitNextScanFailureDoesNotEscapeAsException) {
+    ScanSession session(makeNullProcess());
+
+    bool escaped = false;
+    try {
+        session.commitNextScan(ScanCondition::Changed, {});
+    } catch (...) {
+        escaped = true;
+    }
+    EXPECT_FALSE(escaped)
+        << "commitNextScan failure must be reported via return value, not exceptions";
+}
+
 TEST(ScanSessionTest, UndoRevertsToPreviousRound) {
     ScanSession session(makeNullProcess());
     MockValueType mockType;
@@ -339,6 +354,19 @@ TEST(ScanSessionTest, UndoAtFirstRoundThrows) {
     EXPECT_THROW(session.undo(), std::runtime_error);
 }
 
+// FR-012–014 (C-E1/C-E4):空会话 undo 失败不得经异常逃逸(红;绿后演进为 Result 断言)。
+TEST(ScanSessionTest, UndoFailureDoesNotEscapeAsException) {
+    ScanSession session(makeNullProcess());
+
+    bool escaped = false;
+    try {
+        session.undo();
+    } catch (...) {
+        escaped = true;
+    }
+    EXPECT_FALSE(escaped) << "undo failure must be reported via return value, not exceptions";
+}
+
 TEST(ScanSessionTest, CloseResetsState) {
     ScanSession session(makeNullProcess());
     MockValueType mockType;
@@ -370,6 +398,19 @@ TEST(ScanSessionTest, ResultAtOutOfRange) {
 TEST(ScanSessionTest, ExportThrowsOnEmptyResults) {
     ScanSession session(makeNullProcess());
     EXPECT_THROW(session.exportTo("test.txt", "txt"), std::runtime_error);
+}
+
+// FR-012–014 (C-E1/C-E4):exportTo 无结果失败不得经异常逃逸(红;绿后演进为 Result 断言)。
+TEST(ScanSessionTest, ExportFailureDoesNotEscapeAsException) {
+    ScanSession session(makeNullProcess());
+
+    bool escaped = false;
+    try {
+        session.exportTo("tpe_export_no_results.csv", "csv");
+    } catch (...) {
+        escaped = true;
+    }
+    EXPECT_FALSE(escaped) << "export failure must be reported via return value, not exceptions";
 }
 
 TEST(ScanSessionTest, ExportCreatesFile) {
