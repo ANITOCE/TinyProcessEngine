@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.14)
 
 # 定义项目名称和语言
 project(TinyProcessEngine LANGUAGES CXX)

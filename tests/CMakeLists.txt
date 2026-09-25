@@ -1,6 +1,3 @@
-# CMake 3.10+ compatible FetchContent usage
-# FetchContent_MakeAvailable requires 3.14+, use manual populate+add_subdirectory for compatibility
-
 include(FetchContent)
 
 FetchContent_Declare(
@@ -9,16 +6,12 @@ FetchContent_Declare(
   GIT_TAG        v1.14.0
 )
 
-FetchContent_GetProperties(googletest)
-if(NOT googletest_POPULATED)
-  FetchContent_Populate(googletest)
-  # Prevent GTest from installing itself
-  set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
-  set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
-  # Force GTest to use the same CRT as the project
-  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-  add_subdirectory(${googletest_SOURCE_DIR} ${googletest_BINARY_DIR} EXCLUDE_FROM_ALL)
-endif()
+# Prevent GTest from installing itself / building GMock; force shared CRT
+set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+
+FetchContent_MakeAvailable(googletest)
 
 # 顶层 CMakeLists.txt 已 enable_testing()，此处不再重复（缺陷⑥）
 
