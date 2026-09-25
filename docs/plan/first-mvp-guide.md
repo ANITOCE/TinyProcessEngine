@@ -11,11 +11,11 @@
 | 字段 | 内容 |
 |---|---|
 | 项目/功能名 | TinyProcessEngine — First MVP |
-| 指南版本 | 1.0.2 |
+| 指南版本 | 1.0.3 |
 | 状态 | `accepted`(2026-09-18 评审通过;全部 Phase 完成验收后置 `done(已封存,只读)`) |
 | 负责人(owner) | anitoce |
 | 创建日期 | 2026-09-18 |
-| 最近更新 | 2026-09-24 |
+| 最近更新 | 2026-09-26 |
 | 关联仓库 | 本地 Git 仓库(未配置远端;如建立公开远端,按第 3 节公开边界执行) |
 | 工具链 | VS Code Copilot Chat(不使用 Copilot CLI);spec-kit `0.16.1`(copilot 集成,PowerShell 脚本) |
 | 场景 | 存量迭代 |
@@ -26,7 +26,7 @@
 
 ### 1.1 背景与动机
 
-TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工具(类 Cheat Engine),当前提供 CLI 前端;CE_UI 图形界面与远程连接等长线方向由后续新指南承接。Phase 01–03(基础重构、核心内存扫描、Linux 平台支持)已交付,其制品位于主检出 `specs/001–003`(私有区);但 2026-09 的独立审计发现 7 项功能性缺陷(详见 §4.2 Phase 05)与若干规范偏差;**CLI 旧式交互流程已完成重构(Phase 04,2026-09-21 合并),审计缺陷已全部清零(Phase 05,2026-09-24 合并)**。本指南取代旧版《DEVELOPMENT_GUIDE.md》v0.2.0(`docs/temp/`,随本指南落地删除;其第 11 章 CLI 交互规范已迁移为 `docs/plan/cli-interaction-spec.md`),聚焦 **First MVP** 落地:CLI 交互重构(已完成)→ 审计修复(已完成)→ MVP 验收,为后续新指南建立干净基线。
+TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工具(类 Cheat Engine),当前提供 CLI 前端;CE_UI 图形界面与远程连接等长线方向由后续新指南承接。Phase 01–03(基础重构、核心内存扫描、Linux 平台支持)已交付,其制品位于主检出 `specs/001–003`(私有区);但 2026-09 的独立审计发现 7 项功能性缺陷(详见 §4.2 Phase 05)与若干规范偏差;**CLI 旧式交互流程已完成重构(Phase 04,2026-09-21 合并),审计缺陷已全部清零(Phase 05,2026-09-24 合并),规范偏差已收敛(Phase 06,2026-09-26 合并)**。本指南取代旧版《DEVELOPMENT_GUIDE.md》v0.2.0(`docs/temp/`,随本指南落地删除;其第 11 章 CLI 交互规范已迁移为 `docs/plan/cli-interaction-spec.md`),聚焦 **First MVP** 落地:CLI 交互重构(已完成)→ 审计修复(已完成)→ 规范收敛(已完成)→ MVP 验收,为后续新指南建立干净基线。
 
 ### 1.2 目标
 
@@ -122,7 +122,7 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 | 项 | 约束 | 理由 |
 |---|---|---|
 | 技术栈 | C++17(`CMAKE_CXX_STANDARD 17`);Windows(Win32 API)+ Linux(`/proc` + `process_vm_*`) | 既有技术选型;C++17 在主流编译器支持面广,当前不使用 C++20 特性 |
-| 构建系统 | CMake(现仓库基线 `3.10+`);`FetchContent` 管理第三方依赖 | 统一、无额外包管理器;与既有构建方式一致 |
+| 构建系统 | CMake(最低 `3.14`);`FetchContent_MakeAvailable` 管理第三方依赖 | 统一、无额外包管理器;3.14 为 MakeAvailable 最低要求(Phase 06 起) |
 | 测试框架 | GoogleTest `v1.14.0`(FetchContent) | 已集成;GTest 生态成熟 |
 | 依赖策略 | `FetchContent` 固定 tag;新增依赖必须同步修订本指南(走评审) | 版本可控、可复现 |
 | 目录约定 | `docs/plan/`(开发指南,公开区)、`docs/phases/`(Phase 文档,私有)、`specs/<分支名>/`(制品,私有);单检出分支切换(在既有 worktree 内操作,**不新建 worktree**) | 统一治理结构 |
@@ -169,7 +169,7 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 - **依赖**: Phase 04。
 - **交付物**: `specs/005-*` 制品;缺陷—测试—证据对照表。
 - **验收**: 8 项逐项关闭并附复现/回归测试;顶层 `ctest` 可发现并运行全部用例(`N 通过 / 0 失败`);Windows 上 `modifyMemory` 写入流程可验证(附运行证据);Linux 相关项附复现证据,或按 §2.5 记录获批的证据缺口例外。
-- **状态**: `merged`(2026-09-24 本地合并至 `feat/first-mvp`,合并提交 `4db7b5f`,**无 PR**;验证证据:需求方人工验证**完全通过** + 全量测试 **Windows 208 通过 / 0 失败、Linux(容器)215 通过 / 0 失败、双平台 ctest 100% passed**;8 项缺陷逐项红→绿,缺陷—测试—证据对照表见私有区 `specs/005-defect-remediation/evidence-matrix.md`,Phase 文档见 `docs/phases/first-mvp-phase-05.md`;过程中附带修复 3 项既有缺陷(CMake `LINUX` 变量平台选择恒假致 Linux 平台源未入构、Linux 进程名测试 exec 竞态、`ValueType.h` 两处 -Werror 告警),详见 Phase 文档 P9 记录)
+- **状态**: `merged`(2026-09-24 本地合并至 `feat/first-mvp`,合并提交 `4db7b5f`,**无 PR**;验证证据:需求方人工验证**完全通过** + 全量测试 **Windows 208 通过 / 0 失败、Linux(容器)215 通过 / 0 失败、双平台 ctest 100% passed**;8 项缺陷逐项红→绿,缺陷—测试—证据对照表见私有区 `specs/005-defect-remediation/evidence-matrix.md`,Phase 文档见 `docs/phases/first-mvp-phase-05.md`;过程中附带修复 3 项既有缺陷(CMake `LINUX` 变量平台选择恒假致 Linux 平台源未入构、Linux 进程名测试 exec 竞态、`ValueType.h`(现 `ValueType.hpp`)两处 -Werror 告警),详见 Phase 文档 P9 记录)
 
 #### Phase 06:规范符合性收敛
 
@@ -242,11 +242,11 @@ Phase 04 → 05 → 06 → 07 为**硬依赖链,全部串行**:修复基于重�
 |---|---|---|---|---|
 | 1 | Linux 运行时验证环境缺失(当前开发机为 Windows) | Linux 相关缺陷无法在本机 Windows 复现验证 | 已建立 **Docker 容器(ubuntu:22.04)双平台验证流程**(Phase 05 实证:容器 215 通过 / 0 失败、ctest 100%);后续 Phase 的 Linux 行为必须附容器证据(§2.5) | `open`(已缓解,2026-09-24) |
 | 2 | 本 worktree `.specify/` 缺 `feature.json`(及扩展) | Phase 04 P0 无法定位特性目录 | 已修复(2026-09-20,Phase 04 P0;Phase 05 P0 已按规则重指向 `specs/005-*`);各 Phase P0 须重指向当期特性目录(Phase 06 → `specs/006-*`) | `closed`(2026-09-20) |
-| 3 | CMake 4.4 弃用 `FetchContent_Populate`,现构建有弃用告警 | 未来 CMake 升级导致构建中断 | Phase 06 替换为 `FetchContent_MakeAvailable`(同步评估最低 CMake 版本) | `open` |
+| 3 | CMake 4.4 弃用 `FetchContent_Populate`,现构建有弃用告警 | 未来 CMake 升级导致构建中断 | **已修复(Phase 06)**:CMake 最低版本上调至 `3.14`,改用 `FetchContent_MakeAvailable`;配置期零弃用告警(CMP0169 消除) | `closed`(2026-09-26) |
 | 4 | 测试基础设施待修复:CTest 未注册、Linux 测试未纳入目标 | 顶层 `ctest` 不可用,基线只能直接运行测试可执行文件 | **已修复(Phase 05 缺陷⑥)**:顶层 `enable_testing` + Linux 用例纳入;双平台 ctest 100% passed(2026-09-24);口径切换见 §6.3 | `closed`(2026-09-24) |
 | 5 | 长线方向(CE_UI、远程连接、工程完善、高级功能)不在本指南范围 | 后续工作暂无总纲可依 | MVP 验收封存后,按 §1.3/§1.4 划界新建开发指南 | `open` |
 | 6 | 既有 `specs/001–003` 为旧流程产物,与现行模板存在差异 | 追溯口径不完全一致 | 保持只读引用;新 Phase 一律走现行模板流程;发现不一致时以现行模板为准 | `open` |
-| 7 | 既有编译告警未清零:C4819(UTF-8 代码页)、C4996(弃用 API)、C4267(转换) | 与 §2.3"零新增告警"口径存在差距,构建噪声 | 已列入 Phase 06 告警清零范围(§4.2);明细见 `specs/005-defect-remediation/evidence-matrix.md` | `open` |
+| 7 | 既有编译告警未清零:C4819 / C4996 / C4267 / C4244 / C4101 | 与 §2.3"零新增告警"口径存在差距,构建噪声 | **已清零(Phase 06)**:五类告警 308 → 0(MSVC 统一 `/utf-8`,无任何抑制开关);证据见 `specs/006-spec-compliance/evidence-matrix.md` | `closed`(2026-09-26) |
 
 ---
 
@@ -260,6 +260,7 @@ Phase 04 → 05 → 06 → 07 为**硬依赖链,全部串行**:修复基于重�
 | 1.0.0 | 2026-09-21 | 路线图回写:P04 状态 `planned` → `merged`(本地合并至 `feat/first-mvp`,无 PR;验证证据:人工验证通过 + 全量测试 187 通过 / 0 失败);同批公开提交 `docs: update dev guide roadmap (phase 04)` | GitHub Copilot | anitoce |
 | 1.0.1 | 2026-09-21 | 一致性修订(PATCH):spec-kit 版本勘误 `0.11.9` → `0.16.1`(文档信息/术语表/§3);单检出表述澄清(既有 worktree 内操作、不新建 worktree;§2.2/§3);§4.1 新增"合并策略"段;Phase 05 条目补充 Phase 04 移交缺陷 ⑧(§4.1/§4.2);§7 风险 #2 关闭、#4 措辞同步;文档信息版本/最近更新同步 | GitHub Copilot | anitoce |
 | 1.0.2 | 2026-09-24 | 一致性修订(PATCH):§1.1 完成状态与 §2.5 容器验证口径同步(constitution v1.0.2);§4.2 Phase 06 条目纳入 Phase 05 移交告警(C4819/C4996/C4267);§6.3 测试口径切换为顶层 `ctest`(Windows + Docker 双平台);§7 风险 #1 缓解更新、#2 注记、#4 关闭、新增 #7;文档信息版本/最近更新同步 | GitHub Copilot | anitoce |
+| 1.0.3 | 2026-09-26 | 一致性修订(PATCH):§1.1 完成状态同步(Phase 06 规范收敛);§3 构建系统更新为 CMake ≥ 3.14 + `FetchContent_MakeAvailable`;§7 风险 #3、#7 关闭(五类告警 308 → 0、配置零弃用告警);§4.2 Phase 05 历史记录补注现名(`ValueType.hpp`);文档信息版本/最近更新同步 | GitHub Copilot | anitoce |
 
 ---
 
