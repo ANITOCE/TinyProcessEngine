@@ -165,10 +165,10 @@ This feature is not implemented yet.
 src/
 ├── main.cpp                    # 仅调用 tpe::app::run(argc, argv)
 └── startup/
-    ├── startup.h               # namespace tpe::app
+    ├── startup.hpp             # namespace tpe::app
     ├── startup.cpp             # int run(argc, argv) —— 模式分发(CLI/GUI)
-    ├── startup_cli.h/.cpp      # int runCli() —— CLI 装配 + REPL 主循环
-    └── startup_gui.h/.cpp      # int runGui() —— GUI 装配(占位,由后续 GUI 指南落地)
+    ├── startup_cli.hpp/.cpp    # int runCli() —— CLI 装配 + REPL 主循环
+    └── startup_gui.hpp/.cpp    # int runGui() —— GUI 装配(占位,由后续 GUI 指南落地)
 ```
 
 职责边界:
@@ -195,7 +195,7 @@ src/
 
 ## 勘误记录
 
-> 本文件为公开区规格输入文档。以下勘误由 Phase 04 消歧(P2,2026-09-20)定稿驱动,并已经 **P7 人工评审闸门确认生效**(2026-09-20,评审人 anitoce);2026-09-24 追加一条退出码口径补充(源自 Phase 04 P2 定稿与 Phase 05 缺陷⑧ 实现,行为已实现并经人工验证)。
+> 本文件为公开区规格输入文档。以下勘误由 Phase 04 消歧(P2,2026-09-20)定稿驱动,并已经 **P7 人工评审闸门确认生效**(2026-09-20,评审人 anitoce);2026-09-24 追加一条退出码口径补充(源自 Phase 04 P2 定稿与 Phase 05 缺陷⑧ 实现,行为已实现并经人工验证);2026-09-25 追加一条头文件扩展名勘误(源自 Phase 06 头文件风格迁移,待 P7 复核)。
 
 | 日期 | 位置 | 原文 | 勘误后 | 依据 | 评审状态 |
 |---|---|---|---|---|---|
@@ -204,6 +204,7 @@ src/
 | 2026-09-20 | §11.5 `next-scan` 表 | `--greater` / `--less` 值列 = 必传 | 改为**不传** | **新增勘误(未经 P2 提问)**:值变大/值变小为快照比较条件,不需要外部值——与 §11.3 示例、§11.5 缺值规则举例(如 `next-scan --equal`)及引擎现有条件(`ScanCondition::Increased` / `Decreased`,见 `src/TinyProcessEngine/MemoryScanner.cpp`)一致;原“必传”疑为自 `new-scan` 表复制 | 已确认(P7 重点评审通过,2026-09-20) |
 | 2026-09-20 | §11.5 缺值规则 / 示例 | 示例 `next-scan --less --i64 42`;缺值规则未列 `--greater` / `--less` | 示例改 `next-scan --less --i64`;缺值规则补入 `next-scan` 的 `--greater` / `--less` | 同上 | 已确认(P7,2026-09-20) |
 | 2026-09-24 | §11.2 表 / 规则 | 仅列成功(0)与参数错误(2),未定义运行期失败退出码 | 增加"运行期失败 → 打印错误,退出码 1"行与规则句(REPL 内失败不退出、状态保持) | Phase 04 P2 定稿(2026-09-20);Phase 05 缺陷⑧ 接通 `--all-processes` 枚举失败信号(`473521b` / `6fc4111`);双平台 ctest 验证 | 已生效(实现+验证,2026-09-24) |
+| 2026-09-25 | §11.9 目录树 | 3 处头文件名后缀为 `.h` | 后缀改为 `.hpp`(随 Phase 06 迁移同步) | Phase 06 头文件风格迁移:全部项目头文件统一 `.h → .hpp` + `#pragma once`(共 24 个;FR-009/FR-010) | 待复核(P7) |
 
 ---
 
