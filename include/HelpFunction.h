@@ -2,10 +2,12 @@
 #define _HELP_FUNCTION_H_
 
 #include <string>
-#include <codecvt>
-#include <locale>
 #include <iostream>
 #include <functional>
+
+#ifdef _WIN32
+#include <Windows.h>
+#endif
 
 #define toWinString(str) (LPTSTR) str.c_str()
 #define toStdString(str) str
@@ -14,16 +16,38 @@
     if (function == NULL)  \
     PrintError(#function)
 
+#ifdef _WIN32
+// UTF-8 与 UTF-16 互转（Windows 平台；替代已弃用的 wstring_convert/codecvt，FR-003/C-B2）
 inline std::wstring to_wide_string(const std::string &input)
 {
-    return std::wstring_convert<std::codecvt_utf8<wchar_t>>().from_bytes(input);
+    if (input.empty())
+    {
+        return std::wstring();
+    }
+    const int size = MultiByteToWideChar(CP_UTF8, 0, input.c_str(),
+                                         static_cast<int>(input.size()), nullptr, 0);
+    std::wstring result(static_cast<std::size_t>(size), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, input.c_str(), static_cast<int>(input.size()),
+                        result.data(), size);
+    return result;
 }
 
 // convert wstring to string
 inline std::string to_byte_string(const std::wstring &input)
 {
-    return std::wstring_convert<std::codecvt_utf8<wchar_t>>().to_bytes(input);
+    if (input.empty())
+    {
+        return std::string();
+    }
+    const int size = WideCharToMultiByte(CP_UTF8, 0, input.c_str(),
+                                         static_cast<int>(input.size()), nullptr, 0,
+                                         nullptr, nullptr);
+    std::string result(static_cast<std::size_t>(size), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, input.c_str(), static_cast<int>(input.size()),
+                        result.data(), size, nullptr, nullptr);
+    return result;
 }
+#endif // _WIN32
 
 // Declarations
 template <class T>
