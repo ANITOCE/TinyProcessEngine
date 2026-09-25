@@ -6,13 +6,15 @@
 // 格式: [LEVEL] ClassName::methodName: message
 // ============================================================
 
-#include "LinuxProcess.h"
+#include "LinuxProcess.hpp"
 #include <fstream>
 #include <sstream>
 #include <iostream>
 #include <cstring>
 #include <cerrno>
 #include <fcntl.h>
+
+namespace tpe::platform {
 
 namespace {
 
@@ -446,5 +448,7 @@ void LinuxProcess::ensurePtraceDetached() const {
     ptrace(PTRACE_DETACH, static_cast<pid_t>(m_pid), nullptr, nullptr);
     m_ptraceAttached = false;
 }
+
+} // namespace tpe::platform
 
 #endif // __linux__

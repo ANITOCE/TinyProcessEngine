@@ -1,15 +1,16 @@
-#ifndef TPE_SCAN_SESSION_H_
-#define TPE_SCAN_SESSION_H_
+#pragma once
 
-#include "Platform.h"
-#include "ScanTypes.h"
-#include "ValueType.h"
-#include "ResultStorage.h"
+#include "Platform.hpp"
+#include "ScanTypes.hpp"
+#include "ValueType.hpp"
+#include "ResultStorage.hpp"
 
 #include <memory>
 #include <vector>
 #include <filesystem>
 #include <optional>
+
+namespace tpe {
 
 // ============================================================
 // SessionState — 扫描会话状态
@@ -21,17 +22,26 @@ enum class SessionState {
 };
 
 // ============================================================
+// SessionError — 会话操作失败信息(FR-012–014;C-E1)
+// 库层失败经返回值报告,不依赖异常。
+// ============================================================
+struct SessionError {
+    std::string message;
+};
+
+// ============================================================
 // ScanSession — 管理一次完整搜索会话的生命周期
 // ============================================================
 class ScanSession {
 public:
-    explicit ScanSession(std::shared_ptr<PlatformProcess> process);
+    explicit ScanSession(std::shared_ptr<tpe::platform::PlatformProcess> process);
 
     // ── 会话生命周期 ──
     void beginScan(const ValueType& type, ScanOptions options = {});
     void commitFirstScan(std::vector<ScanRecord> results);
-    void commitNextScan(ScanCondition condition, std::vector<ScanRecord> results);
-    void undo();
+    [[nodiscard]] Result<void, SessionError> commitNextScan(ScanCondition condition,
+                                                            std::vector<ScanRecord> results);
+    [[nodiscard]] Result<void, SessionError> undo();
     void close();
 
     // ── 查询 ──
@@ -45,14 +55,15 @@ public:
 
     // ── 结果访问 ──
     std::optional<ScanRecord> resultAt(uint64_t index) const;
-    void exportTo(const std::filesystem::path& path, std::string_view format) const;
+    [[nodiscard]] Result<void, SessionError> exportTo(const std::filesystem::path& path,
+                                                      std::string_view format) const;
 
     // ── 直接内存操作 ──
     Result<tpe::Memory, PlatformError> readMemory(tpe::Address addr, tpe::Size size) const;
     Result<void, PlatformError> writeMemory(tpe::Address addr, const tpe::Memory& data) const;
 
 private:
-    std::shared_ptr<PlatformProcess> m_process;
+    std::shared_ptr<tpe::platform::PlatformProcess> m_process;
     SessionState m_state = SessionState::Idle;
     uint32_t m_round = 0;
     ScanCondition m_condition = ScanCondition::ExactValue;
@@ -63,4 +74,4 @@ private:
     std::optional<ResultStorage> m_prevStorage;   // 上一轮结果集(单级 undo)
 };
 
-#endif // TPE_SCAN_SESSION_H_
+} // namespace tpe

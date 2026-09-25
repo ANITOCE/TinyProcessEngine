@@ -1,12 +1,13 @@
-#include "startup_cli.h"
+#include "startup_cli.hpp"
 
-#include "CliParser.h"
-#include "Platform.h"
-#include "ProcessEngine.h"
-#include "ReplState.h"
-#include "ValueFormatter.h"
+#include "CliParser.hpp"
+#include "Platform.hpp"
+#include "ProcessEngine.hpp"
+#include "ReplState.hpp"
+#include "ValueFormatter.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -20,8 +21,8 @@ namespace {
 
 /// 提示符展示用进程名:优先取进程列表中的真实名称。
 /// (平台层 open() 以占位名构造进程对象,故不以它作为唯一来源。)
-std::string promptProcessName(ProcessEngine& engine, Pid_t pid,
-                              const std::shared_ptr<PlatformProcess>& process)
+std::string promptProcessName(ProcessEngine& engine, tpe::platform::Pid_t pid,
+                              const std::shared_ptr<tpe::platform::PlatformProcess>& process)
 {
     const std::optional<std::string> listed = engine.searchProcess(pid);
     if (listed.has_value() && !listed->empty()) {
@@ -164,7 +165,10 @@ void executeUndo(tpe::cli::ReplState& state, ProcessEngine& engine)
                      "Usage: undo");
         return;
     }
-    session->undo();
+    // 前置 canUndo() 已保证成功;失败为不可达路径(C-E3)
+    const Result<void, SessionError> undone = session->undo();
+    assert(undone.has_value());
+    (void)undone;
     state.onUndo(session->resultCount());
 }
 
@@ -305,7 +309,7 @@ int runCliWithEngine(const std::vector<std::string>& args, ProcessEngine& engine
     }
 
     case tpe::cli::TerminalCommandKind::OpenProcess: {
-        const std::shared_ptr<PlatformProcess> process = engine.openProcess(command.pid);
+        const std::shared_ptr<tpe::platform::PlatformProcess> process = engine.openProcess(command.pid);
         if (!process) {
             // ProcessEngine::openProcess 已向 stderr 输出失败原因(契约 C-T3);不进入 REPL
             return tpe::cli::kExitRuntimeError;

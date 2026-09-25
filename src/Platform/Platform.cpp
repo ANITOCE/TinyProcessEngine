@@ -1,16 +1,18 @@
-#include "Platform.h"
-#include "TinyProcessEngine/Result.h"
+#include "Platform.hpp"
+#include "TinyProcessEngine/Result.hpp"
 
 #ifdef _WIN32
-#include "Platform/Windows/WindowsOS.h"
-#include "Platform/Windows/WindowsProcess.h"
+#include "Platform/Windows/WindowsOS.hpp"
+#include "Platform/Windows/WindowsProcess.hpp"
 #include <Windows.h>
 #elif defined(__linux__)
-#include "Platform/Linux/LinuxOS.h"
-#include "Platform/Linux/LinuxProcess.h"
+#include "Platform/Linux/LinuxOS.hpp"
+#include "Platform/Linux/LinuxProcess.hpp"
 #include <cerrno>
 #include <cstring>
 #endif
+
+namespace tpe {
 
 PlatformError PlatformError::from_last_error(std::string op, unsigned long pid_val) {
     PlatformError err;
@@ -43,6 +45,10 @@ PlatformError PlatformError::from_last_error(std::string op, unsigned long pid_v
     return err;
 }
 
+} // namespace tpe
+
+namespace tpe::platform {
+
 std::shared_ptr<PlatformProcess> createPlatformProcess(Pid_t pid, std::string p_name)
 {
 #ifdef _WIN32
@@ -64,9 +70,12 @@ std::unique_ptr<PlatformOS> createPlatformOS()
 Pid_t str_to_pid(std::string str)
 {
 #ifdef _WIN32
-    return std::stoull(str);
+    // 显式窄化转换：stoull 结果按 Pid_t 收敛（FR-005/C-B3）
+    return static_cast<Pid_t>(std::stoull(str));
 #elif defined(__linux__)
     return std::stoi(str);
 #endif
     
 }
+
+} // namespace tpe::platform

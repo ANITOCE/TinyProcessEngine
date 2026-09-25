@@ -13,16 +13,24 @@
 
 #include <gtest/gtest.h>
 
-#include "CliParser.h"
-#include "Platform.h"
-#include "ProcessEngine.h"
-#include "startup_cli.h"
+#include "CliParser.hpp"
+#include "Platform.hpp"
+#include "ProcessEngine.hpp"
+#include "startup_cli.hpp"
 
 #include <memory>
 #include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
+
+using tpe::MemoryPage;
+using tpe::PlatformError;
+using tpe::ProcessEngine;
+using tpe::Result;
+using tpe::platform::Pid_t;
+using tpe::platform::PlatformOS;
+using tpe::platform::PlatformProcess;
 
 namespace {
 

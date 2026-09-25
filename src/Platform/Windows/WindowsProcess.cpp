@@ -1,6 +1,8 @@
 #ifdef _WIN32
 
-#include "WindowsProcess.h"
+#include "WindowsProcess.hpp"
+
+namespace tpe::platform {
 
 bool can_cheat_page(const MEMORY_BASIC_INFORMATION &page)
 {
@@ -92,5 +94,7 @@ Result<void, PlatformError> WindowsProcess::write(tpe::Address address, const tp
     }
     return Result<void, PlatformError>::success();
 }
+
+} // namespace tpe::platform
 
 #endif // _WIN32

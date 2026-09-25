@@ -1,5 +1,4 @@
-#ifndef _VALUETYPE_H_
-#define _VALUETYPE_H_
+#pragma once
 
 #include <string>
 #include <cstdint>
@@ -14,8 +13,10 @@
 #include <string_view>
 #include <type_traits>
 
-#include "MemoryPage.h"
-#include "HelpFunction.h"
+#include "MemoryPage.hpp"
+#include "HelpFunction.hpp"
+
+namespace tpe {
 
 /// 数值类型类别:决定增量扫描的数值比较语义(Phase 05 缺陷 ①/FR-003):
 /// - SignedInteger:按有符号数值比较(符号扩展);
@@ -209,7 +210,7 @@ std::optional<tpe::Memory> SimpleValueType<T>::parse(std::string_view text, std:
             error = "invalid " + name;
             return std::nullopt;
         }
-        // 注:Platform.h 链路会引入 Windows.h 的 min/max 宏,故用括号形式取边界
+        // 注:Platform.hpp 链路会引入 Windows.h 的 min/max 宏,故用括号形式取边界
         if (parsed < static_cast<std::int64_t>((std::numeric_limits<T>::min)()) ||
             parsed > static_cast<std::int64_t>((std::numeric_limits<T>::max)())) {
             error = "out of range for " + name;
@@ -248,4 +249,4 @@ tpe::Memory SimpleValueType<T>::representation(const T &value) const
     return tpe::Memory(bytes, bytes + sizeof(T));
 }
 
-#endif // _VALUETYPE_H_
+} // namespace tpe

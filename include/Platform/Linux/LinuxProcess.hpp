@@ -1,7 +1,6 @@
-#ifndef _LINUX_PROCESS_H_
-#define _LINUX_PROCESS_H_
+#pragma once
 
-#include "Platform.h"
+#include "Platform.hpp"
 
 #ifdef __linux__
 
@@ -11,6 +10,8 @@
 #include <unistd.h>       // close, pread, pwrite, usleep
 
 #include <string>
+
+namespace tpe::platform {
 
 // ============================================================
 // MemBackend — 内存读写后端选择
@@ -64,6 +65,6 @@ private:
     mutable bool       m_procMemFdWritable  = false; // 当前 fd 是否以 O_RDWR 打开
 };
 
-#endif // __linux__
+} // namespace tpe::platform
 
-#endif  // _LINUX_PROCESS_H_
+#endif // __linux__

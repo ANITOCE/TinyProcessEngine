@@ -3,14 +3,16 @@
 #include <limits>
 #include <string>
 
-#include "CliParser.h"
+#include "CliParser.hpp"
 
+using tpe::ScanCondition;
 using tpe::cli::CliParseResult;
 using tpe::cli::CliParser;
 using tpe::cli::CliToken;
 using tpe::cli::parseTerminalCommand;
 using tpe::cli::TerminalCommand;
 using tpe::cli::TerminalCommandKind;
+using tpe::platform::Pid_t;
 
 // ---------------------------------------------------------------------------
 // 令牌化(空白折叠 / 偏移 / 旗标判定)

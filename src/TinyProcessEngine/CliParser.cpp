@@ -1,4 +1,4 @@
-#include "CliParser.h"
+#include "CliParser.hpp"
 
 #include <limits>
 
@@ -46,12 +46,12 @@ bool isDecimalDigits(std::string_view text)
 }
 
 /// 按“纯十进制数字且不超出 Pid_t 上限”解析 PID;越界检测在累乘前进行。
-bool parsePidText(std::string_view text, Pid_t& pid)
+bool parsePidText(std::string_view text, tpe::platform::Pid_t& pid)
 {
     if (!isDecimalDigits(text)) {
         return false;
     }
-    constexpr unsigned long long kMaxPid = (std::numeric_limits<Pid_t>::max)();
+    constexpr unsigned long long kMaxPid = (std::numeric_limits<tpe::platform::Pid_t>::max)();
     unsigned long long value = 0;
     for (const char ch : text) {
         const unsigned long long digit = static_cast<unsigned long long>(ch - '0');
@@ -60,7 +60,7 @@ bool parsePidText(std::string_view text, Pid_t& pid)
         }
         value = value * 10 + digit;
     }
-    pid = static_cast<Pid_t>(value);
+    pid = static_cast<tpe::platform::Pid_t>(value);
     return true;
 }
 
@@ -185,7 +185,7 @@ TerminalCommand parseTerminalCommand(const std::vector<std::string>& args)
         if (args.size() > 2) {
             return usageError("Unexpected argument: " + args[2]);
         }
-        Pid_t pid = 0;
+        tpe::platform::Pid_t pid = 0;
         if (!parsePidText(args[1], pid)) {
             return usageError("Invalid PID: " + args[1] +
                               " (expected a non-negative decimal integer).");

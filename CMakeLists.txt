@@ -1,7 +1,12 @@
-cmake_minimum_required(VERSION 3.10)
+cmake_minimum_required(VERSION 3.14)
 
 # 定义项目名称和语言
 project(TinyProcessEngine LANGUAGES CXX)
+
+# 源码/执行字符集统一 UTF-8（Phase 06 FR-002；修复 C4819）
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
 
 # 测试基础设施（缺陷⑥）：顶层注册 ctest，使任意构建目录可运行 ctest
 enable_testing()

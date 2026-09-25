@@ -1,6 +1,3 @@
-# CMake 3.10+ compatible FetchContent usage
-# FetchContent_MakeAvailable requires 3.14+, use manual populate+add_subdirectory for compatibility
-
 include(FetchContent)
 
 FetchContent_Declare(
@@ -9,16 +6,12 @@ FetchContent_Declare(
   GIT_TAG        v1.14.0
 )
 
-FetchContent_GetProperties(googletest)
-if(NOT googletest_POPULATED)
-  FetchContent_Populate(googletest)
-  # Prevent GTest from installing itself
-  set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
-  set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
-  # Force GTest to use the same CRT as the project
-  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-  add_subdirectory(${googletest_SOURCE_DIR} ${googletest_BINARY_DIR} EXCLUDE_FROM_ALL)
-endif()
+# Prevent GTest from installing itself / building GMock; force shared CRT
+set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
+set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+
+FetchContent_MakeAvailable(googletest)
 
 # 顶层 CMakeLists.txt 已 enable_testing()，此处不再重复（缺陷⑥）
 
@@ -36,7 +29,7 @@ set(TPE_TEST_SOURCES
   # US6(缺陷⑧):CLI 枚举失败信号用例(runCliWithEngine 注入接缝)
   test_startup_cli.cpp
   # US6(缺陷⑧):CLI 装配层以源文件形式编入测试目标(该文件同时被 exe 目标编译,
-  # 两目标互不冲突;注入接缝 runCliWithEngine 的声明见 src/startup/startup_cli.h)
+  # 两目标互不冲突;注入接缝 runCliWithEngine 的声明见 src/startup/startup_cli.hpp)
   ${CMAKE_SOURCE_DIR}/src/startup/startup_cli.cpp
 )
 
@@ -57,7 +50,7 @@ target_include_directories(tpe_tests PRIVATE
   ${CMAKE_SOURCE_DIR}/include
   ${CMAKE_SOURCE_DIR}/include/TinyProcessEngine
   ${CMAKE_SOURCE_DIR}/include/Platform
-  # US6(缺陷⑧):startup_cli.h 所在目录(runCliWithEngine 声明)
+  # US6(缺陷⑧):startup_cli.hpp 所在目录(runCliWithEngine 声明)
   ${CMAKE_SOURCE_DIR}/src/startup
 )
 

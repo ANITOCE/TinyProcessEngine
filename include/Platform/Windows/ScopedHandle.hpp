@@ -1,9 +1,10 @@
-#ifndef _SCOPED_HANDLE_H_
-#define _SCOPED_HANDLE_H_
+#pragma once
 
 #ifdef _WIN32
 
 #include <Windows.h>
+
+namespace tpe::platform {
 
 /**
  * RAII wrapper for Windows HANDLE.
@@ -61,6 +62,6 @@ private:
     HANDLE m_handle;
 };
 
-#endif // _WIN32
+} // namespace tpe::platform
 
-#endif // _SCOPED_HANDLE_H_
+#endif // _WIN32

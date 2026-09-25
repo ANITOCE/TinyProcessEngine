@@ -1,4 +1,4 @@
-#include "startup_gui.h"
+#include "startup_gui.hpp"
 
 namespace tpe::app {
 

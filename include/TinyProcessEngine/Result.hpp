@@ -1,11 +1,12 @@
-#ifndef _RESULT_H_
-#define _RESULT_H_
+#pragma once
 
 #include <string>
 #include <string_view>
 #include <variant>
 #include <cassert>
 #include <cstdint>
+
+namespace tpe {
 
 // ============================================================
 // PlatformError — 平台操作错误信息
@@ -104,4 +105,4 @@ private:
     E m_error;
 };
 
-#endif // _RESULT_H_
+} // namespace tpe

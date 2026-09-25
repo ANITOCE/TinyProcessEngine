@@ -1,14 +1,15 @@
-#ifndef TPE_MEMORY_SCANNER_H_
-#define TPE_MEMORY_SCANNER_H_
+#pragma once
 
-#include "MemoryPage.h"
-#include "ValueType.h"
-#include "ScanTypes.h"
-#include "Platform.h"
+#include "MemoryPage.hpp"
+#include "ValueType.hpp"
+#include "ScanTypes.hpp"
+#include "Platform.hpp"
 
 #include <vector>
 #include <cstdint>
 #include <optional>
+
+namespace tpe {
 
 // ============================================================
 // MemoryScanner — 纯算法扫描器（无状态）
@@ -27,7 +28,7 @@ public:
     /// @return 匹配的 ScanRecord 列表；每条记录携带命中处当轮实读值的快照
     ///         （宽度 = 搜索宽度，>8 字节由 ScanRecord 构造器截断）
     std::vector<ScanRecord> firstScan(
-        PlatformProcess& process,
+        tpe::platform::PlatformProcess& process,
         const ValueType& type,
         const tpe::Memory& pattern,
         const ScanOptions& options = {}
@@ -46,7 +47,7 @@ public:
     /// @param newValue       条件为 ExactValue 时的目标值
     /// @return              过滤后的 ScanRecord 列表
     std::vector<ScanRecord> nextScan(
-        PlatformProcess& process,
+        tpe::platform::PlatformProcess& process,
         const std::vector<ScanRecord>& previousResults,
         ScanCondition condition,
         const ValueType& type,
@@ -58,7 +59,7 @@ public:
     /// @param options  扫描选项
     /// @return        匹配地址列表
     std::vector<tpe::Address> scanAOB(
-        PlatformProcess& process,
+        tpe::platform::PlatformProcess& process,
         const struct AobPattern& pattern,
         const ScanOptions& options = {}
     );
@@ -74,4 +75,4 @@ public:
 private:
 };
 
-#endif // TPE_MEMORY_SCANNER_H_
+} // namespace tpe

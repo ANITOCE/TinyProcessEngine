@@ -1,11 +1,15 @@
-#include "ProcessEngine.h"
+#include "ProcessEngine.hpp"
+
+#include <cassert>
+
+namespace tpe {
 
 ProcessEngine::ProcessEngine()
-    : m_os(createPlatformOS())
+    : m_os(tpe::platform::createPlatformOS())
 {
 }
 
-ProcessEngine::ProcessEngine(std::unique_ptr<PlatformOS> os)
+ProcessEngine::ProcessEngine(std::unique_ptr<tpe::platform::PlatformOS> os)
     : m_os(std::move(os))
 {
 }
@@ -28,7 +32,7 @@ Result<void, PlatformError> ProcessEngine::getProcessList() const
     return Result<void, PlatformError>::success();
 }
 
-std::shared_ptr<PlatformProcess> ProcessEngine::openProcess(Pid_t pid)
+std::shared_ptr<tpe::platform::PlatformProcess> ProcessEngine::openProcess(tpe::platform::Pid_t pid)
 {
     m_currentProcess = m_os->open(pid);
     if (!m_currentProcess) {
@@ -37,7 +41,7 @@ std::shared_ptr<PlatformProcess> ProcessEngine::openProcess(Pid_t pid)
     return m_currentProcess;
 }
 
-std::optional<std::string> ProcessEngine::searchProcess(Pid_t pid) const
+std::optional<std::string> ProcessEngine::searchProcess(tpe::platform::Pid_t pid) const
 {
     for(auto process : m_os->ProcessList)
     {
@@ -93,8 +97,11 @@ uint64_t ProcessEngine::nextScan(ScanCondition condition, const ValueType& type,
     auto filteredResults = m_scanner.nextScan(*m_currentProcess, previousResults,
                                                condition, type, newValue);
 
-    // Commit to session
-    m_session->commitNextScan(condition, std::move(filteredResults));
+    // Commit to session(前置已检查 Ready,失败为不可达路径;C-E3)
+    const Result<void, SessionError> committed =
+        m_session->commitNextScan(condition, std::move(filteredResults));
+    assert(committed.has_value());
+    (void)committed;
 
     return m_session->resultCount();
 }
@@ -130,8 +137,10 @@ void ProcessEngine::modifyMemory() {
             } else {
                 std::cerr << "Write failed: " << result.error().message << std::endl;
             }
-        } catch (const std::exception &e) {
+        } catch (const std::exception &) {
             std::cerr << "Invalid input. Please try again." << std::endl;
         }
     }
 }
+
+} // namespace tpe

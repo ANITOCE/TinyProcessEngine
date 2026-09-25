@@ -1,7 +1,7 @@
 #ifdef __linux__
 
-#include "LinuxOS.h"
-#include "LinuxProcess.h"
+#include "LinuxOS.hpp"
+#include "LinuxProcess.hpp"
 
 #include <dirent.h>
 #include <cstdlib>
@@ -11,6 +11,8 @@
 #include <fstream>
 #include <sstream>
 #include <cstring>
+
+namespace tpe::platform {
 
 // ============================================================
 // 辅助: 从路径提取文件名
@@ -113,5 +115,7 @@ std::shared_ptr<PlatformProcess> LinuxOS::open(Pid_t pid)
 {
     return std::make_shared<LinuxProcess>(pid, readProcessName(pid));
 }
+
+} // namespace tpe::platform
 
 #endif // __linux__

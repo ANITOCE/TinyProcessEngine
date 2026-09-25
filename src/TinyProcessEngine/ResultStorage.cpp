@@ -1,8 +1,10 @@
-#include "ResultStorage.h"
+#include "ResultStorage.hpp"
 
 #include <cstring>
 #include <chrono>
 #include <iostream>
+
+namespace tpe {
 
 // ============================================================
 // releaseResources — close + delete temp file, reset to empty
@@ -247,3 +249,5 @@ ScanRecord ResultStorage::readRecordFromDisk(std::streamoff offset) const {
     file.read(reinterpret_cast<char*>(&rec), sizeof(ScanRecord));
     return rec;
 }
+
+} // namespace tpe

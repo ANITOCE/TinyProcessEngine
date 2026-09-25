@@ -3,8 +3,8 @@
 #include <cstdint>
 #include <string>
 
-#include "CliValueType.h"
-#include "ScanTypes.h"
+#include "CliValueType.hpp"
+#include "ScanTypes.hpp"
 
 namespace tpe::cli {
 

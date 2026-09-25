@@ -8,11 +8,27 @@
 #include <string>
 #include <vector>
 
-#include "CliParser.h"
-#include "CliValueType.h"
-#include "MemoryScanner.h"
-#include "ValueFormatter.h"
-#include "ValueType.h"
+#include "CliParser.hpp"
+#include "CliValueType.hpp"
+#include "MemoryScanner.hpp"
+#include "ValueFormatter.hpp"
+#include "ValueType.hpp"
+
+using tpe::Double;
+using tpe::Float;
+using tpe::Int16;
+using tpe::Int32;
+using tpe::Int64;
+using tpe::MemoryPage;
+using tpe::MemoryScanner;
+using tpe::PlatformError;
+using tpe::Result;
+using tpe::ScanRecord;
+using tpe::String;
+using tpe::UnsignedByte;
+using tpe::ValueType;
+using tpe::platform::Pid_t;
+using tpe::platform::PlatformProcess;
 
 namespace {
 

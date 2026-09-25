@@ -1,5 +1,4 @@
-#ifndef _PLATFORM_H_
-#define _PLATFORM_H_
+#pragma once
 
 #include <iostream>
 #include <memory>
@@ -7,21 +6,24 @@
 #include <string>
 #include <vector>
 
-#include "MemoryPage.h"
-#include "TinyProcessEngine/Result.h"
+#include "MemoryPage.hpp"
+#include "TinyProcessEngine/Result.hpp"
 
 #ifdef _WIN32
 #include <Windows.h>
 #include <Psapi.h>
 #include <TlHelp32.h>
-
-typedef DWORD Pid_t;
-typedef HANDLE pHandle_t;
-
 #elif defined(__linux__)
 #include <unistd.h>
-typedef int Pid_t;
+#endif // __linux__ or win32
 
+namespace tpe::platform {
+
+#ifdef _WIN32
+typedef DWORD Pid_t;
+typedef HANDLE pHandle_t;
+#elif defined(__linux__)
+typedef int Pid_t;
 #endif // __linux__ or win32
 
 class PlatformProcess
@@ -69,4 +71,4 @@ std::shared_ptr<PlatformProcess> createPlatformProcess(Pid_t pid, std::string p_
 std::unique_ptr<PlatformOS> createPlatformOS();
 Pid_t str_to_pid(std::string str);
 
-#endif // _PLATFORM_H_
+} // namespace tpe::platform

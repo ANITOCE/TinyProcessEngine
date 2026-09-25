@@ -6,10 +6,10 @@
 #include <string_view>
 #include <vector>
 
-#include "CliValueType.h"
-#include "Platform.h" // Pid_t
-#include "ReplState.h"
-#include "ScanTypes.h"
+#include "CliValueType.hpp"
+#include "Platform.hpp" // Pid_t
+#include "ReplState.hpp"
+#include "ScanTypes.hpp"
 
 namespace tpe::cli {
 
@@ -60,7 +60,7 @@ enum class TerminalCommandKind {
 /// parseTerminalCommand 的结果;UsageError 时 error 保存英文原因。
 struct TerminalCommand {
     TerminalCommandKind kind = TerminalCommandKind::Help;
-    Pid_t pid = 0;
+    tpe::platform::Pid_t pid = 0;
     std::string error;
 };
 

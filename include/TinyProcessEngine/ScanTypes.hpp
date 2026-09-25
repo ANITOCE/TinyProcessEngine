@@ -1,10 +1,11 @@
-#ifndef TPE_SCAN_TYPES_H_
-#define TPE_SCAN_TYPES_H_
+#pragma once
 
-#include "MemoryPage.h"
+#include "MemoryPage.hpp"
 
 #include <cstdint>
 #include <optional>
+
+namespace tpe {
 
 // ============================================================
 // ScanCondition — 扫描条件枚举
@@ -70,4 +71,4 @@ struct ScanRecord {
 
 static_assert(sizeof(ScanRecord) == 17, "ScanRecord must be exactly 17 bytes (packed)");
 
-#endif // TPE_SCAN_TYPES_H_
+} // namespace tpe

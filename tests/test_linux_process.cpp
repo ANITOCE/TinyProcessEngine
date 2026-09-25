@@ -16,8 +16,11 @@
 #include <fstream>
 #include <string>
 
-#include "LinuxOS.h"
-#include "LinuxProcess.h"
+#include "LinuxOS.hpp"
+#include "LinuxProcess.hpp"
+
+using tpe::platform::LinuxOS;
+using tpe::platform::Pid_t;
 
 // ============================================================
 // 测试 Fixture: 启动辅助进程，提供 PID 供测试

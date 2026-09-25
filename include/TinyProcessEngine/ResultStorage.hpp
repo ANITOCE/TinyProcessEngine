@@ -1,7 +1,6 @@
-#ifndef TPE_RESULT_STORAGE_H_
-#define TPE_RESULT_STORAGE_H_
+#pragma once
 
-#include "ScanTypes.h"
+#include "ScanTypes.hpp"
 
 #include <vector>
 #include <array>
@@ -10,6 +9,8 @@
 #include <filesystem>
 #include <optional>
 #include <fstream>
+
+namespace tpe {
 
 // ============================================================
 // ResultStorage — 扫描结果的分块存储
@@ -103,4 +104,4 @@ private:
     ScanRecord readRecordFromDisk(std::streamoff offset) const;
 };
 
-#endif // TPE_RESULT_STORAGE_H_
+} // namespace tpe

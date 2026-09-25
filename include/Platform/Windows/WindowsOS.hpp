@@ -1,11 +1,12 @@
-#ifndef _WINDOWS_OS_H
-#define _WINDOWS_OS_H
+#pragma once
 
-#include "Platform.h"
-#include "HelpFunction.h"
-#include "WindowsProcess.h"
+#include "Platform.hpp"
+#include "HelpFunction.hpp"
+#include "WindowsProcess.hpp"
 
 #ifdef _WIN32
+
+namespace tpe::platform {
 
 class WindowsOS : public PlatformOS
 {
@@ -20,6 +21,6 @@ public:
     void getAllProcesses(std::vector<Pid_t> allPid) override;
 };
 
-#endif // _WIN32
+} // namespace tpe::platform
 
-#endif // _WINDOWS_OS_H
+#endif // _WIN32

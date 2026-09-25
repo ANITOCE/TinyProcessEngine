@@ -1,10 +1,11 @@
-#ifndef TPE_AOB_PATTERN_H_
-#define TPE_AOB_PATTERN_H_
+#pragma once
 
 #include <cstdint>
 #include <string>
 #include <vector>
 #include <optional>
+
+namespace tpe {
 
 // ============================================================
 // AobPattern — Array of Bytes 模式
@@ -37,4 +38,4 @@ struct AobPattern {
     bool isAllWildcards() const { return segments.empty(); }
 };
 
-#endif // TPE_AOB_PATTERN_H_
+} // namespace tpe

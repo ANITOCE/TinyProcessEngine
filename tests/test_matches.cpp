@@ -1,5 +1,9 @@
 #include <gtest/gtest.h>
-#include "Matches.h"
+#include "Matches.hpp"
+
+using tpe::Matches;
+using tpe::MemoryPage;
+using tpe::PageMatches;
 
 // ============================================================
 // PageMatches tests
@@ -7,19 +11,21 @@
 TEST(PageMatchesTest, ConstructWithValidOffsets) {
     MemoryPage page(0x1000, 4096);
     std::vector<tpe::Offset> offsets = {0, 16, 32};
-    PageMatches pm(page, offsets);
+    const std::optional<PageMatches> pm = PageMatches::create(page, offsets);
+    ASSERT_TRUE(pm.has_value());
 
-    EXPECT_EQ(pm.getPage().start, 0x1000u);
-    EXPECT_EQ(pm.getPage().size, 4096u);
-    EXPECT_EQ(pm.getOffsets().size(), 3u);
-    EXPECT_EQ(pm.getOffsets()[0], 0u);
-    EXPECT_EQ(pm.getOffsets()[2], 32u);
+    EXPECT_EQ(pm->getPage().start, 0x1000u);
+    EXPECT_EQ(pm->getPage().size, 4096u);
+    EXPECT_EQ(pm->getOffsets().size(), 3u);
+    EXPECT_EQ(pm->getOffsets()[0], 0u);
+    EXPECT_EQ(pm->getOffsets()[2], 32u);
 }
 
-TEST(PageMatchesTest, EmptyOffsetsThrows) {
+// FR-014 (C-E2/C-E4):空 offsets 拒绝经返回值报告(create → nullopt),不得经异常逃逸。
+TEST(PageMatchesTest, EmptyOffsetsRejected) {
     MemoryPage page(0x2000, 1024);
     std::vector<tpe::Offset> empty;
-    EXPECT_THROW(PageMatches(page, empty), no_matches);
+    EXPECT_FALSE(PageMatches::create(page, empty).has_value());
 }
 
 // ============================================================

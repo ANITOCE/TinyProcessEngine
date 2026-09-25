@@ -1,11 +1,12 @@
-#ifndef _WINDOWS_PROCESS_H_
-#define _WINDOWS_PROCESS_H_
+#pragma once
 
-#include "Platform.h"
-#include "HelpFunction.h"
-#include "ScopedHandle.h"
+#include "Platform.hpp"
+#include "HelpFunction.hpp"
+#include "ScopedHandle.hpp"
 
 #ifdef _WIN32
+
+namespace tpe::platform {
 
 class WindowsProcess : public PlatformProcess
 {
@@ -30,6 +31,6 @@ protected:
     bool m_readOnly = false;
 };
 
-#endif // _WIN32
+} // namespace tpe::platform
 
-#endif // _WINDOWS_PROCESS_H_
+#endif // _WIN32

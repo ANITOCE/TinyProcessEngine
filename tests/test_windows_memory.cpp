@@ -20,8 +20,15 @@
 #include <memory>
 #include <string>
 
-#include "WindowsOS.h"
-#include "WindowsProcess.h"
+#include "WindowsOS.hpp"
+#include "WindowsProcess.hpp"
+
+using tpe::PlatformError;
+using tpe::Result;
+using tpe::platform::Pid_t;
+using tpe::platform::PlatformProcess;
+using tpe::platform::WindowsOS;
+using tpe::platform::WindowsProcess;
 
 namespace {
 

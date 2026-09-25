@@ -1,11 +1,12 @@
-#ifndef _LINUX_OS_H
-#define _LINUX_OS_H
+#pragma once
 
-#include "Platform.h"
+#include "Platform.hpp"
 
 #ifdef __linux__
 
 #include <string>
+
+namespace tpe::platform {
 
 class LinuxOS : public PlatformOS
 {
@@ -24,6 +25,6 @@ private:
     static std::string extractBasename(const std::string& path);
 };
 
-#endif // __linux__
+} // namespace tpe::platform
 
-#endif // _LINUX_OS_H
+#endif // __linux__
