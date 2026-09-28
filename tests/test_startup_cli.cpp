@@ -397,3 +397,189 @@ TEST(RunCliReplComparisonScan, ZeroMatchesLeavesUsableSession)
         << "follow-up equal scan must work in the same session, got:\n" << run.output;
     EXPECT_NE(run.output.find("-equal-i32-100"), std::string::npos) << run.output;
 }
+
+// ---------------------------------------------------------------------------
+// 跨故事一致性规则(Phase 07 · T013 红)— FR-026 / FR-027(C-D4 / C-D5)
+//   ① 类型一致性(FR-026/C-D4):会话数值类型仅由 `new-scan` 设定;`next-scan`
+//      传同类旗标 = 无操作(正常执行),传异类旗标 = 用法错误(原因句 + Usage,
+//      不执行、不改变会话状态)。现行为:类型旗标可任意切换 —— 红。
+//   ② string 仅等值扫描(FR-012/FR-027/C-D5):`new-scan --unknown/--greater/--less`
+//      与 `--string` 组合(旗标或会话继承)、`next-scan --changed/--unchanged/
+//      --greater/--less` 在 string 会话中 = 用法错误显式拒绝;
+//      现行为:静默 0 结果(不拒绝)—— 红。
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// T013 一致性布局:64 字节单页——0x00/0x04 各一个 i32 = 100(等值首扫 2 命中);
+/// 0x10 起 5 字节 "hello"(string 等值首扫 1 命中);其余字节为 0。
+void configureConsistencyLayout(FakeStartupProcess& process)
+{
+    putI32(process.bytes(), 0x00, 100);
+    putI32(process.bytes(), 0x04, 100);
+    const char kHello[] = "hello";
+    for (std::size_t i = 0; i < sizeof(kHello) - 1; ++i) {
+        process.bytes()[0x10 + i] = static_cast<tpe::Byte>(kHello[i]);
+    }
+}
+
+/// 跨故事一致性用例驱动:新建伪进程(一致性布局)+ 引擎,运行 REPL 脚本。
+ReplRun runConsistencyScript(const std::string& script)
+{
+    auto os = std::make_unique<FakePlatformOS>();
+    auto process = os->addProcess(static_cast<Pid_t>(4242), "fake.exe");
+    process->configureMemory(0x1000, 0x40);
+    configureConsistencyLayout(*process);
+    ProcessEngine engine(std::move(os));
+    return runReplScript(static_cast<Pid_t>(4242), script, engine);
+}
+
+} // namespace
+
+TEST(RunCliReplConsistency, NextScanTypeMismatchIsRejectedAndStateUnchanged)
+{
+    // FR-026/C-D4:会话 i32;`next-scan --i16 --changed` → 原因句+Usage;
+    // 不执行:提示符(含 lastValue 段)、匹配集、undo 轮次栈全部保持。
+    const ReplRun run = runConsistencyScript(
+        "new-scan --unknown\n"
+        "new-scan 100\n"
+        "next-scan --i16 --changed\n"
+        "list --all\n"
+        "undo\n"
+        "list --all\n"
+        "exit\n");
+
+    EXPECT_EQ(run.rc, tpe::cli::kExitOk);
+    EXPECT_NE(run.output.find("next-scan cannot change the value type (current: i32, "
+                              "requested: i16).\nUsage: next-scan"),
+              std::string::npos)
+        << "type mismatch must print the fixed reason sentence + usage on the next line, got:\n"
+        << run.output;
+    EXPECT_EQ(run.output.find("-changed-i16"), std::string::npos)
+        << "rejected command must not switch the session value type, got:\n" << run.output;
+    EXPECT_EQ(run.output.find("No matches to display."), std::string::npos)
+        << "rejection must not execute a scan (result set intact), got:\n" << run.output;
+    EXPECT_NE(run.output.find("fake.exe-equal-i32-100> Total: 2 matches"), std::string::npos)
+        << "prompt, lastValue and result set must stay unchanged after rejection, got:\n"
+        << run.output;
+    EXPECT_NE(run.output.find("fake.exe-equal-i32-100> Total: 16 matches"), std::string::npos)
+        << "undo after rejection must undo the last successful round (unknown, 16), got:\n"
+        << run.output;
+}
+
+TEST(RunCliReplConsistency, NextScanSameTypeFlagExecutesNormally)
+{
+    // FR-026/C-D4:同类旗标为无操作——正常执行。静态内存下 changed 过滤为 0 条,
+    // 提示符切换为 changed-i32;全程无拒绝文案。
+    const ReplRun run = runConsistencyScript(
+        "new-scan 100\n"
+        "next-scan --i32 --changed\n"
+        "list --all\n"
+        "exit\n");
+
+    EXPECT_EQ(run.rc, tpe::cli::kExitOk);
+    EXPECT_EQ(run.output.find("cannot change the value type"), std::string::npos) << run.output;
+    EXPECT_EQ(run.output.find("Usage: next-scan"), std::string::npos) << run.output;
+    EXPECT_NE(run.output.find("-changed-i32"), std::string::npos)
+        << "same-type flag must execute normally and switch scan type, got:\n" << run.output;
+    EXPECT_NE(run.output.find("No matches to display."), std::string::npos)
+        << "static memory must yield zero changed results (normal execution), got:\n"
+        << run.output;
+}
+
+TEST(RunCliReplConsistency, StringSessionRejectsNonEqualNextScanConditions)
+{
+    // FR-027/C-D5:string 会话下四个非等值条件一律用法错误显式拒绝(含 Usage;
+    // 不得以空结果替代);拒绝后提示符(含 lastValue)与匹配集不变。
+    struct Case {
+        const char* command;
+        const char* flag;
+    };
+    const Case cases[] = {
+        {"next-scan --changed", "--changed"},
+        {"next-scan --unchanged", "--unchanged"},
+        {"next-scan --greater", "--greater"},
+        {"next-scan --less", "--less"},
+    };
+
+    for (const Case& one : cases) {
+        SCOPED_TRACE(one.flag);
+        const ReplRun run = runConsistencyScript(std::string("new-scan --string hello\n") +
+                                                 one.command + "\nlist --all\nexit\n");
+
+        EXPECT_EQ(run.rc, tpe::cli::kExitOk);
+        EXPECT_NE(run.output.find(std::string("Scan type ") + one.flag +
+                                  " does not support --string.\nUsage: next-scan"),
+                  std::string::npos)
+            << "string session must explicitly reject " << one.flag
+            << " with the fixed reason + usage, got:\n" << run.output;
+        EXPECT_EQ(run.output.find(std::string("-") + (one.flag + 2) + "-"), std::string::npos)
+            << "rejected command must not switch the scan type, got:\n" << run.output;
+        EXPECT_NE(run.output.find("fake.exe-equal-string-hello> Total: 1 matches"),
+                  std::string::npos)
+            << "prompt, lastValue and result set must stay unchanged after rejection, got:\n"
+            << run.output;
+    }
+}
+
+TEST(RunCliReplConsistency, StringEqualPathKeepsWorking)
+{
+    // FR-027/C-D5:`--string` + `--equal`(next-scan 显式 --string)维持现状可用——
+    // 正常执行、保留原匹配、无任何拒绝文案。
+    const ReplRun run = runConsistencyScript(
+        "new-scan --string hello\n"
+        "next-scan --string hello\n"
+        "list --all\n"
+        "exit\n");
+
+    EXPECT_EQ(run.rc, tpe::cli::kExitOk);
+    EXPECT_EQ(run.output.find("does not support --string."), std::string::npos) << run.output;
+    EXPECT_EQ(run.output.find("cannot change the value type"), std::string::npos) << run.output;
+    EXPECT_EQ(run.output.find("No matches to display."), std::string::npos)
+        << "string equal chain must keep the match, got:\n" << run.output;
+    EXPECT_NE(run.output.find("-equal-string-hello"), std::string::npos) << run.output;
+    EXPECT_NE(run.output.find("Total: 1 matches"), std::string::npos)
+        << "string equal chain must keep the match, got:\n" << run.output;
+}
+
+TEST(RunCliReplConsistency, NewScanGreaterWithStringFlagIsRejected)
+{
+    // FR-012/FR-027/C-D5:显式旗标组合 `new-scan --greater --string 5` → 用法错误
+    // (原因句+Usage);不执行、不改变会话状态(既有 equal/i32 会话原样保留)。
+    const ReplRun run = runConsistencyScript(
+        "new-scan 100\n"
+        "new-scan --greater --string 5\n"
+        "list --all\n"
+        "exit\n");
+
+    EXPECT_EQ(run.rc, tpe::cli::kExitOk);
+    EXPECT_NE(run.output.find("Scan type --greater does not support --string.\nUsage: new-scan"),
+              std::string::npos)
+        << "explicit --string combination must be rejected with reason + usage, got:\n"
+        << run.output;
+    EXPECT_EQ(run.output.find("-greater-"), std::string::npos)
+        << "rejected command must not switch the scan type, got:\n" << run.output;
+    EXPECT_NE(run.output.find("fake.exe-equal-i32-100> Total: 2 matches"), std::string::npos)
+        << "previous session state must stay intact, got:\n" << run.output;
+}
+
+TEST(RunCliReplConsistency, NewScanGreaterInStringSessionIsRejected)
+{
+    // FR-012/FR-027/C-D5:会话继承来源——string 会话输入 `new-scan --greater 5`
+    // (命令未带 --string 旗标,当前类型仍为 string)→ 同款拒绝;状态不变。
+    const ReplRun run = runConsistencyScript(
+        "new-scan --string hello\n"
+        "new-scan --greater 5\n"
+        "list --all\n"
+        "exit\n");
+
+    EXPECT_EQ(run.rc, tpe::cli::kExitOk);
+    EXPECT_NE(run.output.find("Scan type --greater does not support --string.\nUsage: new-scan"),
+              std::string::npos)
+        << "session-inherited string type must be rejected with reason + usage, got:\n"
+        << run.output;
+    EXPECT_EQ(run.output.find("-greater-"), std::string::npos)
+        << "rejected command must not switch the scan type, got:\n" << run.output;
+    EXPECT_NE(run.output.find("fake.exe-equal-string-hello> Total: 1 matches"), std::string::npos)
+        << "string session state must stay intact, got:\n" << run.output;
+}
