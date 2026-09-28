@@ -51,16 +51,28 @@ constexpr const char* kListUsage = "Usage: list [<page>] | list --all";
 constexpr const char* kWriteUsage = "Usage: write <address> <new-value>";
 constexpr const char* kNoResultsHint = "No scan results available. Run 'new-scan' first.";
 
-/// new-scan(契约 C-R1;US1 C-D1;US2 C-D2/C-D3):默认 equal + 当前类型;
+/// new-scan(契约 C-R1;US1 C-D1;US2 C-D2/C-D3;FR-012/FR-027 C-D5):默认 equal + 当前类型;
 /// 成功不打印输出,仅更新提示符状态。三种首扫形态:
 /// - Unknown:无值首扫(FR-001–004),不进行值解析;
 /// - Greater/Less:值必传(解析层已保证);值解析口径与 equal 一致,失败 → 既有非法值提示;
 /// - Equal:既有等值首扫。
+/// --string 仅等值扫描:非等值形态与 string 组合(命令旗标或会话继承)→ 用法错误。
 void executeNewScan(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& state,
                     ProcessEngine& engine)
 {
     const tpe::cli::CliValueType& vt =
         command.valueType != nullptr ? *command.valueType : *state.valueType;
+
+    // FR-012/FR-027(C-D5,契约变更):string 仅等值扫描——--unknown/--greater/--less
+    // 与 --string 组合(显式旗标或当前会话类型)一律用法错误显式拒绝
+    // (含 Usage、不执行、不改变会话状态;不得以空结果替代拒绝)。
+    // 先于值解析:组合非法性与值是否可解析无关,避免后者掩盖前者。
+    if (vt.kind == tpe::cli::CliValueKind::String &&
+        command.scanType != tpe::cli::ReplScanType::Equal) {
+        printMessage("Scan type --" + std::string(tpe::cli::scanTypeName(command.scanType)) +
+                     " does not support --string.\n" + kNewScanUsage);
+        return; // 不执行、不改变会话状态
+    }
 
     if (command.scanType == tpe::cli::ReplScanType::Unknown) {
         // C-D1/FR-004:成功后 scan-type=unknown、值段隐藏(lastValue 清空);
@@ -105,10 +117,33 @@ void executeNewScan(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& s
     state.onValueScan(tpe::cli::ReplScanType::Equal, vt, command.value, total);
 }
 
-/// next-scan(契约 C-R2):条件 → ScanCondition;无结果时明确提示、不执行、不改变状态。
+/// next-scan(契约 C-R2;FR-026/FR-027 C-D4/C-D5):条件 → ScanCondition;无结果时明确提示、
+/// 不执行、不改变状态。类型一致性:会话类型仅由 new-scan 设定——同类旗标无操作、异类拒绝;
+/// string 会话仅等值扫描。
 void executeNextScan(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& state,
                      ProcessEngine& engine)
 {
+    // FR-026(C-D4,契约变更):数值类型一致性——会话类型仅由 new-scan 设定;
+    // 异类类型旗标 → 用法错误(含 Usage、不执行、不改变会话状态)。
+    // 先于会话/结果检查,保证用法错误输出确定(不受当前结果集状态影响)。
+    if (command.valueType != nullptr &&
+        command.valueType->shortName != state.valueType->shortName) {
+        printMessage("next-scan cannot change the value type (current: " +
+                     std::string(state.valueType->shortName) + ", requested: " +
+                     std::string(command.valueType->shortName) + ").\n" + kNextScanUsage);
+        return; // 不执行、不改变会话状态
+    }
+
+    // FR-027(C-D5,契约变更):string 会话仅支持等值扫描——--changed/--unchanged/
+    // --greater/--less 在 --string 会话中 → 用法错误(含 Usage、不执行、不改变会话状态;
+    // 不得以空结果(0 条)替代拒绝)。
+    if (state.valueType->kind == tpe::cli::CliValueKind::String &&
+        command.scanType != tpe::cli::ReplScanType::Equal) {
+        printMessage("Scan type --" + std::string(tpe::cli::scanTypeName(command.scanType)) +
+                     " does not support --string.\n" + kNextScanUsage);
+        return; // 不执行、不改变会话状态
+    }
+
     ScanSession* session = engine.session();
     if (session == nullptr || session->state() != SessionState::Ready) {
         printMessage(std::string(kNoResultsHint) + "\n" + kNextScanUsage);

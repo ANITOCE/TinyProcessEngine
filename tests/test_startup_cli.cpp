@@ -438,11 +438,12 @@ ReplRun runConsistencyScript(const std::string& script)
 
 TEST(RunCliReplConsistency, NextScanTypeMismatchIsRejectedAndStateUnchanged)
 {
-    // FR-026/C-D4:会话 i32;`next-scan --i16 --changed` → 原因句+Usage;
-    // 不执行:提示符(含 lastValue 段)、匹配集、undo 轮次栈全部保持。
+    // FR-026/C-D4:会话 i32;先经 `next-scan --i32 --changed`(同类旗标、正常执行,
+    // 建立单级 undo 栈),再输入 `next-scan --i16 --changed` → 原因句+Usage;
+    // 不执行:提示符(含 scan-type 段)、匹配集与 undo 栈全部保持。
     const ReplRun run = runConsistencyScript(
-        "new-scan --unknown\n"
         "new-scan 100\n"
+        "next-scan --i32 --changed\n"
         "next-scan --i16 --changed\n"
         "list --all\n"
         "undo\n"
@@ -450,20 +451,18 @@ TEST(RunCliReplConsistency, NextScanTypeMismatchIsRejectedAndStateUnchanged)
         "exit\n");
 
     EXPECT_EQ(run.rc, tpe::cli::kExitOk);
-    EXPECT_NE(run.output.find("next-scan cannot change the value type (current: i32, "
-                              "requested: i16).\nUsage: next-scan"),
+    EXPECT_NE(run.output.find("fake.exe-changed-i32> next-scan cannot change the value type "
+                              "(current: i32, requested: i16).\nUsage: next-scan"),
               std::string::npos)
         << "type mismatch must print the fixed reason sentence + usage on the next line, got:\n"
         << run.output;
     EXPECT_EQ(run.output.find("-changed-i16"), std::string::npos)
         << "rejected command must not switch the session value type, got:\n" << run.output;
-    EXPECT_EQ(run.output.find("No matches to display."), std::string::npos)
-        << "rejection must not execute a scan (result set intact), got:\n" << run.output;
-    EXPECT_NE(run.output.find("fake.exe-equal-i32-100> Total: 2 matches"), std::string::npos)
-        << "prompt, lastValue and result set must stay unchanged after rejection, got:\n"
+    EXPECT_NE(run.output.find("fake.exe-changed-i32> No matches to display."), std::string::npos)
+        << "rejection must not execute a scan (previous round's result set intact), got:\n"
         << run.output;
-    EXPECT_NE(run.output.find("fake.exe-equal-i32-100> Total: 16 matches"), std::string::npos)
-        << "undo after rejection must undo the last successful round (unknown, 16), got:\n"
+    EXPECT_NE(run.output.find("fake.exe-changed-i32> Total: 2 matches"), std::string::npos)
+        << "undo after rejection must restore the pre-next-scan round (2 matches), got:\n"
         << run.output;
 }
 
