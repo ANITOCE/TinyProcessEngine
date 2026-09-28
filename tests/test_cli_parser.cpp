@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cctype>
 #include <limits>
 #include <string>
 
@@ -746,15 +747,49 @@ TEST(ReplHelp, CoversEveryReplCommandWithUsage)
     EXPECT_NE(help.find("undo"), std::string::npos);
 }
 
-TEST(ReplHelp, DocumentsPlaceholderScanTypes)
+TEST(ReplHelp, DocumentsImplementedScanTypes)
 {
-    // FR-020 + US4 帮助可发现性:new-scan 的占位扫描类型(语法可识别)须在帮助中可发现
-    // (§11.5:--unknown 不传值;--greater / --less 值必传)
+    // FR-020 / C-D7(帮助文本契约;T020 红):全部扫描类型已实现——帮助不得含占位提示,
+    // new-scan 扫描类型行保留(逐字),next-scan 行不再携带类型旗标,并含 string 仅等值说明。
     const std::string help(tpe::cli::replHelpText());
-    EXPECT_NE(help.find("--unknown"), std::string::npos);
-    EXPECT_NE(help.find("--greater <value>"), std::string::npos);
-    EXPECT_NE(help.find("--less <value>"), std::string::npos);
-    EXPECT_NE(help.find("not implemented yet"), std::string::npos);
+
+    // (1) 不得含 "not implemented"(大小写不敏感)
+    std::string lowered;
+    lowered.reserve(help.size());
+    for (const char ch : help) {
+        lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+    }
+    EXPECT_EQ(lowered.find("not implemented"), std::string::npos) << help;
+
+    // (2) new-scan 扫描类型行保留(逐字)
+    EXPECT_NE(help.find("Scan types (new-scan): --equal <value> (default) | --unknown | "
+                        "--greater <value> | --less <value>"),
+              std::string::npos)
+        << help;
+
+    // (3) next-scan 相关行不得再含 [--<value-type>](类型由 new-scan 确定,不可变更)
+    for (std::size_t begin = 0; begin < help.size();) {
+        const std::size_t end = help.find('\n', begin);
+        const std::string line =
+            help.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+        if (line.find("next-scan") != std::string::npos) {
+            EXPECT_EQ(line.find("[--<value-type>]"), std::string::npos) << line;
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        begin = end + 1;
+    }
+
+    // (4) 新增说明行(逐字)
+    EXPECT_NE(help.find("Value types apply to new-scan only; string scans support --equal only."),
+              std::string::npos)
+        << help;
+
+    // (5) --string 取值规则行保留(逐字)
+    EXPECT_NE(help.find("The --string value takes the rest of the line (spaces allowed)."),
+              std::string::npos)
+        << help;
 }
 
 TEST(ReplScanConditionMap, MapsEachConditionToEngineValue)

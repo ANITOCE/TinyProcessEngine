@@ -257,26 +257,36 @@ TEST(ReplPlaceholder, FixedMessageIsContractText)
     EXPECT_EQ(tpe::cli::replPlaceholderText(), "This feature is not implemented yet.");
 }
 
-TEST(ReplPlaceholder, PlansPlaceholderOutcomeForThreeScanTypes)
+TEST(ReplPlaceholder, PlansExecuteOutcomeForThreeScanTypes)
 {
-    // T010:三旗标全部转正 → 解析通过、placeholder 不再置位、处置决策恒为 Execute(真实首扫)。
+    // T020/FR-019:三旗标均为真实语义 → 解析通过(无用法错误)、处置决策恒为 Execute
+    // (执行真实首扫;无占位分支)。
     for (const char* line : {"new-scan --unknown", "new-scan --unknown --i16",
                              "new-scan --greater 100", "new-scan --greater --i64 42",
                              "new-scan --less 100"}) {
         const ReplCommand command = tpe::cli::parseReplCommand(line);
         EXPECT_TRUE(command.error.empty()) << line;
-        EXPECT_FALSE(command.placeholder) << line;
         EXPECT_EQ(tpe::cli::planReplOutcome(command), ReplOutcome::Execute) << line;
     }
 }
 
-TEST(ReplPlaceholder, SwitchesScanTypeOnlyAndKeepsMatchesAndValue)
+TEST(ReplPlaceholder, SimulatesMainLoopExecutionOutcome)
 {
-    // T010:greater/less 已转正(处置为 Execute;成功路径按带值扫描迁移状态):
-    // 提示符切换到本次 scan-type 并显示本次比较值(旧“占位不执行、值段保持”语义不复存在;
-    // 机制移除见 T022)。
+    // T020/FR-019 + C-D10:执行层成功后主循环调用的纯状态迁移(本用例模拟):
+    // --unknown 无值 → 值段隐藏(lastValue 清空);--greater / --less 带值 → 显示本次比较值。
     ReplState state("test.exe");
     state.onValueScan(ReplScanType::Equal, cliType("i32"), "100", 15234);
+
+    {
+        const ReplCommand command = tpe::cli::parseReplCommand("new-scan --unknown");
+        ASSERT_EQ(tpe::cli::planReplOutcome(command), ReplOutcome::Execute);
+        const CliValueType& vt =
+            command.valueType != nullptr ? *command.valueType : *state.valueType;
+        state.onValuelessScan(command.scanType, vt, 47);
+        EXPECT_EQ(state.prompt(), "test.exe-unknown-i32> ");
+        EXPECT_FALSE(state.lastValue.has_value());
+        EXPECT_EQ(state.matchesTotal, 47u);
+    }
 
     const struct {
         const char* line;
@@ -289,7 +299,6 @@ TEST(ReplPlaceholder, SwitchesScanTypeOnlyAndKeepsMatchesAndValue)
     for (const auto& item : cases) {
         const ReplCommand command = tpe::cli::parseReplCommand(item.line);
         ASSERT_EQ(tpe::cli::planReplOutcome(command), ReplOutcome::Execute) << item.line;
-        // 执行层成功后的纯状态迁移(主循环调用;本用例模拟)
         const CliValueType& vt =
             command.valueType != nullptr ? *command.valueType : *state.valueType;
         state.onValueScan(command.scanType, vt, command.value, 7);
