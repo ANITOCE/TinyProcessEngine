@@ -140,6 +140,21 @@ TEST(ReplStateMigrate, UndoRestoresTotalWithoutTouchingPrompt)
     EXPECT_EQ(state.prompt(), "test.exe-greater-i32-100> ");
 }
 
+TEST(ReplStateMigrate, UnknownScanClearsDisplayedValue)
+{
+    // T005 红 / C-D1 / FR-004:new-scan --unknown 成功后值段隐藏(lastValue 清空)——
+    // §11.3:new-scan 销毁旧进度,该次无值 → 不显示值段。
+    ReplState state("test.exe");
+    state.onValueScan(ReplScanType::Equal, cliType("i32"), "100", 15234);
+
+    state.onValuelessScan(ReplScanType::Unknown, cliType("i32"), 4096);
+
+    EXPECT_EQ(state.scanType, ReplScanType::Unknown);
+    EXPECT_EQ(state.matchesTotal, 4096u);
+    EXPECT_FALSE(state.lastValue.has_value()) << "unknown scan must clear the displayed value";
+    EXPECT_EQ(state.prompt(), "test.exe-unknown-i32> ");
+}
+
 TEST(ReplStateMigrate, UndoKeepsClearedValueForChangedScan)
 {
     ReplState state("test.exe");
