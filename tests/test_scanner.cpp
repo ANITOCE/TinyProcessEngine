@@ -6,7 +6,9 @@
 #include "ScanSession.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -842,4 +844,425 @@ TEST(FirstScanUnknown, ChunkBoundariesKeepAlignmentWithoutDrift)
                 << "chunkSize=" << chunkSize << " index " << k;
         }
     }
+}
+
+// ============================================================
+// US2(Phase 07 · T011)— firstScanComparison 数值语义边界锁
+//   C-D2/C-D3/R4:严格 GT/LT 矩阵(符号族边界/u8 无符号/浮点 IEEE·NaN)、
+//   对齐步进计数(镜像 T007)、快照正确性、跨分块无漂移、防御输入。
+// ============================================================
+
+namespace {
+
+/// 收集地址序列(保持记录顺序;升序由用例单独断言)。
+std::vector<tpe::Address> comparisonAddresses(const std::vector<ScanRecord>& records)
+{
+    std::vector<tpe::Address> out;
+    out.reserve(records.size());
+    for (const ScanRecord& rec : records) {
+        out.push_back(rec.address);
+    }
+    return out;
+}
+
+/// 指定类型值的小端内存表示(充当外部目标值;大小即类型宽度)。
+template <class T>
+tpe::Memory littleEndianBytes(T value)
+{
+    tpe::Memory bytes(sizeof(T));
+    std::memcpy(bytes.data(), &value, sizeof(T));
+    return bytes;
+}
+
+void putI16AtSlot(tpe::Memory& bytes, std::size_t slot, std::int16_t value)
+{
+    std::memcpy(bytes.data() + slot * 2, &value, sizeof(value));
+}
+
+void putI32AtSlot(tpe::Memory& bytes, std::size_t slot, std::int32_t value)
+{
+    std::memcpy(bytes.data() + slot * 4, &value, sizeof(value));
+}
+
+void putI64AtSlot(tpe::Memory& bytes, std::size_t slot, std::int64_t value)
+{
+    std::memcpy(bytes.data() + slot * 8, &value, sizeof(value));
+}
+
+void putFloatAtSlot(tpe::Memory& bytes, std::size_t slot, float value)
+{
+    std::memcpy(bytes.data() + slot * 4, &value, sizeof(value));
+}
+
+void putDoubleAtSlot(tpe::Memory& bytes, std::size_t slot, double value)
+{
+    std::memcpy(bytes.data() + slot * 8, &value, sizeof(value));
+}
+
+/// 测试替身:4 字节宽度但 NumericKind::Other(不可由 CLI 到达;R4 防御路径)。
+class OtherKindValueType : public ValueType {
+public:
+    OtherKindValueType() : ValueType("other-4byte") {}
+
+    tpe::Memory askValue() const override { return {}; }
+    std::size_t byteWidth() const override { return 4; }
+    NumericKind numericKind() const override { return NumericKind::Other; }
+};
+
+} // namespace
+
+TEST(FirstScanComparison, SignedIntegerMatrixKeepsStrictOrderBoundaries)
+{
+    // i32 全矩阵:正负对称、符号边界(INT32_MIN/MAX)、严格性(== 不保留)
+    FakeProcess process(0x1000, 0x40);
+    const std::int32_t values[16] = {5,          -5,          0,     100, 99,    101,
+                                     INT32_MAX,  INT32_MIN,   1,     -1,  255,   -255,
+                                     7,          -7,          42,    -42};
+    for (std::size_t slot = 0; slot < 16; ++slot) {
+        putI32AtSlot(process.bytes(), slot, values[slot]);
+    }
+    MemoryScanner scanner;
+    Int32 i32;
+
+    // 严格大于 0:全部正值(9 个;0 不保留)
+    EXPECT_EQ(comparisonAddresses(scanner.firstScanComparison(
+                  process, i32, ScanCondition::GreaterThan, littleEndianBytes<std::int32_t>(0))),
+              (std::vector<tpe::Address>{0x1000, 0x100C, 0x1010, 0x1014, 0x1018, 0x1020,
+                                         0x1028, 0x1030, 0x1038}));
+    // 严格小于 0:全部负值(6 个;含 INT32_MIN)
+    EXPECT_EQ(comparisonAddresses(scanner.firstScanComparison(
+                  process, i32, ScanCondition::LessThan, littleEndianBytes<std::int32_t>(0))),
+              (std::vector<tpe::Address>{0x1004, 0x101C, 0x1024, 0x102C, 0x1034, 0x103C}));
+    // 严格大于 100:101 / 255 / INT32_MAX;==100(0x100C)不保留
+    EXPECT_EQ(comparisonAddresses(scanner.firstScanComparison(
+                  process, i32, ScanCondition::GreaterThan, littleEndianBytes<std::int32_t>(100))),
+              (std::vector<tpe::Address>{0x1014, 0x1018, 0x1028}));
+    // 严格大于 99:100/101/255/INT32_MAX;==99(0x1010)不保留(= 边界严格性)
+    EXPECT_EQ(comparisonAddresses(scanner.firstScanComparison(
+                  process, i32, ScanCondition::GreaterThan, littleEndianBytes<std::int32_t>(99))),
+              (std::vector<tpe::Address>{0x100C, 0x1014, 0x1018, 0x1028}));
+    // 严格小于 -100:INT32_MIN / -255
+    EXPECT_EQ(comparisonAddresses(scanner.firstScanComparison(
+                  process, i32, ScanCondition::LessThan, littleEndianBytes<std::int32_t>(-100))),
+              (std::vector<tpe::Address>{0x101C, 0x102C}));
+    // 极端边界:无可比较者 → 空(不误保留等值端)
+    EXPECT_TRUE(scanner
+                    .firstScanComparison(process, i32, ScanCondition::GreaterThan,
+                                         littleEndianBytes<std::int32_t>(INT32_MAX))
+                    .empty());
+    EXPECT_TRUE(scanner
+                    .firstScanComparison(process, i32, ScanCondition::LessThan,
+                                         littleEndianBytes<std::int32_t>(INT32_MIN))
+                    .empty());
+}
+
+TEST(FirstScanComparison, Signed16And64BitFamiliesKeepBoundaries)
+{
+    // i16:-1/0/1/INT16_MIN/MAX 边界
+    FakeProcess process16(0x1000, 0x10);
+    const std::int16_t values16[8] = {-1, 0, 1, INT16_MAX, INT16_MIN, 2, -2, 5};
+    for (std::size_t slot = 0; slot < 8; ++slot) {
+        putI16AtSlot(process16.bytes(), slot, values16[slot]);
+    }
+    MemoryScanner scanner;
+    Int16 i16;
+    EXPECT_EQ(comparisonAddresses(scanner.firstScanComparison(
+                  process16, i16, ScanCondition::GreaterThan, littleEndianBytes<std::int16_t>(0))),
+              (std::vector<tpe::Address>{0x1004, 0x1006, 0x100A, 0x100E}));
+    EXPECT_EQ(comparisonAddresses(scanner.firstScanComparison(
+                  process16, i16, ScanCondition::LessThan, littleEndianBytes<std::int16_t>(0))),
+              (std::vector<tpe::Address>{0x1000, 0x1008, 0x100C}));
+    EXPECT_TRUE(scanner
+                    .firstScanComparison(process16, i16, ScanCondition::GreaterThan,
+                                         littleEndianBytes<std::int16_t>(INT16_MAX))
+                    .empty());
+
+    // i64:-1/0/1/INT64_MAX 边界
+    FakeProcess process64(0x2000, 0x20);
+    const std::int64_t values64[4] = {-1, 0, 1, INT64_MAX};
+    for (std::size_t slot = 0; slot < 4; ++slot) {
+        putI64AtSlot(process64.bytes(), slot, values64[slot]);
+    }
+    Int64 i64;
+    EXPECT_EQ(comparisonAddresses(scanner.firstScanComparison(
+                  process64, i64, ScanCondition::GreaterThan, littleEndianBytes<std::int64_t>(0))),
+              (std::vector<tpe::Address>{0x2010, 0x2018}));
+    EXPECT_EQ(comparisonAddresses(scanner.firstScanComparison(
+                  process64, i64, ScanCondition::LessThan, littleEndianBytes<std::int64_t>(0))),
+              (std::vector<tpe::Address>{0x2000}));
+    EXPECT_TRUE(scanner
+                    .firstScanComparison(process64, i64, ScanCondition::LessThan,
+                                         littleEndianBytes<std::int64_t>(INT64_MIN))
+                    .empty());
+}
+
+TEST(FirstScanComparison, UnsignedByteUsesUnsignedSemantics)
+{
+    // u8:0/255 无符号边界;步进宽度 1;每条快照 = 1 字节
+    FakeProcess process(0x1000, 0x08);
+    const tpe::Byte bytes[8] = {0, 1, 127, 128, 200, 254, 255, 100};
+    for (std::size_t slot = 0; slot < 8; ++slot) {
+        process.bytes()[slot] = bytes[slot];
+    }
+    MemoryScanner scanner;
+    UnsignedByte u8;
+
+    const tpe::Memory target200{static_cast<tpe::Byte>(200)};
+    const std::vector<ScanRecord> greater200 =
+        scanner.firstScanComparison(process, u8, ScanCondition::GreaterThan, target200);
+    EXPECT_EQ(comparisonAddresses(greater200),
+              (std::vector<tpe::Address>{0x1005, 0x1006})); // 254/255;==200 不保留
+
+    EXPECT_EQ(comparisonAddresses(scanner.firstScanComparison(
+                  process, u8, ScanCondition::LessThan,
+                  tpe::Memory{static_cast<tpe::Byte>(1)})),
+              (std::vector<tpe::Address>{0x1000})); // 仅 0;< 1 严格
+
+    const std::vector<ScanRecord> greater100 =
+        scanner.firstScanComparison(process, u8, ScanCondition::GreaterThan,
+                                    tpe::Memory{static_cast<tpe::Byte>(100)});
+    EXPECT_EQ(comparisonAddresses(greater100),
+              (std::vector<tpe::Address>{0x1002, 0x1003, 0x1004, 0x1005, 0x1006}));
+    for (const ScanRecord& rec : greater100) {
+        EXPECT_EQ(rec.snapshot_size, 1u) << "u8 snapshot width must be 1";
+        const std::size_t offset = static_cast<std::size_t>(rec.address - 0x1000);
+        EXPECT_EQ(rec.snapshot_data[0], process.bytes()[offset]);
+    }
+
+    EXPECT_TRUE(scanner
+                    .firstScanComparison(process, u8, ScanCondition::GreaterThan,
+                                         tpe::Memory{static_cast<tpe::Byte>(255)})
+                    .empty());
+    EXPECT_TRUE(scanner
+                    .firstScanComparison(process, u8, ScanCondition::LessThan,
+                                         tpe::Memory{static_cast<tpe::Byte>(0)})
+                    .empty());
+}
+
+TEST(FirstScanComparison, FloatingPointFollowsIeeeAndNanIsNeverKept)
+{
+    // float:±Inf 按 IEEE;NaN 内存/Nan 目标一律不匹配
+    FakeProcess process(0x1000, 0x40);
+    const float inf = std::numeric_limits<float>::infinity();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float values[16] = {1.5f, -1.5f, 0.0f, inf,  -inf, nan,  100.0f, 100.5f,
+                              99.5f, -100.0f, 1e30f, -1e30f, 0.25f, -0.25f, 42.0f, -42.0f};
+    for (std::size_t slot = 0; slot < 16; ++slot) {
+        putFloatAtSlot(process.bytes(), slot, values[slot]);
+    }
+    MemoryScanner scanner;
+    Float f;
+
+    // 严格大于 100.0:+Inf / 100.5 / 1e30(NaN 槽 0x1014 不保留)
+    EXPECT_EQ(comparisonAddresses(scanner.firstScanComparison(
+                  process, f, ScanCondition::GreaterThan, littleEndianBytes<float>(100.0f))),
+              (std::vector<tpe::Address>{0x100C, 0x101C, 0x1028}));
+    // 严格小于 -100.0:-Inf / -1e30
+    EXPECT_EQ(comparisonAddresses(scanner.firstScanComparison(
+                  process, f, ScanCondition::LessThan, littleEndianBytes<float>(-100.0f))),
+              (std::vector<tpe::Address>{0x1010, 0x102C}));
+    // 目标 NaN:一律不匹配
+    EXPECT_TRUE(scanner
+                    .firstScanComparison(process, f, ScanCondition::GreaterThan,
+                                         littleEndianBytes<float>(nan))
+                    .empty());
+    EXPECT_TRUE(scanner
+                    .firstScanComparison(process, f, ScanCondition::LessThan,
+                                         littleEndianBytes<float>(nan))
+                    .empty());
+    // ±Inf 端:无严格更极端者
+    EXPECT_TRUE(scanner
+                    .firstScanComparison(process, f, ScanCondition::GreaterThan,
+                                         littleEndianBytes<float>(inf))
+                    .empty());
+    EXPECT_TRUE(scanner
+                    .firstScanComparison(process, f, ScanCondition::LessThan,
+                                         littleEndianBytes<float>(-inf))
+                    .empty());
+    // 严格小于 +Inf:全部有限值与 -Inf;+Inf 自身与 NaN 不保留(14 个)
+    EXPECT_EQ(comparisonAddresses(scanner.firstScanComparison(
+                  process, f, ScanCondition::LessThan, littleEndianBytes<float>(inf))),
+              (std::vector<tpe::Address>{0x1000, 0x1004, 0x1008, 0x1010, 0x1018, 0x101C, 0x1020,
+                                         0x1024, 0x1028, 0x102C, 0x1030, 0x1034, 0x1038, 0x103C}));
+}
+
+TEST(FirstScanComparison, DoubleFollowsIeeeAndNanIsNeverKept)
+{
+    // double:步进宽度 8;NaN 不保留
+    FakeProcess process(0x1000, 0x40);
+    const double inf = std::numeric_limits<double>::infinity();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const double values[8] = {1.5, -1.5, inf, -inf, nan, 100.5, -100.5, 0.0};
+    for (std::size_t slot = 0; slot < 8; ++slot) {
+        putDoubleAtSlot(process.bytes(), slot, values[slot]);
+    }
+    MemoryScanner scanner;
+    Double d;
+
+    EXPECT_EQ(comparisonAddresses(scanner.firstScanComparison(
+                  process, d, ScanCondition::GreaterThan, littleEndianBytes<double>(100.0))),
+              (std::vector<tpe::Address>{0x1010, 0x1028})); // +Inf / 100.5
+    EXPECT_EQ(comparisonAddresses(scanner.firstScanComparison(
+                  process, d, ScanCondition::LessThan, littleEndianBytes<double>(100.0))),
+              (std::vector<tpe::Address>{0x1000, 0x1008, 0x1018, 0x1030, 0x1038})); // 1.5/-1.5/-Inf/-100.5/0.0;NaN 槽 0x1020 不保留
+    EXPECT_TRUE(scanner
+                    .firstScanComparison(process, d, ScanCondition::GreaterThan,
+                                         littleEndianBytes<double>(nan))
+                    .empty());
+    EXPECT_TRUE(scanner
+                    .firstScanComparison(process, d, ScanCondition::LessThan,
+                                         littleEndianBytes<double>(nan))
+                    .empty());
+    EXPECT_TRUE(scanner
+                    .firstScanComparison(process, d, ScanCondition::GreaterThan,
+                                         littleEndianBytes<double>(inf))
+                    .empty());
+}
+
+TEST(FirstScanComparison, SteppingMatchesTypeWidthOnAllOnesPage)
+{
+    // 64 字节页全 0x01:目标 0 的严格大于 = 全部候选,计数即步进面(镜像 T007)
+    FakeProcess process(0x1000, 0x40);
+    std::fill(process.bytes().begin(), process.bytes().end(), static_cast<tpe::Byte>(0x01));
+    MemoryScanner scanner;
+
+    UnsignedByte u8;
+    Int16 i16;
+    Int32 i32;
+    Int64 i64;
+    const struct {
+        const ValueType* type;
+        size_t width;
+        size_t expected;
+    } cases[] = {
+        {&u8, 1, 64u},
+        {&i16, 2, 32u},
+        {&i32, 4, 16u},
+        {&i64, 8, 8u},
+    };
+
+    for (const auto& item : cases) {
+        const std::vector<ScanRecord> results = scanner.firstScanComparison(
+            process, *item.type, ScanCondition::GreaterThan, tpe::Memory(item.width, 0));
+        ASSERT_EQ(results.size(), item.expected) << item.type->name;
+        for (size_t k = 0; k < results.size(); ++k) {
+            EXPECT_EQ(results[k].address % item.width, 0u)
+                << "match must be aligned to width, got " << results[k].address;
+            if (k > 0) {
+                EXPECT_EQ(results[k].address - results[k - 1].address, item.width)
+                    << "matches must step by width";
+                EXPECT_LT(results[k - 1].address, results[k].address) << "ascending order";
+            }
+        }
+        EXPECT_EQ(results.front().address, 0x1000u);
+        EXPECT_EQ(results.back().address, 0x1000u + 0x40 - item.width)
+            << "不跨页:末候选的宽度字节须完整在页内";
+    }
+}
+
+TEST(FirstScanComparison, RecordsSnapshotFromCurrentMemoryBytes)
+{
+    // 快照 = 命中处当轮实读 width 字节(INV-R;供 next-scan 过滤链)
+    FakeProcess process(0x1000, 0x20);
+    putI32AtSlot(process.bytes(), 1, 100);
+    putI32AtSlot(process.bytes(), 2, 101);
+    putI32AtSlot(process.bytes(), 3, 200);
+    MemoryScanner scanner;
+    Int32 i32;
+
+    const std::vector<ScanRecord> results = scanner.firstScanComparison(
+        process, i32, ScanCondition::GreaterThan, littleEndianBytes<std::int32_t>(100));
+    ASSERT_EQ(results.size(), 2u); // 101 @0x1008、200 @0x100C;==100 不保留
+    EXPECT_EQ(results[0].address, 0x1008u);
+    EXPECT_EQ(results[1].address, 0x100Cu);
+    for (const ScanRecord& rec : results) {
+        EXPECT_EQ(rec.snapshot_size, 4u) << "address " << rec.address;
+        const std::size_t offset = static_cast<std::size_t>(rec.address - 0x1000);
+        for (std::size_t i = 0; i < 4; ++i) {
+            EXPECT_EQ(rec.snapshot_data[i], process.bytes()[offset + i])
+                << "address " << rec.address << " byte " << i;
+        }
+    }
+    EXPECT_EQ(results[0].snapshot_data[0], 0x65); // 101 小端
+    EXPECT_EQ(results[1].snapshot_data[0], 0xC8); // 200 小端
+}
+
+TEST(FirstScanComparison, ChunkBoundariesKeepComparisonWithoutDrift)
+{
+    // 62 字节页 → i16 槽位 31 个(值 = 槽号);小 chunkSize(含非宽度整数倍)与整页读取
+    // 的地址与快照逐项一致:无漂移、无重复、无漏采,跨块比较正确
+    FakeProcess process(0x1000, 0x3E);
+    for (std::size_t slot = 0; slot < 31; ++slot) {
+        putI16AtSlot(process.bytes(), slot, static_cast<std::int16_t>(slot));
+    }
+    MemoryScanner scanner;
+    Int16 i16;
+    const tpe::Memory target15 = littleEndianBytes<std::int16_t>(15);
+
+    const std::vector<ScanRecord> fullGreater = scanner.firstScanComparison(
+        process, i16, ScanCondition::GreaterThan, target15);
+    ASSERT_EQ(fullGreater.size(), 15u); // 槽 16..30
+    EXPECT_EQ(fullGreater.front().address, 0x1020u);
+    EXPECT_EQ(fullGreater.back().address, 0x103Cu);
+
+    const std::vector<ScanRecord> fullLess =
+        scanner.firstScanComparison(process, i16, ScanCondition::LessThan, target15);
+    ASSERT_EQ(fullLess.size(), 15u); // 槽 0..14
+    EXPECT_EQ(fullLess.front().address, 0x1000u);
+    EXPECT_EQ(fullLess.back().address, 0x101Cu);
+
+    for (const tpe::Size chunkSize :
+         {tpe::Size{16}, tpe::Size{8}, tpe::Size{7}, tpe::Size{3}, tpe::Size{1}}) {
+        ScanOptions options;
+        options.chunkSize = chunkSize;
+        const std::vector<ScanRecord> chunkedGreater = scanner.firstScanComparison(
+            process, i16, ScanCondition::GreaterThan, target15, options);
+        const std::vector<ScanRecord> chunkedLess = scanner.firstScanComparison(
+            process, i16, ScanCondition::LessThan, target15, options);
+        ASSERT_EQ(chunkedGreater.size(), fullGreater.size()) << "chunkSize=" << chunkSize;
+        ASSERT_EQ(chunkedLess.size(), fullLess.size()) << "chunkSize=" << chunkSize;
+        for (size_t k = 0; k < fullGreater.size(); ++k) {
+            EXPECT_EQ(chunkedGreater[k].address, fullGreater[k].address)
+                << "chunkSize=" << chunkSize << " index " << k;
+            ASSERT_EQ(chunkedGreater[k].snapshot_size, fullGreater[k].snapshot_size)
+                << "chunkSize=" << chunkSize << " index " << k;
+            EXPECT_EQ(std::memcmp(chunkedGreater[k].snapshot_data, fullGreater[k].snapshot_data,
+                                  fullGreater[k].snapshot_size),
+                      0)
+                << "chunkSize=" << chunkSize << " index " << k;
+        }
+        for (size_t k = 0; k < fullLess.size(); ++k) {
+            EXPECT_EQ(chunkedLess[k].address, fullLess[k].address)
+                << "chunkSize=" << chunkSize << " index " << k;
+        }
+    }
+}
+
+TEST(FirstScanComparison, UnsupportedConditionsAndTypesReturnNoMatches)
+{
+    // R4/C-D3 防御:条件非 GT/LT、NumericKind::Other、无对齐口径(变长)或
+    // 目标值不足以解码 → 一律不产生记录
+    FakeProcess process(0x1000, 0x40);
+    std::fill(process.bytes().begin(), process.bytes().end(), static_cast<tpe::Byte>(0x01));
+    MemoryScanner scanner;
+    Int32 i32;
+    String string;
+    OtherKindValueType other4;
+    const tpe::Memory target = littleEndianBytes<std::int32_t>(0);
+
+    for (const ScanCondition condition :
+         {ScanCondition::ExactValue, ScanCondition::Unknown, ScanCondition::Changed,
+          ScanCondition::Unchanged, ScanCondition::Increased, ScanCondition::Decreased}) {
+        EXPECT_TRUE(scanner.firstScanComparison(process, i32, condition, target).empty());
+    }
+    EXPECT_TRUE(scanner.firstScanComparison(process, other4, ScanCondition::GreaterThan, target)
+                    .empty());
+    EXPECT_TRUE(scanner.firstScanComparison(process, string, ScanCondition::GreaterThan,
+                                            tpe::Memory{0x01})
+                    .empty());
+    // 目标值不足 width(2 < 4)→ 无比较口径
+    EXPECT_TRUE(scanner
+                    .firstScanComparison(process, i32, ScanCondition::GreaterThan,
+                                         tpe::Memory{0x01, 0x02})
+                    .empty());
 }
