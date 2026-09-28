@@ -395,9 +395,8 @@ TEST(ReplCommandParse, NewScanRejectsConflictingOrUnknownFlags)
 
 TEST(ReplCommandParse, NewScanPlaceholderScanTypesAreRecognized)
 {
-    // FR-020 / C-R7:--unknown / --greater / --less 语法可识别(不再以“未实现”错误拒绝)
-    // T006:--unknown 已转正(placeholder=false → 处置为 Execute,执行真实首扫);
-    // greater/less 仍占位(至 T010 转正)。
+    // FR-020 / C-R7:--unknown / --greater / --less 语法可识别(不再以“未实现”错误拒绝);
+    // T010:三旗标全部转正 → placeholder 不再置位、处置决策恒为 Execute(真实首扫)。
     const ReplCommand unknown = parseReplCommand("new-scan --unknown");
     ASSERT_EQ(unknown.kind, ReplCommandKind::NewScan);
     EXPECT_EQ(unknown.scanType, ReplScanType::Unknown);
@@ -409,14 +408,16 @@ TEST(ReplCommandParse, NewScanPlaceholderScanTypesAreRecognized)
     const ReplCommand greater = parseReplCommand("new-scan --greater 100");
     ASSERT_EQ(greater.kind, ReplCommandKind::NewScan);
     EXPECT_EQ(greater.scanType, ReplScanType::Greater);
-    EXPECT_TRUE(greater.placeholder);
-    EXPECT_TRUE(greater.hasValue); // 值仅用于语法识别;占位不解析、不执行
+    EXPECT_FALSE(greater.placeholder); // T010:已转正(执行真实首轮比较扫描)
+    EXPECT_TRUE(greater.hasValue);
     EXPECT_TRUE(greater.error.empty());
+    EXPECT_EQ(tpe::cli::planReplOutcome(greater), tpe::cli::ReplOutcome::Execute);
 
     const ReplCommand less = parseReplCommand("new-scan --less 100");
     EXPECT_EQ(less.scanType, ReplScanType::Less);
-    EXPECT_TRUE(less.placeholder);
+    EXPECT_FALSE(less.placeholder); // T010:已转正
     EXPECT_TRUE(less.error.empty());
+    EXPECT_EQ(tpe::cli::planReplOutcome(less), tpe::cli::ReplOutcome::Execute);
 }
 
 TEST(ReplCommandParse, NewScanPlaceholderAcceptsFlagCombinations)
@@ -433,7 +434,7 @@ TEST(ReplCommandParse, NewScanPlaceholderAcceptsFlagCombinations)
     ASSERT_EQ(withValueAndType.scanType, ReplScanType::Greater);
     ASSERT_NE(withValueAndType.valueType, nullptr);
     EXPECT_EQ(withValueAndType.valueType->shortName, "i64");
-    EXPECT_TRUE(withValueAndType.placeholder);
+    EXPECT_FALSE(withValueAndType.placeholder); // T010:--greater 已转正
     EXPECT_TRUE(withValueAndType.error.empty());
 }
 
@@ -765,4 +766,17 @@ TEST(ReplScanConditionMap, MapsEachConditionToEngineValue)
     EXPECT_EQ(toScanCondition(ReplScanType::Changed), ScanCondition::Changed);
     EXPECT_EQ(toScanCondition(ReplScanType::Unchanged), ScanCondition::Unchanged);
     EXPECT_FALSE(toScanCondition(ReplScanType::Unknown).has_value());
+}
+
+TEST(ReplScanConditionMap, MapsFirstScanConditionsToEngineValue)
+{
+    // T010:new-scan 首扫专用映射(Greater/Less = 与外部目标值的严格比较;
+    // 与 next-scan 的相对快照映射 toScanCondition 分离)。
+    using tpe::cli::toFirstScanCondition;
+    EXPECT_EQ(toFirstScanCondition(ReplScanType::Equal), ScanCondition::ExactValue);
+    EXPECT_EQ(toFirstScanCondition(ReplScanType::Unknown), ScanCondition::Unknown);
+    EXPECT_EQ(toFirstScanCondition(ReplScanType::Greater), ScanCondition::GreaterThan);
+    EXPECT_EQ(toFirstScanCondition(ReplScanType::Less), ScanCondition::LessThan);
+    EXPECT_FALSE(toFirstScanCondition(ReplScanType::Changed).has_value());
+    EXPECT_FALSE(toFirstScanCondition(ReplScanType::Unchanged).has_value());
 }

@@ -95,6 +95,29 @@ uint64_t ProcessEngine::searchUnknown(const ValueType& type)
     return m_session->resultCount();
 }
 
+uint64_t ProcessEngine::searchComparison(const ValueType& type, ScanCondition condition,
+                                         const tpe::Memory& target)
+{
+    if (!m_currentProcess) {
+        std::cerr << "No process opened. Use 'open-process <PID>' first." << std::endl;
+        return 0;
+    }
+
+    // Initialize scan session
+    m_session = std::make_unique<ScanSession>(m_currentProcess);
+    m_session->beginScan(type);
+
+    // Execute first-round comparison scan（严格 GT/LT;采集步进=类型宽度对齐）
+    ScanOptions options;
+    auto results =
+        m_scanner.firstScanComparison(*m_currentProcess, type, condition, target, options);
+
+    // Commit results with the correct first-round condition (C-D2/C-D11)
+    m_session->commitFirstScan(std::move(results), condition);
+
+    return m_session->resultCount();
+}
+
 uint64_t ProcessEngine::nextScan(ScanCondition condition, const ValueType& type,
                                   const std::optional<tpe::Memory>& newValue)
 {

@@ -51,6 +51,27 @@ public:
         const ScanOptions& options = {}
     );
 
+    /// 首轮大小比较扫描（`new-scan --greater` / `--less`；C-D2/C-D3/FR-007–011）：
+    /// 保留“当前值**严格大于/小于**外部目标值”的地址（相等不保留），按 NumericKind
+    /// 分派数值语义（有符号/无符号/浮点；NaN 参与比较一律不匹配）；采集步进与
+    /// `firstScanUnknown` 同为类型宽度对齐；每条记录携带当轮实读 width 字节快照。
+    /// - `condition` 仅接受 `GreaterThan` / `LessThan`（仅首轮语义；其它条件防御性返回空）
+    /// - 宽度 0（变长）/ 超 8 字节 / 目标值不足以解码 → 无比较口径 → 返回空结果
+    ///   （CLI 层另有显式拒绝）
+    /// @param process   目标进程
+    /// @param type      值类型（决定步进宽度与数值分派）
+    /// @param condition GreaterThan（严格大于）或 LessThan（严格小于）
+    /// @param target    外部目标值（小端内存表示；取前 width 字节）
+    /// @param options   扫描选项
+    /// @return 命中 ScanRecord 列表（地址升序，与页序一致）
+    std::vector<ScanRecord> firstScanComparison(
+        tpe::platform::PlatformProcess& process,
+        const ValueType& type,
+        ScanCondition condition,
+        const tpe::Memory& target,
+        const ScanOptions& options = {}
+    );
+
     /// 增量过滤扫描：在上一轮结果基础上按条件筛选（非交互）。
     /// 读取宽度取自 `type.byteWidth()`（变长类型由 `newValue` 决定）。
     /// 比较条件语义（Phase 05 缺陷 ①/FR-002/FR-003）：

@@ -51,8 +51,11 @@ constexpr const char* kListUsage = "Usage: list [<page>] | list --all";
 constexpr const char* kWriteUsage = "Usage: write <address> <new-value>";
 constexpr const char* kNoResultsHint = "No scan results available. Run 'new-scan' first.";
 
-/// new-scan(契约 C-R1;US1 C-D1):默认 equal + 当前类型;成功不打印输出,仅更新提示符状态。
-/// Unknown 分支:无值首扫(FR-001–004),不进行值解析。
+/// new-scan(契约 C-R1;US1 C-D1;US2 C-D2/C-D3):默认 equal + 当前类型;
+/// 成功不打印输出,仅更新提示符状态。三种首扫形态:
+/// - Unknown:无值首扫(FR-001–004),不进行值解析;
+/// - Greater/Less:值必传(解析层已保证);值解析口径与 equal 一致,失败 → 既有非法值提示;
+/// - Equal:既有等值首扫。
 void executeNewScan(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& state,
                     ProcessEngine& engine)
 {
@@ -67,6 +70,30 @@ void executeNewScan(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& s
         return;
     }
 
+    if (command.scanType == tpe::cli::ReplScanType::Greater ||
+        command.scanType == tpe::cli::ReplScanType::Less) {
+        // C-D2/C-D3/FR-007–011:首轮大小比较(严格 GT/LT);
+        // 值解析失败 → 既有非法值提示(不执行、不改变会话状态);
+        // 成功后提示符显示本次比较值(§11.3 带值扫描)。
+        std::string reason;
+        const std::optional<tpe::Memory> target = vt.type->parse(command.value, reason);
+        if (!target.has_value()) {
+            printMessage(invalidValueMessage(vt, reason, kNewScanUsage));
+            return; // 不执行、不改变会话状态
+        }
+
+        const std::optional<ScanCondition> condition =
+            tpe::cli::toFirstScanCondition(command.scanType);
+        if (!condition.has_value()) {
+            return; // Greater/Less 映射恒有值;防御(不可达)
+        }
+
+        const uint64_t total = engine.searchComparison(*vt.type, *condition, *target);
+        state.onValueScan(command.scanType, vt, command.value, total);
+        return;
+    }
+
+    // Equal(默认):既有等值首扫
     std::string reason;
     const std::optional<tpe::Memory> pattern = vt.type->parse(command.value, reason);
     if (!pattern.has_value()) {

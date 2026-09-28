@@ -392,11 +392,12 @@ ReplCommand parseScanCommand(const std::string& line, const CliParseResult& pars
             break;
         case ReplScanType::Greater:
         case ReplScanType::Less:
-            // §11.5:new-scan 的 --greater / --less 值必传;缺值 → 用法错误(不执行、不切换)
+            // §11.5:new-scan 的 --greater / --less 值必传;缺值 → 用法错误(不执行、不切换)。
+            // T010 转正:值交执行层解析并执行首轮大小比较扫描;placeholder 不再置位
+            // (占位机制随 US4/T022 退役)。
             if (!command.hasValue) {
                 return replError(kind, "Missing value for new-scan.");
             }
-            command.placeholder = true; // 占位:值仅用于语法识别,不解析、不执行扫描
             break;
         default: // Equal(已实现)
             if (!command.hasValue) {
@@ -574,8 +575,8 @@ ReplOutcome planReplOutcome(const ReplCommand& command)
     case ReplCommandKind::Exit:
         return ReplOutcome::Exit;
     case ReplCommandKind::NewScan:
-        // 占位命令(--greater / --less;--unknown 已转正):打印固定文案、仅切换提示符
-        // scan-type;机制随 US4 退役。
+        // 占位机制(T022 退役):三旗标(--unknown/--greater/--less)已全部转正,
+        // placeholder 无置位方,本分支恒为 Execute。
         return command.placeholder ? ReplOutcome::Placeholder : ReplOutcome::Execute;
     case ReplCommandKind::NextScan:
     case ReplCommandKind::List:
@@ -622,6 +623,26 @@ std::optional<ScanCondition> toScanCondition(ReplScanType type)
         return ScanCondition::Unchanged;
     case ReplScanType::Unknown:
         return std::nullopt; // 仅 new-scan(已转正);next-scan 解析层已拒绝该旗标
+    }
+    return std::nullopt;
+}
+
+std::optional<ScanCondition> toFirstScanCondition(ReplScanType type)
+{
+    // 首扫专用映射(T010):Greater/Less 在首轮是"与外部目标值"比较
+    // (GreaterThan/LessThan),与 next-scan 的相对快照语义(Increased/Decreased)分离。
+    switch (type) {
+    case ReplScanType::Equal:
+        return ScanCondition::ExactValue;
+    case ReplScanType::Unknown:
+        return ScanCondition::Unknown;
+    case ReplScanType::Greater:
+        return ScanCondition::GreaterThan;
+    case ReplScanType::Less:
+        return ScanCondition::LessThan;
+    case ReplScanType::Changed:
+    case ReplScanType::Unchanged:
+        return std::nullopt; // 非首扫条件(new-scan 解析层已拒绝该旗标)
     }
     return std::nullopt;
 }

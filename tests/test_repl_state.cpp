@@ -259,46 +259,43 @@ TEST(ReplPlaceholder, FixedMessageIsContractText)
 
 TEST(ReplPlaceholder, PlansPlaceholderOutcomeForThreeScanTypes)
 {
-    // T006:--unknown 已转正 → 解析通过、placeholder=false、处置决策为 Execute(真实首扫)
-    for (const char* line : {"new-scan --unknown", "new-scan --unknown --i16"}) {
+    // T010:三旗标全部转正 → 解析通过、placeholder 不再置位、处置决策恒为 Execute(真实首扫)。
+    for (const char* line : {"new-scan --unknown", "new-scan --unknown --i16",
+                             "new-scan --greater 100", "new-scan --greater --i64 42",
+                             "new-scan --less 100"}) {
         const ReplCommand command = tpe::cli::parseReplCommand(line);
         EXPECT_TRUE(command.error.empty()) << line;
         EXPECT_FALSE(command.placeholder) << line;
         EXPECT_EQ(tpe::cli::planReplOutcome(command), ReplOutcome::Execute) << line;
     }
-
-    // greater/less 仍为占位(至 T010 转正):解析通过 → 处置决策为 Placeholder(打印固定文案)
-    for (const char* line : {"new-scan --greater 100", "new-scan --greater --i64 42",
-                             "new-scan --less 100"}) {
-        const ReplCommand command = tpe::cli::parseReplCommand(line);
-        EXPECT_TRUE(command.error.empty()) << line;
-        EXPECT_TRUE(command.placeholder) << line;
-        EXPECT_EQ(tpe::cli::planReplOutcome(command), ReplOutcome::Placeholder) << line;
-    }
 }
 
 TEST(ReplPlaceholder, SwitchesScanTypeOnlyAndKeepsMatchesAndValue)
 {
-    // SC-006 / C-R7:占位不执行扫描;匹配集与 [<value>] 保持不变。
-    // T006:--unknown 已转正,其成功路径状态迁移见
-    // ReplStateMigrate.UnknownScanClearsDisplayedValue;本用例保留 greater/less 占位部分(至 T010)。
+    // T010:greater/less 已转正(处置为 Execute;成功路径按带值扫描迁移状态):
+    // 提示符切换到本次 scan-type 并显示本次比较值(旧“占位不执行、值段保持”语义不复存在;
+    // 机制移除见 T022)。
     ReplState state("test.exe");
     state.onValueScan(ReplScanType::Equal, cliType("i32"), "100", 15234);
 
     const struct {
         const char* line;
         const char* prompt;
+        const char* value;
     } cases[] = {
-        {"new-scan --greater 250 --i64", "test.exe-greater-i64-100> "}, // 250 不进入提示符
-        {"new-scan --less --i32 5", "test.exe-less-i32-100> "},
+        {"new-scan --greater 250 --i64", "test.exe-greater-i64-250> ", "250"},
+        {"new-scan --less --i32 5", "test.exe-less-i32-5> ", "5"},
     };
     for (const auto& item : cases) {
         const ReplCommand command = tpe::cli::parseReplCommand(item.line);
-        ASSERT_EQ(tpe::cli::planReplOutcome(command), ReplOutcome::Placeholder) << item.line;
-        state.onPlaceholder(command.scanType, command.valueType); // 主循环的纯状态处置
+        ASSERT_EQ(tpe::cli::planReplOutcome(command), ReplOutcome::Execute) << item.line;
+        // 执行层成功后的纯状态迁移(主循环调用;本用例模拟)
+        const CliValueType& vt =
+            command.valueType != nullptr ? *command.valueType : *state.valueType;
+        state.onValueScan(command.scanType, vt, command.value, 7);
         EXPECT_EQ(state.prompt(), item.prompt) << item.line;
-        EXPECT_EQ(state.matchesTotal, 15234u) << item.line;
-        EXPECT_EQ(state.lastValue, std::optional<std::string>("100")) << item.line;
+        EXPECT_EQ(state.matchesTotal, 7u) << item.line;
+        EXPECT_EQ(state.lastValue, std::optional<std::string>(item.value)) << item.line;
     }
 }
 

@@ -309,7 +309,94 @@ bool compareNumeric(ScanCondition condition, NumericKind kind, const ScanRecord&
     }
 }
 
+/// 首轮“与外部目标值”比较的判定（R4/C-D3/FR-008）：
+/// 严格 GT/LT（相等不保留）；按 NumericKind 分派（有符号/无符号按数值语义、
+/// 浮点按 IEEE；NaN 参与比较一律不匹配，±Inf 按 IEEE）。
+/// 条件非 GreaterThan/LessThan、NumericKind::Other、宽度 0/超 8 字节、
+/// 目标值不足 width → 一律不匹配（不保留）。
+bool matchAgainstTarget(ScanCondition op, NumericKind kind, const uint8_t* bytes,
+                        const tpe::Memory& target, size_t width)
+{
+    if ((op != ScanCondition::GreaterThan && op != ScanCondition::LessThan) ||
+        kind == NumericKind::Other || width == 0 || width > sizeof(ScanRecord::snapshot_data) ||
+        target.size() < width) {
+        return false;
+    }
+
+    switch (kind) {
+    case NumericKind::SignedInteger: {
+        const int64_t currentVal = readSignedLittleEndian(bytes, width);
+        const int64_t targetVal = readSignedLittleEndian(target.data(), width);
+        return (op == ScanCondition::GreaterThan) ? (currentVal > targetVal)
+                                                  : (currentVal < targetVal);
+    }
+    case NumericKind::UnsignedInteger: {
+        const uint64_t currentVal = readUnsignedLittleEndian(bytes, width);
+        const uint64_t targetVal = readUnsignedLittleEndian(target.data(), width);
+        return (op == ScanCondition::GreaterThan) ? (currentVal > targetVal)
+                                                  : (currentVal < targetVal);
+    }
+    case NumericKind::FloatingPoint: {
+        if (width == sizeof(float)) {
+            float currentVal{}, targetVal{};
+            std::memcpy(&currentVal, bytes, width);
+            std::memcpy(&targetVal, target.data(), width);
+            if (std::isnan(currentVal) || std::isnan(targetVal)) return false; // NaN 不匹配
+            return (op == ScanCondition::GreaterThan) ? (currentVal > targetVal)
+                                                      : (currentVal < targetVal);
+        }
+        if (width == sizeof(double)) {
+            double currentVal{}, targetVal{};
+            std::memcpy(&currentVal, bytes, width);
+            std::memcpy(&targetVal, target.data(), width);
+            if (std::isnan(currentVal) || std::isnan(targetVal)) return false; // NaN 不匹配
+            return (op == ScanCondition::GreaterThan) ? (currentVal > targetVal)
+                                                      : (currentVal < targetVal);
+        }
+        return false; // 其他浮点宽度不可比较
+    }
+    default:
+        return false;
+    }
+}
+
 } // namespace
+
+// ============================================================
+// firstScanComparison — 首轮大小比较:保留当前值严格 GT/LT 外部目标值的地址
+//   C-D2/C-D3/FR-007–008/FR-011:采集步进与 --unknown 同为类型宽度对齐;
+//   每条保留记录携带当轮实读 width 字节快照(供 next-scan 过滤链)。
+// ============================================================
+std::vector<ScanRecord> MemoryScanner::firstScanComparison(
+    tpe::platform::PlatformProcess& process, const ValueType& type, ScanCondition condition,
+    const tpe::Memory& target, const ScanOptions& options)
+{
+    std::vector<ScanRecord> results;
+
+    // 仅首轮外部值比较(GreaterThan/LessThan);其它条件无此语义(防御)
+    if (condition != ScanCondition::GreaterThan && condition != ScanCondition::LessThan) {
+        return results;
+    }
+
+    const size_t width = type.byteWidth();
+    if (width == 0 || width > sizeof(ScanRecord::snapshot_data) || target.size() < width) {
+        // 变长/超宽/目标值不足以解码 → 无比较口径(CLI 层另有显式拒绝;防御)
+        return results;
+    }
+
+    const NumericKind kind = type.numericKind();
+    const std::vector<MemoryPage> pages =
+        filterScannablePages(process.getCheatablePages(), options);
+    enumerateAlignedCandidates(process, pages, width, options,
+        [&results, condition, kind, &target, width](tpe::Address address, const tpe::Byte* bytes) {
+            if (!matchAgainstTarget(condition, kind, bytes, target, width)) {
+                return; // 不满足严格比较(含 == 边界) → 不保留
+            }
+            // 快照 = 当轮实读 width 字节(>8 由 ScanRecord 构造器截断;INV-R)
+            results.emplace_back(address, tpe::Memory(bytes, bytes + width));
+        });
+    return results;
+}
 
 // ============================================================
 // nextScan — Incremental filtering

@@ -107,8 +107,8 @@ struct ReplCommand {
     std::string value;                           // 值原文(--string 取旗标后剩余整行)
     bool hasValue = false;
 
-    // new-scan 占位(--greater / --less;--unknown 已转正执行真实首扫):
-    // 语法可识别,仅切换提示符 scan-type(可选 value-type),不执行扫描;机制随 US4 退役。
+    // 占位机制残留(T022 退役):三旗标(--unknown/--greater/--less)均已转正(T006/T010),
+    // 解析层不再置位本字段;占位分支不可达,待 US4/T022 连同枚举项与文案一并移除。
     bool placeholder = false;
 
     // list
@@ -138,7 +138,8 @@ enum class ReplOutcome {
     Noop,        // 空输入:不打印任何内容,仅刷新提示符
     ShowHelp,    // help / 未知命令:打印 REPL 帮助、不退出
     UsageError,  // 用法错误:打印 error、不执行、不退出
-    Placeholder, // 占位命令(--greater / --less):打印固定文案、仅切换提示符 scan-type;随 US4 退役
+    Placeholder, // 占位命令:打印固定文案、仅切换提示符 scan-type;
+                 // 无置位方(T010 后不可达),随 US4/T022 退役
     Exit,        // exit:退出 REPL(进程退出码 0)
     Execute,     // 已识别命令:交给主循环执行
 };
@@ -150,6 +151,11 @@ ReplOutcome planReplOutcome(const ReplCommand& command);
 /// Equal→ExactValue;Greater→Increased;Less→Decreased;Changed/Unchanged 同名;
 /// Unknown 无对应条件 → nullopt(仅 new-scan 使用;next-scan 解析层已拒绝该旗标)。
 std::optional<ScanCondition> toScanCondition(ReplScanType type);
+
+/// REPL 扫描类型 → 首扫扫描条件(new-scan 执行用;T010/FR-007–011)。
+/// Equal→ExactValue;Unknown→Unknown;Greater→GreaterThan;Less→LessThan;
+/// Changed/Unchanged 非首扫条件 → nullopt(new-scan 解析层已拒绝该旗标)。
+std::optional<ScanCondition> toFirstScanCondition(ReplScanType type);
 
 /// REPL 帮助文本(覆盖 7 条命令;契约 C-R6)。
 std::string_view replHelpText();
