@@ -16,6 +16,7 @@
 #include "CliParser.hpp"
 #include "Platform.hpp"
 #include "ProcessEngine.hpp"
+#include "ScanSession.hpp"
 #include "startup_cli.hpp"
 
 #include <algorithm>
@@ -55,6 +56,13 @@ public:
 
     tpe::Memory& bytes() { return m_bytes; }
 
+    /// 标记字节区间不可读(US3/T016b:模拟扫描后页已释放——`list` 实时读取该地址失败);
+    /// 仅影响 read 路径(扫描前配置会使整页读取失败;用例按需在扫描后调用)。
+    void setRangeUnreadable(tpe::Address address, tpe::Size length)
+    {
+        m_unreadable.emplace_back(address, length);
+    }
+
     std::vector<MemoryPage> getCheatablePages() const override
     {
         if (!m_hasMemory) {
@@ -65,7 +73,7 @@ public:
 
     Result<tpe::Memory, PlatformError> read(MemoryPage page) const override
     {
-        if (!contains(page.start, page.size)) {
+        if (!contains(page.start, page.size) || overlapsUnreadable(page)) {
             return Result<tpe::Memory, PlatformError>::error(notSupported());
         }
         const std::size_t offset = static_cast<std::size_t>(page.start - m_base);
@@ -93,6 +101,17 @@ private:
         return offset <= m_size && length <= m_size - offset;
     }
 
+    /// 读取页与任一不可读区间重叠 → 读取失败(page [start,+size) 与区间 [start,+len) 相交)。
+    bool overlapsUnreadable(const MemoryPage& page) const
+    {
+        for (const MemoryPage& range : m_unreadable) {
+            if (page.start < range.start + range.size && range.start < page.start + page.size) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     PlatformError notSupported() const
     {
         return PlatformError{"FakeStartupProcess",
@@ -103,6 +122,7 @@ private:
     tpe::Address m_base = 0;
     tpe::Size m_size = 0;
     tpe::Memory m_bytes;
+    std::vector<MemoryPage> m_unreadable; // 不可读字节区间(US3/T016b)
 };
 
 /// 平台替身(US6/缺陷⑧):可配置进程列表 / 枚举错误;`open` 按 PID 返回伪进程。
@@ -582,4 +602,119 @@ TEST(RunCliReplConsistency, NewScanGreaterInStringSessionIsRejected)
         << "rejected command must not switch the scan type, got:\n" << run.output;
     EXPECT_NE(run.output.find("fake.exe-equal-string-hello> Total: 1 matches"), std::string::npos)
         << "string session state must stay intact, got:\n" << run.output;
+}
+
+// ---------------------------------------------------------------------------
+// US3(Phase 07 · T016 红)— `list` 实时重读 REPL 集成驱动
+//   C-D6/E4/INV-L(FR-013–018):值列 = 展示时读取的当前内存值(非扫描快照);
+//   不可读 / 零宽 → 值列逐字 `??`(行数与 `Total` 不变、列表不中断);
+//   `write` 后 `list` 反映新值。现行为:显示扫描时快照、(b)(d) 无 `??` 路径 —— 红。
+//   说明:目标侧变化无法由 REPL 命令触发,(a)(b)(d) 分值两段运行——第一段扫描后退出,
+//   随后直接操作伪进程内存,第二段(同一引擎、会话保持)执行 `list`。
+// ---------------------------------------------------------------------------
+
+TEST(RunCliReplListLive, ListShowsCurrentMemoryValueNotSnapshot)
+{
+    // (a) 实时值 vs 快照:扫描(快照=100)→ 目标内存变化(104)→ `list --all` 显示 104。
+    auto os = std::make_unique<FakePlatformOS>();
+    auto process = os->addProcess(static_cast<Pid_t>(4242), "fake.exe");
+    process->configureMemory(0x1000, 0x40);
+    putI32(process->bytes(), 0x00, 100);
+    ProcessEngine engine(std::move(os));
+
+    const ReplRun scan = runReplScript(static_cast<Pid_t>(4242),
+                                       "new-scan 100\nlist --all\nexit\n", engine);
+    ASSERT_EQ(scan.rc, tpe::cli::kExitOk);
+    ASSERT_NE(scan.output.find("Total: 1 matches"), std::string::npos) << scan.output;
+    ASSERT_NE(scan.output.find("0x0000000000001000 | 100"), std::string::npos)
+        << "scan-time display must show the current value 100, got:\n" << scan.output;
+
+    putI32(process->bytes(), 0x00, 104); // 扫描之后:目标进程自身变化
+
+    const ReplRun run = runReplScript(static_cast<Pid_t>(4242), "list --all\nexit\n", engine);
+    EXPECT_EQ(run.rc, tpe::cli::kExitOk);
+    EXPECT_NE(run.output.find("Total: 1 matches"), std::string::npos) << run.output;
+    EXPECT_NE(run.output.find("0x0000000000001000 | 104"), std::string::npos)
+        << "list must show the live value read at display time, got:\n" << run.output;
+    EXPECT_EQ(run.output.find("0x0000000000001000 | 100"), std::string::npos)
+        << "stale scan snapshot must not be displayed, got:\n" << run.output;
+}
+
+TEST(RunCliReplListLive, UnreadableAddressShowsLiteralPlaceholderKeepingRowsAndTotal)
+{
+    // (b) 不可读 → `??`:0x1000 / 0x1004 均为 i32 100(等值首扫 2 命中);扫描后仅
+    // 0x1000 置不可读 → 该行值列逐字 `??`;行数与 `Total` 不变,0x1004 行照常(不中断)。
+    auto os = std::make_unique<FakePlatformOS>();
+    auto process = os->addProcess(static_cast<Pid_t>(4242), "fake.exe");
+    process->configureMemory(0x1000, 0x40);
+    putI32(process->bytes(), 0x00, 100);
+    putI32(process->bytes(), 0x04, 100);
+    ProcessEngine engine(std::move(os));
+
+    const ReplRun scan = runReplScript(static_cast<Pid_t>(4242), "new-scan 100\nexit\n", engine);
+    ASSERT_EQ(scan.rc, tpe::cli::kExitOk);
+
+    process->setRangeUnreadable(0x1000, 4); // 扫描后:页已释放(仅 0x1000 不可读)
+
+    const ReplRun run = runReplScript(static_cast<Pid_t>(4242), "list --all\nexit\n", engine);
+    EXPECT_EQ(run.rc, tpe::cli::kExitOk);
+    EXPECT_NE(run.output.find("Total: 2 matches"), std::string::npos)
+        << "Total must keep the match count regardless of read failures, got:\n" << run.output;
+    EXPECT_NE(run.output.find("0x0000000000001000 | ??"), std::string::npos)
+        << "unreadable row must show the literal ?? placeholder, got:\n" << run.output;
+    EXPECT_NE(run.output.find("0x0000000000001004 | 100"), std::string::npos)
+        << "later rows must still be shown (list must not abort), got:\n" << run.output;
+
+    std::size_t rowCount = 0;
+    for (std::size_t pos = 0; (pos = run.output.find("  0x", pos)) != std::string::npos; ++pos) {
+        ++rowCount;
+    }
+    EXPECT_EQ(rowCount, 2u) << "row count must stay unchanged, got:\n" << run.output;
+}
+
+TEST(RunCliReplListLive, WriteThenListReflectsWrittenValue)
+{
+    // (c) write → list:写入 200 后对应行显示 200(FR-017;与快照 100 可区分)。
+    auto os = std::make_unique<FakePlatformOS>();
+    auto process = os->addProcess(static_cast<Pid_t>(4242), "fake.exe");
+    process->configureMemory(0x1000, 0x40);
+    putI32(process->bytes(), 0x00, 100);
+    putI32(process->bytes(), 0x04, 7);
+    ProcessEngine engine(std::move(os));
+
+    const ReplRun run = runReplScript(static_cast<Pid_t>(4242),
+                                      "new-scan 100\nwrite 0x1000 200\nlist --all\nexit\n", engine);
+
+    EXPECT_EQ(run.rc, tpe::cli::kExitOk);
+    EXPECT_NE(run.output.find("Total: 1 matches"), std::string::npos) << run.output;
+    EXPECT_NE(run.output.find("0x0000000000001000 | 200"), std::string::npos)
+        << "list after write must reflect the written value, got:\n" << run.output;
+    EXPECT_EQ(run.output.find("0x0000000000001000 | 100"), std::string::npos)
+        << "stale snapshot must not be displayed after write, got:\n" << run.output;
+}
+
+TEST(RunCliReplListLive, ZeroWidthSnapshotRecordShowsPlaceholder)
+{
+    // (d) 零宽快照(snapshot_size == 0)→ 视为不可读,值列 `??`。
+    // 该形态 CLI 命令无法产生(E3:本 Phase 新路径不产生无快照记录),经公开会话 API
+    // 直接提交注入,锁定展示层边界规则。
+    auto os = std::make_unique<FakePlatformOS>();
+    auto process = os->addProcess(static_cast<Pid_t>(4242), "fake.exe");
+    process->configureMemory(0x1000, 0x40);
+    putI32(process->bytes(), 0x00, 100);
+    ProcessEngine engine(std::move(os));
+
+    const ReplRun scan = runReplScript(static_cast<Pid_t>(4242), "new-scan 100\nexit\n", engine);
+    ASSERT_EQ(scan.rc, tpe::cli::kExitOk);
+
+    tpe::ScanSession* session = engine.session();
+    ASSERT_NE(session, nullptr);
+    session->commitFirstScan({tpe::ScanRecord(0x1000)}); // snapshot_size == 0
+
+    const ReplRun run = runReplScript(static_cast<Pid_t>(4242), "list --all\nexit\n", engine);
+    EXPECT_EQ(run.rc, tpe::cli::kExitOk);
+    EXPECT_NE(run.output.find("Total: 1 matches"), std::string::npos) << run.output;
+    EXPECT_NE(run.output.find("0x0000000000001000 | ??"), std::string::npos)
+        << "zero-width snapshot record must show the literal ?? placeholder, got:\n"
+        << run.output;
 }
