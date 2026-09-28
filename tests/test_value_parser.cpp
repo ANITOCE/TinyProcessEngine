@@ -460,6 +460,55 @@ TEST(ValueFormatter, FallsBackToHexBytesOnSnapshotSizeMismatch)
 }
 
 // ---------------------------------------------------------------------------
+// list 实时重读格式化(Phase 07 US3 · T018;FR-013–016 / C-D6 / E4):
+// `formatValueBytes`(实时字节)与既有 `formatValue`(快照)同规则等例;
+// 实时值版 `formatListEntry` 的 `??` 语义与 string 原样字节行为。
+// ---------------------------------------------------------------------------
+
+TEST(ValueFormatter, FormatValueBytesDecodesLikeSnapshotPath)
+{
+    // u8 / i16 / i32 / i64:镜像 FormatsSignedIntegersAsDecimal / FormatsUnsignedByteAsUnsignedDecimal
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0xC8}), cliType("u8")), "200");
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0xFF}), cliType("u8")), "255");
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0xFF, 0x7F}), cliType("i16")), "32767");
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0xFF, 0xFF}), cliType("i16")), "-1");
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0x2A, 0x00, 0x00, 0x00}), cliType("i32")), "42");
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0xFE, 0xFF, 0xFF, 0xFF}), cliType("i32")), "-2");
+    EXPECT_EQ(tpe::cli::formatValueBytes(
+                  bytes({0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}), cliType("i64")),
+              "-1");
+    // float / double:默认流式格式化(镜像 FormatsFloatingPointWithDefaultStreamFormatting)
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0x00, 0x00, 0xC0, 0x3F}), cliType("float")),
+              "1.5");
+    EXPECT_EQ(tpe::cli::formatValueBytes(
+                  bytes({0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x40}), cliType("double")),
+              "2.5");
+    // string:原样字节(不截 NUL);空字节序列 → 空串(而非 `??`,`??` 由调用方以 nullopt 表达)
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({'a', 'b', 'c'}), cliType("string")), "abc");
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({}), cliType("string")), "");
+}
+
+TEST(ValueFormatter, FormatValueBytesFallsBackToHexOnWidthMismatch)
+{
+    // 镜像 FallsBackToHexBytesOnSnapshotSizeMismatch:非零宽度不符回退十六进制字节串,空字节 → 空串
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0x10, 0x0A}), cliType("i32")), "10 0A");
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0xC8, 0x00, 0x00, 0x00}), cliType("u8")),
+              "C8 00 00 00");
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({}), cliType("i64")), "");
+}
+
+TEST(ValueFormatter, FormatValueBytesOutputMatchesSnapshotPath)
+{
+    // 同一字节序列经两条路径输出逐字一致(快照路径委托实字节路径的行为锁定)
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0xFE, 0xFF, 0xFF, 0xFF}), cliType("i32")),
+              tpe::cli::formatValue(recordWith(0x1000, {0xFE, 0xFF, 0xFF, 0xFF}), cliType("i32")));
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({'h', 'e', 'l', 'l', 'o'}), cliType("string")),
+              tpe::cli::formatValue(recordWith(0x1000, {'h', 'e', 'l', 'l', 'o'}), cliType("string")));
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0x10, 0x0A}), cliType("i32")),
+              tpe::cli::formatValue(recordWith(0x1000, {0x10, 0x0A}), cliType("i32")));
+}
+
+// ---------------------------------------------------------------------------
 // list 渲染格式(T024;契约 C-R3 / 规范 §11.6)
 // ---------------------------------------------------------------------------
 
@@ -489,6 +538,28 @@ TEST(ListRendering, FormatsMatchesTotalLine)
 TEST(ListRendering, FormatsTruncationNotice)
 {
     EXPECT_EQ(tpe::cli::formatTruncationNotice(5234), "... and 5234 more");
+}
+
+TEST(ListRendering, LiveEntryShowsLiteralPlaceholderWhenValueUnavailable)
+{
+    // nullopt(读取失败 / 短读 / 零宽)→ 值列逐字 `??`(不回退快照;FR-015/C-D6)
+    EXPECT_EQ(tpe::cli::formatListEntry(0x1C0A10, std::nullopt, cliType("i32")),
+              "  0x00000000001C0A10 | ??");
+
+    // 有实时字节 → 正常格式化(与快照条目同形)
+    const std::optional<tpe::Memory> live = bytes({0x64, 0x00, 0x00, 0x00});
+    EXPECT_EQ(tpe::cli::formatListEntry(0x1C0A10, live, cliType("i32")),
+              "  0x00000000001C0A10 | 100");
+}
+
+TEST(ListRendering, LiveEntryFormatsStringBytesRaw)
+{
+    // string 实时读取宽度 = 记录快照宽度(≤8):所读字节原样展示(不截 NUL、不加空白)
+    EXPECT_EQ(tpe::cli::formatListEntry(0x1000, bytes({'h', 'i'}), cliType("string")),
+              "  0x0000000000001000 | hi");
+    // 空字节序列(string 实时读得 0 字节)→ 空显示而非 `??`(`??` 仅由调用方以 nullopt 表达)
+    EXPECT_EQ(tpe::cli::formatListEntry(0x1000, bytes({}), cliType("string")),
+              "  0x0000000000001000 | ");
 }
 
 // ---------------------------------------------------------------------------
