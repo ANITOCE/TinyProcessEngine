@@ -652,8 +652,8 @@ std::string_view replHelpText()
     return
         "REPL commands:\n"
         "  new-scan [--equal] [--<value-type>] <value>   Start a new scan (destroys previous results)\n"
-        "  next-scan [--equal <value>] [--<value-type>]\n"
-        "  next-scan [--greater|--less|--changed|--unchanged] [--<value-type>]\n"
+        "  next-scan [--equal <value>]\n"
+        "  next-scan [--greater|--less|--changed|--unchanged]\n"
         "                                                Filter the previous scan results\n"
         "  list [<page>] | list --all                    Show matches (20 per page)\n"
         "  write <address> <new-value>                   Overwrite the value at an address\n"
@@ -663,7 +663,7 @@ std::string_view replHelpText()
         "\n"
         "Value types: u8, i16, i32 (default), i64, float, double, string\n"
         "Scan types (new-scan): --equal <value> (default) | --unknown | --greater <value> | --less <value>\n"
-        "The --unknown / --greater / --less scan types are recognized but not implemented yet.\n"
+        "Value types apply to new-scan only; string scans support --equal only.\n"
         "The --string value takes the rest of the line (spaces allowed).\n";
 }
 
