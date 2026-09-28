@@ -13,7 +13,9 @@
 using tpe::AobPattern;
 using tpe::Double;
 using tpe::Float;
+using tpe::Int16;
 using tpe::Int32;
+using tpe::Int64;
 using tpe::MemoryPage;
 using tpe::MemoryScanner;
 using tpe::NumericKind;
@@ -180,6 +182,7 @@ public:
 };
 
 /// 测试替身:单页内存缓冲进程(实现 Platform.hpp 的进程接口)。
+/// T007 扩展:可追加独立区域(多页/顺序断言)与标记不可读区域(读取失败路径)。
 class FakeProcess : public PlatformProcess {
 public:
     FakeProcess(tpe::Address base, tpe::Size size)
@@ -190,37 +193,90 @@ public:
 
     tpe::Memory& bytes() { return m_bytes; }
 
+    /// 追加独立区域(可扫描页;字节初值 0);返回其字节缓冲供布置。
+    tpe::Memory& addRegion(tpe::Address base, tpe::Size size)
+    {
+        m_regions.push_back(Region{base, size, tpe::Memory(static_cast<std::size_t>(size), 0)});
+        return m_regions.back().bytes;
+    }
+
+    /// 标记区域(按起点,须先 addRegion)不可读:与之相交的读取一律失败。
+    void setRegionUnreadable(tpe::Address base)
+    {
+        for (const Region& region : m_regions) {
+            if (region.base == base) {
+                m_unreadable.push_back(MemoryPage(region.base, region.size));
+            }
+        }
+    }
+
     std::vector<MemoryPage> getCheatablePages() const override
     {
-        return {MemoryPage(m_base, m_size)};
+        std::vector<MemoryPage> pages{MemoryPage(m_base, m_size)};
+        for (const Region& region : m_regions) {
+            pages.push_back(MemoryPage(region.base, region.size));
+        }
+        return pages;
     }
 
     Result<tpe::Memory, PlatformError> read(MemoryPage page) const override
     {
-        if (!contains(page.start, page.size)) {
+        if (intersectsUnreadable(page.start, page.size)) {
             return Result<tpe::Memory, PlatformError>::error(makeError());
         }
-        const std::size_t offset = static_cast<std::size_t>(page.start - m_base);
-        return Result<tpe::Memory, PlatformError>::success(
-            tpe::Memory(m_bytes.begin() + offset, m_bytes.begin() + offset + page.size));
+        if (contains(page.start, page.size)) {
+            const std::size_t offset = static_cast<std::size_t>(page.start - m_base);
+            return Result<tpe::Memory, PlatformError>::success(
+                tpe::Memory(m_bytes.begin() + offset, m_bytes.begin() + offset + page.size));
+        }
+        for (const Region& region : m_regions) {
+            if (page.start >= region.base && page.start - region.base + page.size <= region.size) {
+                const std::size_t offset = static_cast<std::size_t>(page.start - region.base);
+                return Result<tpe::Memory, PlatformError>::success(
+                    tpe::Memory(region.bytes.begin() + offset,
+                                region.bytes.begin() + offset + page.size));
+            }
+        }
+        return Result<tpe::Memory, PlatformError>::error(makeError());
     }
 
     Result<void, PlatformError> write(tpe::Address address, const tpe::Memory& value) override
     {
-        if (!contains(address, value.size())) {
-            return Result<void, PlatformError>::error(makeError());
+        if (contains(address, value.size())) {
+            std::copy(value.begin(), value.end(),
+                      m_bytes.begin() + static_cast<std::size_t>(address - m_base));
+            return Result<void, PlatformError>::success();
         }
-        std::copy(value.begin(), value.end(),
-                  m_bytes.begin() + static_cast<std::size_t>(address - m_base));
-        return Result<void, PlatformError>::success();
+        for (Region& region : m_regions) {
+            if (address >= region.base && address - region.base + value.size() <= region.size) {
+                std::copy(value.begin(), value.end(),
+                          region.bytes.begin() + static_cast<std::size_t>(address - region.base));
+                return Result<void, PlatformError>::success();
+            }
+        }
+        return Result<void, PlatformError>::error(makeError());
     }
 
 private:
+    struct Region {
+        tpe::Address base;
+        tpe::Size size;
+        tpe::Memory bytes;
+    };
+
     bool contains(tpe::Address address, tpe::Size length) const
     {
         if (address < m_base) return false;
         const tpe::Size offset = address - m_base;
         return offset <= m_size && length <= m_size - offset;
+    }
+
+    bool intersectsUnreadable(tpe::Address start, tpe::Size size) const
+    {
+        for (const MemoryPage& page : m_unreadable) {
+            if (start < page.start + page.size && page.start < start + size) return true;
+        }
+        return false;
     }
 
     PlatformError makeError() const
@@ -231,6 +287,8 @@ private:
     tpe::Address m_base;
     tpe::Size m_size;
     tpe::Memory m_bytes;
+    std::vector<Region> m_regions;
+    std::vector<MemoryPage> m_unreadable;
 };
 
 } // namespace
@@ -638,4 +696,150 @@ TEST(ScanSessionWrite, WriteU8WritesSingleByte)
     EXPECT_EQ(process->bytes()[0x09], 0xAA) << "相邻字节不得被写入覆盖(FR-006)";
     EXPECT_EQ(process->bytes()[0x0A], 0xAA) << "相邻字节不得被写入覆盖(FR-006)";
     EXPECT_EQ(process->bytes()[0x0B], 0xAA) << "相邻字节不得被写入覆盖(FR-006)";
+}
+
+// ============================================================
+// US1(Phase 07 · T007)— firstScanUnknown 边界锁
+//   C-D1/C-D3/R2:对齐步进矩阵、快照正确性、不可读页跳过、升序、
+//   跨分块边界无漂移/无重复/无漏采(含小 chunkSize 与非宽度整数倍)。
+// ============================================================
+
+TEST(FirstScanUnknown, EnumeratesCandidatesAlignedByTypeWidth)
+{
+    // 64 字节页:u8→64 / i16→32 / i32→16 / i64→8;地址按宽度整除、步进=宽度
+    FakeProcess process(0x1000, 0x40);
+    MemoryScanner scanner;
+
+    UnsignedByte u8;
+    Int16 i16;
+    Int32 i32;
+    Int64 i64;
+
+    const struct {
+        const ValueType* type;
+        size_t width;
+        size_t expected;
+    } cases[] = {
+        {&u8, 1, 64u},
+        {&i16, 2, 32u},
+        {&i32, 4, 16u},
+        {&i64, 8, 8u},
+    };
+
+    for (const auto& item : cases) {
+        const std::vector<ScanRecord> results = scanner.firstScanUnknown(process, *item.type);
+        ASSERT_EQ(results.size(), item.expected) << item.type->name;
+        for (size_t k = 0; k < results.size(); ++k) {
+            EXPECT_EQ(results[k].address % item.width, 0u)
+                << "candidate must be aligned to width, got " << results[k].address;
+            if (k > 0) {
+                EXPECT_EQ(results[k].address - results[k - 1].address, item.width)
+                    << "candidates must step by width";
+            }
+        }
+        EXPECT_EQ(results.front().address, 0x1000u);
+        EXPECT_EQ(results.back().address, 0x1000u + 0x40 - item.width)
+            << "不跨页:末候选的宽度字节须完整在页内";
+    }
+}
+
+TEST(FirstScanUnknown, StartsAtAlignedAddressWhenPageBaseIsUnaligned)
+{
+    // 页起点非对齐(0x1001):首个候选 = align_up(base,4) = 0x1004;
+    // 末候选 0x103C(0x1040 的宽度字节越过页末 0x1041 → 不采集)
+    FakeProcess process(0x1001, 0x40);
+    MemoryScanner scanner;
+    Int32 i32;
+
+    const std::vector<ScanRecord> results = scanner.firstScanUnknown(process, i32);
+    ASSERT_EQ(results.size(), 15u);
+    EXPECT_EQ(results.front().address, 0x1004u);
+    EXPECT_EQ(results.back().address, 0x103Cu);
+    for (const ScanRecord& rec : results) {
+        EXPECT_EQ(rec.address % 4u, 0u);
+    }
+}
+
+TEST(FirstScanUnknown, RecordsSnapshotFromCurrentMemoryBytes)
+{
+    // 快照 = 当轮实读 width 字节(INV-R);零值同样携带快照(snapshot_size>0)
+    FakeProcess process(0x1000, 0x20);
+    MemoryScanner scanner;
+    Int32 i32;
+    process.bytes()[0x04] = 0x78; // 0x1004 → 0x12345678(小端)
+    process.bytes()[0x05] = 0x56;
+    process.bytes()[0x06] = 0x34;
+    process.bytes()[0x07] = 0x12;
+
+    const std::vector<ScanRecord> results = scanner.firstScanUnknown(process, i32);
+    ASSERT_EQ(results.size(), 8u);
+    for (const ScanRecord& rec : results) {
+        EXPECT_EQ(rec.snapshot_size, 4u) << "address " << rec.address;
+        const std::size_t offset = static_cast<std::size_t>(rec.address - 0x1000);
+        for (std::size_t i = 0; i < 4; ++i) {
+            EXPECT_EQ(rec.snapshot_data[i], process.bytes()[offset + i])
+                << "address " << rec.address << " byte " << i;
+        }
+    }
+    EXPECT_EQ(results[1].address, 0x1004u);
+    EXPECT_EQ(results[1].snapshot_data[0], 0x78);
+    EXPECT_EQ(results[1].snapshot_data[1], 0x56);
+    EXPECT_EQ(results[1].snapshot_data[2], 0x34);
+    EXPECT_EQ(results[1].snapshot_data[3], 0x12);
+
+    // u8:快照宽度 = 1
+    FakeProcess bytes(0x2000, 0x10);
+    UnsignedByte u8;
+    const std::vector<ScanRecord> u8Results = scanner.firstScanUnknown(bytes, u8);
+    ASSERT_EQ(u8Results.size(), 16u);
+    EXPECT_EQ(u8Results[0].snapshot_size, 1u);
+}
+
+TEST(FirstScanUnknown, SkipsUnreadablePagesAndKeepsAscendingOrder)
+{
+    // 中间区域不可读:整页跳过,其余页候选保留且全局升序
+    FakeProcess process(0x1000, 0x20); // 8 个 i32 候选
+    process.addRegion(0x2000, 0x40);   // 16 个候选——但不可读
+    process.setRegionUnreadable(0x2000);
+    process.addRegion(0x3000, 0x20);   // 8 个候选
+    MemoryScanner scanner;
+    Int32 i32;
+
+    const std::vector<ScanRecord> results = scanner.firstScanUnknown(process, i32);
+
+    ASSERT_EQ(results.size(), 16u);
+    EXPECT_EQ(results[7].address, 0x101Cu); // 第一页末候选
+    EXPECT_EQ(results[8].address, 0x3000u); // 直接跳到第三页
+    for (size_t k = 1; k < results.size(); ++k) {
+        EXPECT_LT(results[k - 1].address, results[k].address) << "ascending order";
+    }
+    for (const ScanRecord& rec : results) {
+        EXPECT_FALSE(rec.address >= 0x2000u && rec.address < 0x2040u)
+            << "unreadable page must not produce candidates";
+    }
+}
+
+TEST(FirstScanUnknown, ChunkBoundariesKeepAlignmentWithoutDrift)
+{
+    // 101 字节页 → i32 候选 25 个;小 chunkSize(含非宽度整数倍)与整页读取逐项一致:
+    // 无漂移、无重复、无漏采
+    FakeProcess process(0x1000, 0x65);
+    MemoryScanner scanner;
+    Int32 i32;
+
+    const std::vector<ScanRecord> full = scanner.firstScanUnknown(process, i32);
+    ASSERT_EQ(full.size(), 25u);
+    EXPECT_EQ(full.back().address, 0x1060u);
+
+    for (const tpe::Size chunkSize :
+         {tpe::Size{16}, tpe::Size{8}, tpe::Size{7}, tpe::Size{4}, tpe::Size{1}}) {
+        ScanOptions options;
+        options.chunkSize = chunkSize;
+        const std::vector<ScanRecord> chunked = scanner.firstScanUnknown(process, i32, options);
+        ASSERT_EQ(chunked.size(), full.size()) << "chunkSize=" << chunkSize;
+        for (size_t k = 0; k < full.size(); ++k) {
+            EXPECT_EQ(chunked[k].address, full[k].address)
+                << "chunkSize=" << chunkSize << " index " << k;
+        }
+    }
 }
