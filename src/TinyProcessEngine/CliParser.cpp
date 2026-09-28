@@ -393,8 +393,7 @@ ReplCommand parseScanCommand(const std::string& line, const CliParseResult& pars
         case ReplScanType::Greater:
         case ReplScanType::Less:
             // §11.5:new-scan 的 --greater / --less 值必传;缺值 → 用法错误(不执行、不切换)。
-            // T010 转正:值交执行层解析并执行首轮大小比较扫描;placeholder 不再置位
-            // (占位机制随 US4/T022 退役)。
+            // T010 转正:值交执行层解析并执行首轮大小比较扫描。
             if (!command.hasValue) {
                 return replError(kind, "Missing value for new-scan.");
             }
@@ -575,9 +574,6 @@ ReplOutcome planReplOutcome(const ReplCommand& command)
     case ReplCommandKind::Exit:
         return ReplOutcome::Exit;
     case ReplCommandKind::NewScan:
-        // 占位机制(T022 退役):三旗标(--unknown/--greater/--less)已全部转正,
-        // placeholder 无置位方,本分支恒为 Execute。
-        return command.placeholder ? ReplOutcome::Placeholder : ReplOutcome::Execute;
     case ReplCommandKind::NextScan:
     case ReplCommandKind::List:
     case ReplCommandKind::Write:
@@ -665,12 +661,6 @@ std::string_view replHelpText()
         "Scan types (new-scan): --equal <value> (default) | --unknown | --greater <value> | --less <value>\n"
         "Value types apply to new-scan only; string scans support --equal only.\n"
         "The --string value takes the rest of the line (spaces allowed).\n";
-}
-
-std::string_view replPlaceholderText()
-{
-    // §11.8 / FR-020:逐字固定,不得本地化或改写
-    return "This feature is not implemented yet.";
 }
 
 } // namespace tpe::cli

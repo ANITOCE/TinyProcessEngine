@@ -352,12 +352,6 @@ int runRepl(ProcessEngine& engine, const std::string& processName)
         case tpe::cli::ReplOutcome::UsageError:
             printMessage(command.error); // 含 Usage 提示;不执行、不改变状态
             break;
-        case tpe::cli::ReplOutcome::Placeholder:
-            // 占位(§11.8 / C-R7 / FR-020):打印固定文案;仅切换提示符 scan-type
-            // (可选 value-type);不执行扫描、匹配集与 [<value>] 均不变。
-            printMessage(std::string(tpe::cli::replPlaceholderText()));
-            state.onPlaceholder(command.scanType, command.valueType);
-            break;
         case tpe::cli::ReplOutcome::Exit:
             return tpe::cli::kExitOk;
         case tpe::cli::ReplOutcome::Execute:

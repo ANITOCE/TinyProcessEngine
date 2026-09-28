@@ -107,26 +107,6 @@ TEST(ReplStateMigrate, ValueTypeSwitchPersistsAcrossCommands)
     EXPECT_EQ(state.prompt(), "test.exe-greater-u8> ");
 }
 
-TEST(ReplStateMigrate, PlaceholderSwitchesScanTypeOnly)
-{
-    // T4:占位命令仅切换 scanType;匹配集与 [<value>] 均不变
-    ReplState state("test.exe");
-    state.onValueScan(ReplScanType::Equal, cliType("i32"), "100", 15234);
-    state.onPlaceholder(ReplScanType::Unknown, nullptr);
-    EXPECT_EQ(state.scanType, ReplScanType::Unknown);
-    EXPECT_EQ(state.prompt(), "test.exe-unknown-i32-100> ");
-    EXPECT_EQ(state.matchesTotal, 15234u);
-    EXPECT_TRUE(state.lastValue.has_value());
-}
-
-TEST(ReplStateMigrate, PlaceholderWithValueTypeFlag)
-{
-    // 语法可识别:new-scan --unknown --i16 组合
-    ReplState state("test.exe");
-    state.onPlaceholder(ReplScanType::Greater, &cliType("i16"));
-    EXPECT_EQ(state.prompt(), "test.exe-greater-i16> ");
-}
-
 TEST(ReplStateMigrate, UndoRestoresTotalWithoutTouchingPrompt)
 {
     // T6:matchesTotal 回退;提示符其余不变(含 lastValue 与 scanType)
@@ -248,16 +228,10 @@ TEST(ReplOutcomePlan, RecognizedCommandsExecute)
 }
 
 // ---------------------------------------------------------------------------
-// 占位命令(US4 T030;FR-020 / C-R7 / SC-006)
+// US4 退役后语义(T020/T022;FR-019–020 / C-D7 / C-D10 / SC-004)
 // ---------------------------------------------------------------------------
 
-TEST(ReplPlaceholder, FixedMessageIsContractText)
-{
-    // §11.8 / FR-020:占位提示逐字固定
-    EXPECT_EQ(tpe::cli::replPlaceholderText(), "This feature is not implemented yet.");
-}
-
-TEST(ReplPlaceholder, PlansExecuteOutcomeForThreeScanTypes)
+TEST(ReplNewScanFlags, PlansExecuteOutcomeForThreeScanTypes)
 {
     // T020/FR-019:三旗标均为真实语义 → 解析通过(无用法错误)、处置决策恒为 Execute
     // (执行真实首扫;无占位分支)。
@@ -270,7 +244,7 @@ TEST(ReplPlaceholder, PlansExecuteOutcomeForThreeScanTypes)
     }
 }
 
-TEST(ReplPlaceholder, SimulatesMainLoopExecutionOutcome)
+TEST(ReplNewScanFlags, SimulatesMainLoopExecutionOutcome)
 {
     // T020/FR-019 + C-D10:执行层成功后主循环调用的纯状态迁移(本用例模拟):
     // --unknown 无值 → 值段隐藏(lastValue 清空);--greater / --less 带值 → 显示本次比较值。
@@ -308,7 +282,7 @@ TEST(ReplPlaceholder, SimulatesMainLoopExecutionOutcome)
     }
 }
 
-TEST(ReplPlaceholder, MissingValueIsUsageErrorAndLeavesStateUntouched)
+TEST(ReplNewScanFlags, MissingValueIsUsageErrorAndLeavesStateUntouched)
 {
     // §11.5:new-scan 的 --greater / --less 值必传;缺值 → 用法错误、不执行、不切换
     ReplState state("test.exe");
@@ -319,7 +293,6 @@ TEST(ReplPlaceholder, MissingValueIsUsageErrorAndLeavesStateUntouched)
         ASSERT_EQ(tpe::cli::planReplOutcome(command), ReplOutcome::UsageError) << line;
         EXPECT_NE(command.error.find("Usage"), std::string::npos) << line;
         EXPECT_NE(command.error.find("Missing value"), std::string::npos) << line;
-        EXPECT_FALSE(command.placeholder) << line;
         // 主循环对 UsageError 只打印、不触碰状态
         EXPECT_EQ(state.prompt(), "test.exe-equal-i32-100> ") << line;
         EXPECT_EQ(state.matchesTotal, 7u) << line;

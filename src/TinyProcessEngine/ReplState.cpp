@@ -76,15 +76,6 @@ void ReplState::onValuelessScan(ReplScanType type, const CliValueType& vt, uint6
     matchesTotal = total;
 }
 
-void ReplState::onPlaceholder(ReplScanType type, const CliValueType* vt)
-{
-    // 占位命令:仅切换 scanType(可选 valueType);匹配集与 [<value>] 均不变
-    scanType = type;
-    if (vt != nullptr) {
-        valueType = vt;
-    }
-}
-
 void ReplState::onUndo(uint64_t total)
 {
     // undo 仅回退匹配集总量;提示符其余段不变

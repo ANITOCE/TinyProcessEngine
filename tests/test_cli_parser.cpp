@@ -394,14 +394,13 @@ TEST(ReplCommandParse, NewScanRejectsConflictingOrUnknownFlags)
     EXPECT_FALSE(parseReplCommand("new-scan --changed").error.empty()); // new-scan 旗标表无此项
 }
 
-TEST(ReplCommandParse, NewScanPlaceholderScanTypesAreRecognized)
+TEST(ReplCommandParse, NewScanScanTypesAreRecognized)
 {
-    // FR-020 / C-R7:--unknown / --greater / --less 语法可识别(不再以“未实现”错误拒绝);
-    // T010:三旗标全部转正 → placeholder 不再置位、处置决策恒为 Execute(真实首扫)。
+    // FR-020 / C-D7:--unknown / --greater / --less 语法可识别且为真实语义;
+    // 三旗标处置决策恒为 Execute(执行真实首扫)。
     const ReplCommand unknown = parseReplCommand("new-scan --unknown");
     ASSERT_EQ(unknown.kind, ReplCommandKind::NewScan);
     EXPECT_EQ(unknown.scanType, ReplScanType::Unknown);
-    EXPECT_FALSE(unknown.placeholder);
     EXPECT_FALSE(unknown.hasValue);
     EXPECT_TRUE(unknown.error.empty());
     EXPECT_EQ(tpe::cli::planReplOutcome(unknown), tpe::cli::ReplOutcome::Execute);
@@ -409,37 +408,33 @@ TEST(ReplCommandParse, NewScanPlaceholderScanTypesAreRecognized)
     const ReplCommand greater = parseReplCommand("new-scan --greater 100");
     ASSERT_EQ(greater.kind, ReplCommandKind::NewScan);
     EXPECT_EQ(greater.scanType, ReplScanType::Greater);
-    EXPECT_FALSE(greater.placeholder); // T010:已转正(执行真实首轮比较扫描)
     EXPECT_TRUE(greater.hasValue);
     EXPECT_TRUE(greater.error.empty());
     EXPECT_EQ(tpe::cli::planReplOutcome(greater), tpe::cli::ReplOutcome::Execute);
 
     const ReplCommand less = parseReplCommand("new-scan --less 100");
     EXPECT_EQ(less.scanType, ReplScanType::Less);
-    EXPECT_FALSE(less.placeholder); // T010:已转正
     EXPECT_TRUE(less.error.empty());
     EXPECT_EQ(tpe::cli::planReplOutcome(less), tpe::cli::ReplOutcome::Execute);
 }
 
-TEST(ReplCommandParse, NewScanPlaceholderAcceptsFlagCombinations)
+TEST(ReplCommandParse, NewScanAcceptsScanTypeFlagCombinations)
 {
     // CHK030 / Edge Cases:new-scan --unknown --i16 等旗标组合保持语法可识别
     const ReplCommand withType = parseReplCommand("new-scan --unknown --i16");
     ASSERT_EQ(withType.scanType, ReplScanType::Unknown);
     ASSERT_NE(withType.valueType, nullptr);
     EXPECT_EQ(withType.valueType->shortName, "i16");
-    EXPECT_FALSE(withType.placeholder); // T006:--unknown 已转正(执行真实首扫)
     EXPECT_TRUE(withType.error.empty());
 
     const ReplCommand withValueAndType = parseReplCommand("new-scan --greater --i64 42");
     ASSERT_EQ(withValueAndType.scanType, ReplScanType::Greater);
     ASSERT_NE(withValueAndType.valueType, nullptr);
     EXPECT_EQ(withValueAndType.valueType->shortName, "i64");
-    EXPECT_FALSE(withValueAndType.placeholder); // T010:--greater 已转正
     EXPECT_TRUE(withValueAndType.error.empty());
 }
 
-TEST(ReplCommandParse, NewScanPlaceholderValueRules)
+TEST(ReplCommandParse, NewScanScanTypeValueRules)
 {
     // §11.5:--greater / --less 值必传,缺值 → 用法错误(不执行、不切换 scan-type);
     // --unknown 不传值(缺值不报错),带值属未定义情形 → 按严格策略拒绝(与 next-scan 一致)
@@ -448,11 +443,9 @@ TEST(ReplCommandParse, NewScanPlaceholderValueRules)
         EXPECT_FALSE(command.error.empty()) << line;
         EXPECT_NE(command.error.find("Missing value"), std::string::npos) << line;
         EXPECT_NE(command.error.find("Usage"), std::string::npos) << line;
-        EXPECT_FALSE(command.placeholder) << line;
     }
 
     EXPECT_TRUE(parseReplCommand("new-scan --unknown").error.empty());
-    EXPECT_FALSE(parseReplCommand("new-scan --unknown").placeholder); // T006:已转正(真实首扫)
     const ReplCommand unknownWithValue = parseReplCommand("new-scan --unknown 100");
     EXPECT_FALSE(unknownWithValue.error.empty());
     EXPECT_NE(unknownWithValue.error.find("Usage"), std::string::npos);

@@ -46,9 +46,6 @@ struct ReplState {
     /// `--greater`/`--less` 保持;matchesTotal 更新。
     void onValuelessScan(ReplScanType type, const CliValueType& vt, uint64_t total);
 
-    /// T4:占位命令 → 仅切换 scanType(可选 valueType);lastValue 与 matchesTotal 不变。
-    void onPlaceholder(ReplScanType type, const CliValueType* vt = nullptr);
-
     /// T6:undo 后同步总量(matchesTotal 回退;提示符其余不变)。
     void onUndo(uint64_t total);
 
