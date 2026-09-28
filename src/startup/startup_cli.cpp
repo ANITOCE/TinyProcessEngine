@@ -176,7 +176,11 @@ void executeNextScan(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& 
     }
 }
 
-/// list(契约 C-R3):`--all` 上限 10000 与截断提示;分页 20/页;越界/空结果明确提示。
+/// list(契约 C-R3;FR-013–018/C-D6):值列 = 展示时从目标进程实时重读的当前值——
+/// 宽度:数值 = 类型宽度(`byteWidth()`),string = 记录快照宽度(≤8);
+/// 零宽(snapshot_size == 0)/ 读取失败 / 短读 → 值列逐字 `??`(不回退快照)。
+/// `--all` 上限 10000 与截断提示、分页 20/页、越界/空结果提示不变;
+/// 实时读取为纯展示,不影响会话状态(Total / 分页 / undo 栈不变)。
 void executeList(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& state,
                  ProcessEngine& engine)
 {
@@ -192,15 +196,36 @@ void executeList(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& stat
         return;
     }
 
+    // FR-013–016/C-D6(E4/INV-L):逐条读取当前内存值;失败 / 短读 / 零宽 → nullopt。
+    const auto readLiveBytes = [&](const ScanRecord& record) -> std::optional<tpe::Memory> {
+        if (record.snapshot_size == 0) {
+            return std::nullopt; // 零宽:视为不可读(E4:`??`)
+        }
+        const tpe::Size width = state.valueType->kind == tpe::cli::CliValueKind::String
+                                    ? static_cast<tpe::Size>(record.snapshot_size)
+                                    : state.valueType->type->byteWidth();
+        const Result<tpe::Memory, PlatformError> bytes =
+            session->readMemory(record.address, width);
+        if (!bytes.has_value() || bytes.value().size() < width) {
+            return std::nullopt; // 读取失败 / 短读(FR-015)
+        }
+        return bytes.value();
+    };
+
     std::ostringstream out;
+    const auto appendRow = [&](uint64_t index) {
+        const std::optional<ScanRecord> record = session->resultAt(index);
+        if (record.has_value()) {
+            out << tpe::cli::formatListEntry(record->address, readLiveBytes(*record),
+                                             *state.valueType) << "\n";
+        }
+    };
+
     if (command.listAll) {
         out << tpe::cli::formatMatchesTotal(total) << "\n";
         const uint64_t shown = (std::min)(total, tpe::cli::kListDisplayCap);
         for (uint64_t index = 0; index < shown; ++index) {
-            const std::optional<ScanRecord> record = session->resultAt(index);
-            if (record.has_value()) {
-                out << tpe::cli::formatListEntry(*record, *state.valueType) << "\n";
-            }
+            appendRow(index);
         }
         if (total > shown) {
             out << tpe::cli::formatTruncationNotice(total - shown) << "\n";
@@ -219,10 +244,7 @@ void executeList(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& stat
     const uint64_t first = static_cast<uint64_t>(command.page - 1) * tpe::cli::kReplPageSize;
     const uint64_t last = (std::min)(first + tpe::cli::kReplPageSize, total);
     for (uint64_t index = first; index < last; ++index) {
-        const std::optional<ScanRecord> record = session->resultAt(index);
-        if (record.has_value()) {
-            out << tpe::cli::formatListEntry(*record, *state.valueType) << "\n";
-        }
+        appendRow(index);
     }
     std::cout << out.str() << std::flush;
 }
