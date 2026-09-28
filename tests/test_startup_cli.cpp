@@ -19,6 +19,7 @@
 #include "startup_cli.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -229,4 +230,170 @@ TEST(RunCliReplUnknownScan, NewScanUnknownExecutesRealFirstScan)
         << "list --all must show candidate total for the first scan, got:\n" << run.output;
     EXPECT_NE(run.output.find("-unknown-"), std::string::npos)
         << "prompt must switch to the unknown scan type, got:\n" << run.output;
+}
+
+// ---------------------------------------------------------------------------
+// US2(Phase 07 · T009 红)— `new-scan --greater / --less` REPL 集成驱动
+//   C-D2/C-D3 / FR-007–011:首轮严格 GT/LT(相等不保留)、提示符带值段、
+//   缺值/非法值用法错误状态不变、零匹配会话可用、全程无占位文案、退出码 0。
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// 在伪进程内存缓冲的页内偏移处写入小端 i32(测试内存布置用)。
+void putI32(tpe::Memory& bytes, std::size_t offset, std::int32_t value)
+{
+    const std::uint32_t raw = static_cast<std::uint32_t>(value);
+    for (std::size_t i = 0; i < 4; ++i) {
+        bytes[offset + i] = static_cast<tpe::Byte>((raw >> (8 * i)) & 0xFFu);
+    }
+}
+
+/// 布置“比较边界页”:64 字节单页、16 个 i32 槽位——
+/// 0x1000=50 / 0x1004=99 / 0x1008=100 / 0x100C=101 / 0x1010=200,其余槽位=100。
+/// `--greater 100` → 仅 101、200(2 条);`--less 100` → 仅 50、99(2 条);==100 一律不保留。
+void configureComparisonLayout(FakeStartupProcess& process)
+{
+    for (std::size_t slot = 0; slot < 16; ++slot) {
+        putI32(process.bytes(), slot * 4, 100);
+    }
+    putI32(process.bytes(), 0x00, 50);
+    putI32(process.bytes(), 0x04, 99);
+    putI32(process.bytes(), 0x0C, 101);
+    putI32(process.bytes(), 0x10, 200);
+}
+
+} // namespace
+
+TEST(RunCliReplComparisonScan, GreaterScanKeepsStrictlyGreaterAndShowsValuePrompt)
+{
+    auto os = std::make_unique<FakePlatformOS>();
+    auto process = os->addProcess(static_cast<Pid_t>(4242), "fake.exe");
+    process->configureMemory(0x1000, 0x40);
+    configureComparisonLayout(*process);
+    ProcessEngine engine(std::move(os));
+
+    const ReplRun run = runReplScript(static_cast<Pid_t>(4242),
+                                      "new-scan --greater 100\nlist --all\nexit\n", engine);
+
+    EXPECT_EQ(run.rc, tpe::cli::kExitOk);
+    EXPECT_EQ(run.output.find("not implemented"), std::string::npos)
+        << "user-visible output must not contain placeholder text, got:\n" << run.output;
+    EXPECT_NE(run.output.find("-greater-i32-100"), std::string::npos)
+        << "prompt must show greater scan type and comparison value, got:\n" << run.output;
+    EXPECT_NE(run.output.find("Total: 2 matches"), std::string::npos)
+        << "strict GT must keep exactly the two >100 values, got:\n" << run.output;
+    EXPECT_NE(run.output.find("0x000000000000100C | 101"), std::string::npos) << run.output;
+    EXPECT_NE(run.output.find("0x0000000000001010 | 200"), std::string::npos) << run.output;
+    EXPECT_EQ(run.output.find(" | 100"), std::string::npos)
+        << "value == 100 must not be kept (strict GT), got:\n" << run.output;
+    EXPECT_EQ(run.output.find(" | 99"), std::string::npos) << run.output;
+    EXPECT_EQ(run.output.find(" | 50"), std::string::npos) << run.output;
+}
+
+TEST(RunCliReplComparisonScan, LessScanKeepsStrictlyLessAndShowsValuePrompt)
+{
+    auto os = std::make_unique<FakePlatformOS>();
+    auto process = os->addProcess(static_cast<Pid_t>(4242), "fake.exe");
+    process->configureMemory(0x1000, 0x40);
+    configureComparisonLayout(*process);
+    ProcessEngine engine(std::move(os));
+
+    const ReplRun run = runReplScript(static_cast<Pid_t>(4242),
+                                      "new-scan --less 100\nlist --all\nexit\n", engine);
+
+    EXPECT_EQ(run.rc, tpe::cli::kExitOk);
+    EXPECT_EQ(run.output.find("not implemented"), std::string::npos)
+        << "user-visible output must not contain placeholder text, got:\n" << run.output;
+    EXPECT_NE(run.output.find("-less-i32-100"), std::string::npos)
+        << "prompt must show less scan type and comparison value, got:\n" << run.output;
+    EXPECT_NE(run.output.find("Total: 2 matches"), std::string::npos)
+        << "strict LT must keep exactly the two <100 values, got:\n" << run.output;
+    EXPECT_NE(run.output.find("0x0000000000001000 | 50"), std::string::npos) << run.output;
+    EXPECT_NE(run.output.find("0x0000000000001004 | 99"), std::string::npos) << run.output;
+    EXPECT_EQ(run.output.find(" | 100"), std::string::npos)
+        << "value == 100 must not be kept (strict LT), got:\n" << run.output;
+    EXPECT_EQ(run.output.find(" | 101"), std::string::npos) << run.output;
+    EXPECT_EQ(run.output.find(" | 200"), std::string::npos) << run.output;
+}
+
+TEST(RunCliReplComparisonScan, MissingValueIsUsageErrorAndStateUnchanged)
+{
+    // 先建立一次真实会话与提示符状态(--unknown),再验证缺值不执行、不改变状态
+    auto os = std::make_unique<FakePlatformOS>();
+    auto process = os->addProcess(static_cast<Pid_t>(4242), "fake.exe");
+    process->configureMemory(0x1000, 0x40);
+    ProcessEngine engine(std::move(os));
+
+    const ReplRun run = runReplScript(
+        static_cast<Pid_t>(4242),
+        "new-scan --unknown\nnew-scan --greater\nlist --all\nexit\n", engine);
+
+    EXPECT_EQ(run.rc, tpe::cli::kExitOk);
+    EXPECT_EQ(run.output.find("not implemented"), std::string::npos)
+        << "user-visible output must not contain placeholder text, got:\n" << run.output;
+    EXPECT_EQ(run.output.find("-greater-"), std::string::npos)
+        << "missing value must not switch the scan type, got:\n" << run.output;
+    EXPECT_NE(run.output.find("fake.exe-unknown-i32> Missing value for new-scan."),
+              std::string::npos)
+        << "usage error must keep the previous prompt state, got:\n" << run.output;
+    EXPECT_NE(run.output.find("Usage: new-scan"), std::string::npos) << run.output;
+    EXPECT_NE(run.output.find("Total: 16 matches"), std::string::npos)
+        << "previous session must stay intact (no scan executed), got:\n" << run.output;
+}
+
+TEST(RunCliReplComparisonScan, InvalidValueIsRejectedAndStateUnchanged)
+{
+    auto os = std::make_unique<FakePlatformOS>();
+    auto process = os->addProcess(static_cast<Pid_t>(4242), "fake.exe");
+    process->configureMemory(0x1000, 0x40);
+    ProcessEngine engine(std::move(os));
+
+    const ReplRun run = runReplScript(
+        static_cast<Pid_t>(4242),
+        "new-scan --unknown\nnew-scan --greater abc\nlist --all\nexit\n", engine);
+
+    EXPECT_EQ(run.rc, tpe::cli::kExitOk);
+    EXPECT_EQ(run.output.find("not implemented"), std::string::npos)
+        << "user-visible output must not contain placeholder text, got:\n" << run.output;
+    EXPECT_EQ(run.output.find("-greater-"), std::string::npos)
+        << "invalid value must not switch the scan type, got:\n" << run.output;
+    EXPECT_NE(run.output.find("fake.exe-unknown-i32> Invalid value for i32:"),
+              std::string::npos)
+        << "invalid value must reuse the equal-scan error style and keep state, got:\n"
+        << run.output;
+    EXPECT_NE(run.output.find("Usage: new-scan"), std::string::npos) << run.output;
+    EXPECT_NE(run.output.find("Total: 16 matches"), std::string::npos)
+        << "previous session must stay intact (no scan executed), got:\n" << run.output;
+}
+
+TEST(RunCliReplComparisonScan, ZeroMatchesLeavesUsableSession)
+{
+    // 空结果契约(list 于 total==0):逐字 `No matches to display.`(无 Total 行);
+    // 会话保持可用:随后 `new-scan 100` 正常执行
+    auto os = std::make_unique<FakePlatformOS>();
+    auto process = os->addProcess(static_cast<Pid_t>(4242), "fake.exe");
+    process->configureMemory(0x1000, 0x40);
+    for (std::size_t slot = 0; slot < 16; ++slot) {
+        putI32(process->bytes(), slot * 4, 100);
+    }
+    ProcessEngine engine(std::move(os));
+
+    const ReplRun run = runReplScript(
+        static_cast<Pid_t>(4242),
+        "new-scan --greater 2147483647\nlist --all\nnew-scan 100\nlist --all\nexit\n", engine);
+
+    EXPECT_EQ(run.rc, tpe::cli::kExitOk);
+    EXPECT_EQ(run.output.find("not implemented"), std::string::npos)
+        << "user-visible output must not contain placeholder text, got:\n" << run.output;
+    EXPECT_NE(run.output.find("-greater-i32-2147483647"), std::string::npos)
+        << "prompt must carry the extreme comparison value, got:\n" << run.output;
+    EXPECT_NE(run.output.find("No matches to display."), std::string::npos)
+        << "empty result set must produce the existing empty-result message, got:\n"
+        << run.output;
+    EXPECT_EQ(run.output.find("No scan results available"), std::string::npos)
+        << "zero-match scan must still create a usable session, got:\n" << run.output;
+    EXPECT_NE(run.output.find("Total: 16 matches"), std::string::npos)
+        << "follow-up equal scan must work in the same session, got:\n" << run.output;
+    EXPECT_NE(run.output.find("-equal-i32-100"), std::string::npos) << run.output;
 }
