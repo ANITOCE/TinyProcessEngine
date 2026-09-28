@@ -51,12 +51,21 @@ constexpr const char* kListUsage = "Usage: list [<page>] | list --all";
 constexpr const char* kWriteUsage = "Usage: write <address> <new-value>";
 constexpr const char* kNoResultsHint = "No scan results available. Run 'new-scan' first.";
 
-/// new-scan(契约 C-R1):默认 equal + 当前类型;成功不打印输出,仅更新提示符状态。
+/// new-scan(契约 C-R1;US1 C-D1):默认 equal + 当前类型;成功不打印输出,仅更新提示符状态。
+/// Unknown 分支:无值首扫(FR-001–004),不进行值解析。
 void executeNewScan(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& state,
                     ProcessEngine& engine)
 {
     const tpe::cli::CliValueType& vt =
         command.valueType != nullptr ? *command.valueType : *state.valueType;
+
+    if (command.scanType == tpe::cli::ReplScanType::Unknown) {
+        // C-D1/FR-004:成功后 scan-type=unknown、值段隐藏(lastValue 清空);
+        // 带值已由解析层按用法错误拒绝(严格策略保持)。
+        const uint64_t total = engine.searchUnknown(*vt.type);
+        state.onValuelessScan(tpe::cli::ReplScanType::Unknown, vt, total);
+        return;
+    }
 
     std::string reason;
     const std::optional<tpe::Memory> pattern = vt.type->parse(command.value, reason);

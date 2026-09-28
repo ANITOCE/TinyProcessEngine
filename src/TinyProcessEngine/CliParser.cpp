@@ -384,11 +384,11 @@ ReplCommand parseScanCommand(const std::string& line, const CliParseResult& pars
         case ReplScanType::Unchanged:
             return replError(kind, "Unknown option: --" + std::string(scanTypeName(command.scanType)));
         case ReplScanType::Unknown:
-            // §11.5:--unknown 不传值;带值属未定义情形 → 按不传值旗标的严格策略拒绝
+            // C-D1/FR-005:该旗标已转正(执行真实首扫);不传值(缺值不报错,保持现状),
+            // 带值属未定义情形 → 按不传值旗标的严格策略拒绝
             if (command.hasValue) {
                 return replError(kind, "Unexpected argument: " + command.value);
             }
-            command.placeholder = true; // C-R7:占位,仅切换 scan-type(不执行扫描)
             break;
         case ReplScanType::Greater:
         case ReplScanType::Less:
@@ -574,7 +574,8 @@ ReplOutcome planReplOutcome(const ReplCommand& command)
     case ReplCommandKind::Exit:
         return ReplOutcome::Exit;
     case ReplCommandKind::NewScan:
-        // 占位命令(US4 / C-R7):打印固定文案、仅切换提示符 scan-type
+        // 占位命令(--greater / --less;--unknown 已转正):打印固定文案、仅切换提示符
+        // scan-type;机制随 US4 退役。
         return command.placeholder ? ReplOutcome::Placeholder : ReplOutcome::Execute;
     case ReplCommandKind::NextScan:
     case ReplCommandKind::List:
@@ -620,7 +621,7 @@ std::optional<ScanCondition> toScanCondition(ReplScanType type)
     case ReplScanType::Unchanged:
         return ScanCondition::Unchanged;
     case ReplScanType::Unknown:
-        return std::nullopt; // 仅 new-scan 占位(US4),无引擎条件
+        return std::nullopt; // 仅 new-scan(已转正);next-scan 解析层已拒绝该旗标
     }
     return std::nullopt;
 }

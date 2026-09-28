@@ -259,9 +259,16 @@ TEST(ReplPlaceholder, FixedMessageIsContractText)
 
 TEST(ReplPlaceholder, PlansPlaceholderOutcomeForThreeScanTypes)
 {
-    // 3 类占位命令 × 旗标组合:解析通过 → 处置决策为 Placeholder(打印固定文案)
-    for (const char* line : {"new-scan --unknown", "new-scan --unknown --i16",
-                             "new-scan --greater 100", "new-scan --greater --i64 42",
+    // T006:--unknown 已转正 → 解析通过、placeholder=false、处置决策为 Execute(真实首扫)
+    for (const char* line : {"new-scan --unknown", "new-scan --unknown --i16"}) {
+        const ReplCommand command = tpe::cli::parseReplCommand(line);
+        EXPECT_TRUE(command.error.empty()) << line;
+        EXPECT_FALSE(command.placeholder) << line;
+        EXPECT_EQ(tpe::cli::planReplOutcome(command), ReplOutcome::Execute) << line;
+    }
+
+    // greater/less 仍为占位(至 T010 转正):解析通过 → 处置决策为 Placeholder(打印固定文案)
+    for (const char* line : {"new-scan --greater 100", "new-scan --greater --i64 42",
                              "new-scan --less 100"}) {
         const ReplCommand command = tpe::cli::parseReplCommand(line);
         EXPECT_TRUE(command.error.empty()) << line;
@@ -272,7 +279,9 @@ TEST(ReplPlaceholder, PlansPlaceholderOutcomeForThreeScanTypes)
 
 TEST(ReplPlaceholder, SwitchesScanTypeOnlyAndKeepsMatchesAndValue)
 {
-    // SC-006 / C-R7:占位不执行扫描;匹配集与 [<value>] 保持不变
+    // SC-006 / C-R7:占位不执行扫描;匹配集与 [<value>] 保持不变。
+    // T006:--unknown 已转正,其成功路径状态迁移见
+    // ReplStateMigrate.UnknownScanClearsDisplayedValue;本用例保留 greater/less 占位部分(至 T010)。
     ReplState state("test.exe");
     state.onValueScan(ReplScanType::Equal, cliType("i32"), "100", 15234);
 
@@ -280,8 +289,6 @@ TEST(ReplPlaceholder, SwitchesScanTypeOnlyAndKeepsMatchesAndValue)
         const char* line;
         const char* prompt;
     } cases[] = {
-        {"new-scan --unknown", "test.exe-unknown-i32-100> "},
-        {"new-scan --unknown --i16", "test.exe-unknown-i16-100> "},
         {"new-scan --greater 250 --i64", "test.exe-greater-i64-100> "}, // 250 不进入提示符
         {"new-scan --less --i32 5", "test.exe-less-i32-100> "},
     };

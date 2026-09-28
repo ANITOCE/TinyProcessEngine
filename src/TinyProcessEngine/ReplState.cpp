@@ -67,8 +67,10 @@ void ReplState::onValuelessScan(ReplScanType type, const CliValueType& vt, uint6
 {
     scanType = type;
     valueType = &vt;
-    // `--changed` / `--unchanged` 清空 [<value>];`--greater` / `--less` 保持最近一次带值扫描的值
-    if (type == ReplScanType::Changed || type == ReplScanType::Unchanged) {
+    // `--changed` / `--unchanged` / `--unknown` 清空 [<value>];`--greater` / `--less`
+    // 保持最近一次带值扫描的值（§11.3;--unknown 本次无值 → 不显示值段;C-D1）
+    if (type == ReplScanType::Changed || type == ReplScanType::Unchanged ||
+        type == ReplScanType::Unknown) {
         lastValue.reset();
     }
     matchesTotal = total;

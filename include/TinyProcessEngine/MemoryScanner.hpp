@@ -34,6 +34,23 @@ public:
         const ScanOptions& options = {}
     );
 
+    /// 首轮未知初值扫描（`new-scan --unknown`；C-D1/FR-002）：
+    /// 记录可扫描区域内按类型宽度对齐步进的**全部候选地址**，不做值过滤。
+    /// - 步进宽度 = `type.byteWidth()`（u8→1 / i16→2 / i32,float→4 / i64,double→8）；
+    ///   宽度 0（变长，如 string）无对齐口径 → 返回空结果（防御；CLI 层另有显式拒绝）
+    /// - 起点 = `align_up(page.start, width)`；不跨页（候选的 width 字节完整位于页内）
+    /// - 分块读取，不可读块跳过；块间按 width 网格连续推进（chunkSize 任意值无漂移）
+    /// - 每条记录携带当轮实读 width 字节快照（>8 由 ScanRecord 构造器截断；INV-R）
+    /// @param process 目标进程
+    /// @param type    值类型（决定对齐步进宽度）
+    /// @param options 扫描选项
+    /// @return 候选 ScanRecord 列表（地址升序，与页序一致）
+    std::vector<ScanRecord> firstScanUnknown(
+        tpe::platform::PlatformProcess& process,
+        const ValueType& type,
+        const ScanOptions& options = {}
+    );
+
     /// 增量过滤扫描：在上一轮结果基础上按条件筛选（非交互）。
     /// 读取宽度取自 `type.byteWidth()`（变长类型由 `newValue` 决定）。
     /// 比较条件语义（Phase 05 缺陷 ①/FR-002/FR-003）：

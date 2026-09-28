@@ -396,12 +396,15 @@ TEST(ReplCommandParse, NewScanRejectsConflictingOrUnknownFlags)
 TEST(ReplCommandParse, NewScanPlaceholderScanTypesAreRecognized)
 {
     // FR-020 / C-R7:--unknown / --greater / --less 语法可识别(不再以“未实现”错误拒绝)
+    // T006:--unknown 已转正(placeholder=false → 处置为 Execute,执行真实首扫);
+    // greater/less 仍占位(至 T010 转正)。
     const ReplCommand unknown = parseReplCommand("new-scan --unknown");
     ASSERT_EQ(unknown.kind, ReplCommandKind::NewScan);
     EXPECT_EQ(unknown.scanType, ReplScanType::Unknown);
-    EXPECT_TRUE(unknown.placeholder);
+    EXPECT_FALSE(unknown.placeholder);
     EXPECT_FALSE(unknown.hasValue);
     EXPECT_TRUE(unknown.error.empty());
+    EXPECT_EQ(tpe::cli::planReplOutcome(unknown), tpe::cli::ReplOutcome::Execute);
 
     const ReplCommand greater = parseReplCommand("new-scan --greater 100");
     ASSERT_EQ(greater.kind, ReplCommandKind::NewScan);
@@ -423,7 +426,7 @@ TEST(ReplCommandParse, NewScanPlaceholderAcceptsFlagCombinations)
     ASSERT_EQ(withType.scanType, ReplScanType::Unknown);
     ASSERT_NE(withType.valueType, nullptr);
     EXPECT_EQ(withType.valueType->shortName, "i16");
-    EXPECT_TRUE(withType.placeholder);
+    EXPECT_FALSE(withType.placeholder); // T006:--unknown 已转正(执行真实首扫)
     EXPECT_TRUE(withType.error.empty());
 
     const ReplCommand withValueAndType = parseReplCommand("new-scan --greater --i64 42");
@@ -447,6 +450,7 @@ TEST(ReplCommandParse, NewScanPlaceholderValueRules)
     }
 
     EXPECT_TRUE(parseReplCommand("new-scan --unknown").error.empty());
+    EXPECT_FALSE(parseReplCommand("new-scan --unknown").placeholder); // T006:已转正(真实首扫)
     const ReplCommand unknownWithValue = parseReplCommand("new-scan --unknown 100");
     EXPECT_FALSE(unknownWithValue.error.empty());
     EXPECT_NE(unknownWithValue.error.find("Usage"), std::string::npos);

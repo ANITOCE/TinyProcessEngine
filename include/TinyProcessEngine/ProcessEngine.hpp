@@ -42,6 +42,13 @@ public:
     /// Returns the number of matches found (0 if scan failed or no process).
     uint64_t searchMemory(const ValueType& type, const tpe::Memory& pattern);
 
+    /// Execute first scan with unknown initial value (`new-scan --unknown`).
+    /// 记录按类型宽度对齐步进的候选地址（不做值过滤；C-D1/FR-002），
+    /// 每条携带当轮实读快照；会话条件记为 `ScanCondition::Unknown`。
+    /// @param type 值类型（决定对齐步进宽度）
+    /// Returns the number of candidates recorded (0 if scan failed or no process).
+    uint64_t searchUnknown(const ValueType& type);
+
     /// Execute next (incremental) scan on existing results.
     uint64_t nextScan(ScanCondition condition, const ValueType& type,
                       const std::optional<tpe::Memory>& newValue = std::nullopt);

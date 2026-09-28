@@ -58,6 +58,71 @@ static bool floatTolerantMatch(const uint8_t* memBytes, const uint8_t* searchByt
 }
 
 // ============================================================
+// Page filtering + aligned candidate enumeration helpers（R1/R2）
+//   页过滤与分块读取骨架由 firstScan / firstScanUnknown 共用；
+//   对齐步进枚举服务 --unknown（后续 --greater/--less 复用同骨架）。
+// ============================================================
+
+namespace {
+
+/// 页过滤：仅保留与选项地址范围相交的页（既有 firstScan 语义，抽取为共享 helper）。
+std::vector<MemoryPage> filterScannablePages(const std::vector<MemoryPage>& pages,
+                                             const ScanOptions& options)
+{
+    std::vector<MemoryPage> filtered;
+    for (const auto& page : pages) {
+        if (options.rangeStart && page.start + page.size <= *options.rangeStart) continue;
+        if (options.rangeEnd   && page.start >= *options.rangeEnd) continue;
+        filtered.push_back(page);
+    }
+    return filtered;
+}
+
+/// 首个 >= address 且按 width 对齐的地址（width >= 1）。
+tpe::Address alignUpAddress(tpe::Address address, size_t width)
+{
+    const tpe::Address remainder = address % width;
+    return remainder == 0 ? address : address + (width - remainder);
+}
+
+/// 按类型宽度对齐枚举页内候选地址（R2）：
+/// - 起点 = align_up(page.start, width)；末候选的 width 字节必须完整位于页内（不跨页）；
+/// - 分块读取（每块 <= options.chunkSize），不可读块跳过（不影响其余结果）；
+/// - 块间按 width 网格连续推进（推进量 = 块内完整候选数 × width；
+///   chunkSize 非 width 整数倍时同样无漂移、无重复、无漏采）；
+/// - accept(address, bytes) 对每个候选调用一次（bytes = 块内当轮实读的 width 字节）。
+template <typename Accept>
+void enumerateAlignedCandidates(tpe::platform::PlatformProcess& process,
+                                const std::vector<MemoryPage>& pages,
+                                size_t width, const ScanOptions& options, Accept&& accept)
+{
+    for (const MemoryPage& page : pages) {
+        if (page.size < width) continue;
+
+        const tpe::Address pageEnd = page.start + page.size;
+        tpe::Address cursor = alignUpAddress(page.start, width); // 对齐网格起点
+        while (cursor + width <= pageEnd) {
+            const size_t avail = static_cast<size_t>(pageEnd - cursor);
+            size_t chunkSz = (std::min)(avail, options.chunkSize);
+            if (chunkSz < width) chunkSz = width; // 防御：块长至少容纳一个候选
+            auto rd = process.read(MemoryPage(cursor, chunkSz));
+            if (!rd || rd.value().size() < width) {
+                cursor += (chunkSz / width) * width; // 跳过不可读块；保持网格（>= width）
+                continue;
+            }
+            const tpe::Memory& chunk = rd.value();
+            const size_t count = (chunk.size() - width) / width + 1; // 块内完整候选数
+            for (size_t k = 0; k < count; ++k) {
+                accept(cursor + k * width, chunk.data() + k * width);
+            }
+            cursor += count * width; // 网格连续推进（对齐不漂移）
+        }
+    }
+}
+
+} // namespace
+
+// ============================================================
 // firstScan — Full linear scan of all readable pages
 // ============================================================
 std::vector<ScanRecord> MemoryScanner::firstScan(
@@ -72,14 +137,9 @@ std::vector<ScanRecord> MemoryScanner::firstScan(
     bool isDouble = (type.name.find("double") != std::string::npos && typeWidth == 8);
     bool isFloatingPoint = isFloat || isDouble;
 
-    auto pages = process.getCheatablePages();
-    // Filter by address range
-    std::vector<MemoryPage> filteredPages;
-    for (auto& page : pages) {
-        if (options.rangeStart && page.start + page.size <= *options.rangeStart) continue;
-        if (options.rangeEnd   && page.start >= *options.rangeEnd) continue;
-        filteredPages.push_back(page);
-    }
+    // Filter by address range（与 firstScanUnknown 共用页过滤口径；行为不变）
+    std::vector<MemoryPage> filteredPages =
+        filterScannablePages(process.getCheatablePages(), options);
 
     tpe::Memory overlapBuf;
 
@@ -140,6 +200,32 @@ std::vector<ScanRecord> MemoryScanner::firstScan(
             remaining -= chunkSz;
         }
     }
+    return results;
+}
+
+// ============================================================
+// firstScanUnknown — 未知初值首扫:按类型宽度对齐枚举候选（不做值过滤）
+//   C-D1/FR-002/FR-003/INV-R:候选=可扫描区域内按类型宽度对齐的地址;
+//   每条记录携带当轮实读宽度字节快照(供 next-scan 过滤链)。
+// ============================================================
+std::vector<ScanRecord> MemoryScanner::firstScanUnknown(
+    tpe::platform::PlatformProcess& process, const ValueType& type, const ScanOptions& options)
+{
+    std::vector<ScanRecord> results;
+
+    const size_t width = type.byteWidth();
+    if (width == 0) {
+        // 变长类型无对齐口径（CLI 层已对 string 显式拒绝；此处防御）
+        return results;
+    }
+
+    const std::vector<MemoryPage> pages =
+        filterScannablePages(process.getCheatablePages(), options);
+    enumerateAlignedCandidates(process, pages, width, options,
+        [&results, width](tpe::Address address, const tpe::Byte* bytes) {
+            // 快照 = 当轮实读 width 字节（>8 由 ScanRecord 构造器截断；INV-R）
+            results.emplace_back(address, tpe::Memory(bytes, bytes + width));
+        });
     return results;
 }
 
