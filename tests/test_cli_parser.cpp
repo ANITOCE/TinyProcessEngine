@@ -746,13 +746,13 @@ TEST(ReplHelp, DocumentsImplementedScanTypes)
     // new-scan 扫描类型行保留(逐字),next-scan 行不再携带类型旗标,并含 string 仅等值说明。
     const std::string help(tpe::cli::replHelpText());
 
-    // (1) 不得含 "not implemented"(大小写不敏感)
+    // (1) 不得含实现状态说明(大小写不敏感;按 "implemented" 词根作更宽覆盖,涵盖历史占位语)
     std::string lowered;
     lowered.reserve(help.size());
     for (const char ch : help) {
         lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
     }
-    EXPECT_EQ(lowered.find("not implemented"), std::string::npos) << help;
+    EXPECT_EQ(lowered.find("implemented"), std::string::npos) << help;
 
     // (2) new-scan 扫描类型行保留(逐字)
     EXPECT_NE(help.find("Scan types (new-scan): --equal <value> (default) | --unknown | "

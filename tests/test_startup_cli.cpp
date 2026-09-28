@@ -190,6 +190,15 @@ ReplRun runReplScript(Pid_t pid, const std::string& script, ProcessEngine& engin
     return ReplRun{rc, capturedOut.str()};
 }
 
+/// US4(T022/T024):REPL 输出不得含任何实现状态说明(占位机制已退役)。
+/// 按 "implemented" 词根作更宽覆盖——涵盖占位语及一切实现状态说明变体。
+void expectNoImplementationWording(const std::string& output)
+{
+    EXPECT_EQ(output.find("implemented"), std::string::npos)
+        << "user-visible output must not contain implementation-status wording, got:\n"
+        << output;
+}
+
 } // namespace
 
 /// FR-024/C-P5:枚举失败 → stderr 明确失败信息 + 运行期失败退出码(1)。
@@ -244,8 +253,7 @@ TEST(RunCliReplUnknownScan, NewScanUnknownExecutesRealFirstScan)
                                       "new-scan --unknown\nlist --all\nexit\n", engine);
 
     EXPECT_EQ(run.rc, tpe::cli::kExitOk);
-    EXPECT_EQ(run.output.find("not implemented"), std::string::npos)
-        << "user-visible output must not contain placeholder text, got:\n" << run.output;
+    expectNoImplementationWording(run.output);
     EXPECT_NE(run.output.find("Total: 16 matches"), std::string::npos)
         << "list --all must show candidate total for the first scan, got:\n" << run.output;
     EXPECT_NE(run.output.find("-unknown-"), std::string::npos)
@@ -297,8 +305,7 @@ TEST(RunCliReplComparisonScan, GreaterScanKeepsStrictlyGreaterAndShowsValuePromp
                                       "new-scan --greater 100\nlist --all\nexit\n", engine);
 
     EXPECT_EQ(run.rc, tpe::cli::kExitOk);
-    EXPECT_EQ(run.output.find("not implemented"), std::string::npos)
-        << "user-visible output must not contain placeholder text, got:\n" << run.output;
+    expectNoImplementationWording(run.output);
     EXPECT_NE(run.output.find("-greater-i32-100"), std::string::npos)
         << "prompt must show greater scan type and comparison value, got:\n" << run.output;
     EXPECT_NE(run.output.find("Total: 2 matches"), std::string::npos)
@@ -323,8 +330,7 @@ TEST(RunCliReplComparisonScan, LessScanKeepsStrictlyLessAndShowsValuePrompt)
                                       "new-scan --less 100\nlist --all\nexit\n", engine);
 
     EXPECT_EQ(run.rc, tpe::cli::kExitOk);
-    EXPECT_EQ(run.output.find("not implemented"), std::string::npos)
-        << "user-visible output must not contain placeholder text, got:\n" << run.output;
+    expectNoImplementationWording(run.output);
     EXPECT_NE(run.output.find("-less-i32-100"), std::string::npos)
         << "prompt must show less scan type and comparison value, got:\n" << run.output;
     EXPECT_NE(run.output.find("Total: 2 matches"), std::string::npos)
@@ -350,8 +356,7 @@ TEST(RunCliReplComparisonScan, MissingValueIsUsageErrorAndStateUnchanged)
         "new-scan --unknown\nnew-scan --greater\nlist --all\nexit\n", engine);
 
     EXPECT_EQ(run.rc, tpe::cli::kExitOk);
-    EXPECT_EQ(run.output.find("not implemented"), std::string::npos)
-        << "user-visible output must not contain placeholder text, got:\n" << run.output;
+    expectNoImplementationWording(run.output);
     EXPECT_EQ(run.output.find("-greater-"), std::string::npos)
         << "missing value must not switch the scan type, got:\n" << run.output;
     EXPECT_NE(run.output.find("fake.exe-unknown-i32> Missing value for new-scan."),
@@ -374,8 +379,7 @@ TEST(RunCliReplComparisonScan, InvalidValueIsRejectedAndStateUnchanged)
         "new-scan --unknown\nnew-scan --greater abc\nlist --all\nexit\n", engine);
 
     EXPECT_EQ(run.rc, tpe::cli::kExitOk);
-    EXPECT_EQ(run.output.find("not implemented"), std::string::npos)
-        << "user-visible output must not contain placeholder text, got:\n" << run.output;
+    expectNoImplementationWording(run.output);
     EXPECT_EQ(run.output.find("-greater-"), std::string::npos)
         << "invalid value must not switch the scan type, got:\n" << run.output;
     EXPECT_NE(run.output.find("fake.exe-unknown-i32> Invalid value for i32:"),
@@ -404,8 +408,7 @@ TEST(RunCliReplComparisonScan, ZeroMatchesLeavesUsableSession)
         "new-scan --greater 2147483647\nlist --all\nnew-scan 100\nlist --all\nexit\n", engine);
 
     EXPECT_EQ(run.rc, tpe::cli::kExitOk);
-    EXPECT_EQ(run.output.find("not implemented"), std::string::npos)
-        << "user-visible output must not contain placeholder text, got:\n" << run.output;
+    expectNoImplementationWording(run.output);
     EXPECT_NE(run.output.find("-greater-i32-2147483647"), std::string::npos)
         << "prompt must carry the extreme comparison value, got:\n" << run.output;
     EXPECT_NE(run.output.find("No matches to display."), std::string::npos)
