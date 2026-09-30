@@ -1,10 +1,12 @@
-#ifndef _RESULT_H_
-#define _RESULT_H_
+#pragma once
 
 #include <string>
+#include <string_view>
 #include <variant>
 #include <cassert>
 #include <cstdint>
+
+namespace tpe {
 
 // ============================================================
 // PlatformError — 平台操作错误信息
@@ -17,6 +19,9 @@ struct PlatformError {
 
     // Factory — implementation in Platform.cpp (platform-specific native code retrieval)
     static PlatformError from_last_error(std::string op, unsigned long pid_val);
+    /// 重载(缺陷⑦;FR-020/C-P4):基础消息后追加 "; <advice>"(advice 非空时)。
+    static PlatformError from_last_error(std::string op, unsigned long pid_val,
+                                         std::string_view advice);
 };
 
 // ============================================================
@@ -100,4 +105,4 @@ private:
     E m_error;
 };
 
-#endif // _RESULT_H_
+} // namespace tpe

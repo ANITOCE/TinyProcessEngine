@@ -1,20 +1,90 @@
-#include "ResultStorage.h"
+#include "ResultStorage.hpp"
 
 #include <cstring>
 #include <chrono>
 #include <iostream>
 
+namespace tpe {
+
+// ============================================================
+// releaseResources — close + delete temp file, reset to empty
+// ============================================================
+void ResultStorage::releaseResources() {
+    if (m_file.is_open()) {
+        m_file.close();
+    }
+    if (m_diskPath.has_value()) {
+        std::error_code ec;
+        std::filesystem::remove(*m_diskPath, ec);
+    }
+    m_memoryChunks.clear();
+    m_diskIndex.clear();
+    m_diskPath.reset();
+    m_backend = StorageBackend::InMemory;
+    m_chunkCount = 0;
+    m_totalCount = 0;
+}
+
+// ============================================================
+// Move operations — take over the source's resources; the target
+// first releases its own resources (close + delete) so nothing
+// leaks; the source is left in an empty InMemory state.
+// ============================================================
+ResultStorage::ResultStorage(ResultStorage&& other) noexcept
+    : m_backend(other.m_backend),
+      m_memoryChunks(std::move(other.m_memoryChunks)),
+      m_diskPath(std::move(other.m_diskPath)),
+      m_diskIndex(std::move(other.m_diskIndex)),
+      m_file(std::move(other.m_file)),
+      m_chunkCount(other.m_chunkCount),
+      m_totalCount(other.m_totalCount) {
+    other.m_memoryChunks.clear();
+    other.m_diskIndex.clear();
+    other.m_diskPath.reset();
+    other.m_backend = StorageBackend::InMemory;
+    other.m_chunkCount = 0;
+    other.m_totalCount = 0;
+    if (other.m_file.is_open()) {
+        other.m_file.close();
+    }
+}
+
+ResultStorage& ResultStorage::operator=(ResultStorage&& other) noexcept {
+    if (this == &other) {
+        return *this;
+    }
+
+    // Release current resources first (the previous temp file must be deleted)
+    releaseResources();
+
+    // Take over the source's resources
+    m_backend = other.m_backend;
+    m_memoryChunks = std::move(other.m_memoryChunks);
+    m_diskPath = std::move(other.m_diskPath);
+    m_diskIndex = std::move(other.m_diskIndex);
+    m_file = std::move(other.m_file);
+    m_chunkCount = other.m_chunkCount;
+    m_totalCount = other.m_totalCount;
+
+    // Leave the source empty
+    other.m_memoryChunks.clear();
+    other.m_diskIndex.clear();
+    other.m_diskPath.reset();
+    other.m_backend = StorageBackend::InMemory;
+    other.m_chunkCount = 0;
+    other.m_totalCount = 0;
+    if (other.m_file.is_open()) {
+        other.m_file.close();
+    }
+
+    return *this;
+}
+
 // ============================================================
 // Destructor — clean up temp file if disk-backed
 // ============================================================
 ResultStorage::~ResultStorage() {
-    if (m_file.is_open()) {
-        m_file.close();
-    }
-    if (m_diskPath.has_value() && std::filesystem::exists(*m_diskPath)) {
-        std::error_code ec;
-        std::filesystem::remove(*m_diskPath, ec);
-    }
+    releaseResources();
 }
 
 // ============================================================
@@ -179,3 +249,5 @@ ScanRecord ResultStorage::readRecordFromDisk(std::streamoff offset) const {
     file.read(reinterpret_cast<char*>(&rec), sizeof(ScanRecord));
     return rec;
 }
+
+} // namespace tpe

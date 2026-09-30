@@ -1,11 +1,12 @@
-#ifndef _WINDOWS_PROCESS_H_
-#define _WINDOWS_PROCESS_H_
+#pragma once
 
-#include "Platform.h"
-#include "HelpFunction.h"
-#include "ScopedHandle.h"
+#include "Platform.hpp"
+#include "HelpFunction.hpp"
+#include "ScopedHandle.hpp"
 
 #ifdef _WIN32
+
+namespace tpe::platform {
 
 class WindowsProcess : public PlatformProcess
 {
@@ -20,10 +21,16 @@ public:
     Result<tpe::Memory, PlatformError> read(MemoryPage page) const override;
     Result<void, PlatformError> write(tpe::Address address, const tpe::Memory &value) override;
 
+    // 只读会话标记(US2/缺陷③,FR-009):写权限不可得时降级只读打开。
+    // 存根阶段仅记录标记;只读写拒绝语义在 T020 实现。
+    bool isReadOnly() const { return m_readOnly; }
+    void markReadOnly() { m_readOnly = true; }
+
 protected:
     ScopedHandle m_processHandle;
+    bool m_readOnly = false;
 };
 
-#endif // _WIN32
+} // namespace tpe::platform
 
-#endif // _WINDOWS_PROCESS_H_
+#endif // _WIN32

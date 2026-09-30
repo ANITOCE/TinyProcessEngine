@@ -6,13 +6,34 @@
 // 格式: [LEVEL] ClassName::methodName: message
 // ============================================================
 
-#include "LinuxProcess.h"
+#include "LinuxProcess.hpp"
 #include <fstream>
 #include <sstream>
 #include <iostream>
 #include <cstring>
 #include <cerrno>
 #include <fcntl.h>
+
+namespace tpe::platform {
+
+namespace {
+
+/// 权限类失败的可操作建议(缺陷⑦;FR-020/C-P4)
+constexpr const char* kPermissionAdvice =
+    "Try running as root or set /proc/sys/kernel/yama/ptrace_scope to 0";
+
+/// 组装内存访问错误:EPERM/EACCES 在 message 中追加权限建议;
+/// 其余错误保持基础消息。不影响重试策略(仅 EPERM、至多一次)。
+PlatformError makeMemAccessError(const char* operation, Pid_t pid, int errorCode)
+{
+    if (errorCode == EPERM || errorCode == EACCES) {
+        return PlatformError::from_last_error(
+            operation, static_cast<unsigned long>(pid), kPermissionAdvice);
+    }
+    return PlatformError::from_last_error(operation, static_cast<unsigned long>(pid));
+}
+
+} // namespace
 
 // ============================================================
 // 构造/析构
@@ -142,7 +163,7 @@ Result<tpe::Memory, PlatformError> LinuxProcess::readViaProcessVm(MemoryPage pag
     ssize_t nread = process_vm_readv(static_cast<pid_t>(m_pid), &local_iov, 1, &remote_iov, 1, 0);
 
     if (nread < 0) {
-        // EPERM: 尝试 ptrace attach 后重试一次
+        // EPERM: 尝试 ptrace attach 后重试一次(FR-022:仅 EPERM、至多一次)
         if (errno == EPERM && !m_ptraceAttached) {
             auto attachResult = ensurePtraceAttached();
             if (attachResult) {
@@ -150,11 +171,11 @@ Result<tpe::Memory, PlatformError> LinuxProcess::readViaProcessVm(MemoryPage pag
             }
             if (nread < 0) {
                 return Result<tpe::Memory, PlatformError>::error(
-                    PlatformError::from_last_error("process_vm_readv", m_pid));
+                    makeMemAccessError("process_vm_readv", m_pid, errno));
             }
         } else {
             return Result<tpe::Memory, PlatformError>::error(
-                PlatformError::from_last_error("process_vm_readv", m_pid));
+                makeMemAccessError("process_vm_readv", m_pid, errno));
         }
     }
 
@@ -185,7 +206,7 @@ Result<void, PlatformError> LinuxProcess::writeViaProcessVm(
     ssize_t nwritten = process_vm_writev(static_cast<pid_t>(m_pid), &local_iov, 1, &remote_iov, 1, 0);
 
     if (nwritten < 0) {
-        // EPERM: 尝试 ptrace attach 后重试一次
+        // EPERM: 尝试 ptrace attach 后重试一次(FR-022:仅 EPERM、至多一次)
         if (errno == EPERM && !m_ptraceAttached) {
             auto attachResult = ensurePtraceAttached();
             if (attachResult) {
@@ -193,11 +214,11 @@ Result<void, PlatformError> LinuxProcess::writeViaProcessVm(
             }
             if (nwritten < 0) {
                 return Result<void, PlatformError>::error(
-                    PlatformError::from_last_error("process_vm_writev", m_pid));
+                    makeMemAccessError("process_vm_writev", m_pid, errno));
             }
         } else {
             return Result<void, PlatformError>::error(
-                PlatformError::from_last_error("process_vm_writev", m_pid));
+                makeMemAccessError("process_vm_writev", m_pid, errno));
         }
     }
 
@@ -213,16 +234,45 @@ Result<void, PlatformError> LinuxProcess::writeViaProcessVm(
 }
 
 // ============================================================
+// /proc/PID/mem 句柄惰性升级(缺陷④;FR-011/FR-012/C-P2)
+// ============================================================
+bool LinuxProcess::ensureProcMemFd(bool needWrite) const {
+    const std::string path = "/proc/" + std::to_string(m_pid) + "/mem";
+
+    if (m_procMemFd >= 0) {
+        if (!needWrite || m_procMemFdWritable) {
+            return true;
+        }
+        // 已有只读句柄但本次需要写入:关闭后以 O_RDWR 升级重开
+        close(m_procMemFd);
+        m_procMemFd = -1;
+        m_procMemFdWritable = false;
+    }
+
+    if (needWrite) {
+        m_procMemFd = open(path.c_str(), O_RDWR);
+        m_procMemFdWritable = (m_procMemFd >= 0);
+    } else {
+        // 读路径:优先可写句柄(后续写入免重开);无写权限时降级只读
+        m_procMemFd = open(path.c_str(), O_RDWR);
+        if (m_procMemFd >= 0) {
+            m_procMemFdWritable = true;
+        } else {
+            m_procMemFd = open(path.c_str(), O_RDONLY);
+            m_procMemFdWritable = false;
+        }
+    }
+
+    return m_procMemFd >= 0;
+}
+
+// ============================================================
 // /proc/PID/mem 降级读写
 // ============================================================
 Result<tpe::Memory, PlatformError> LinuxProcess::readViaProcMem(MemoryPage page) const {
-    if (m_procMemFd < 0) {
-        std::string path = "/proc/" + std::to_string(m_pid) + "/mem";
-        m_procMemFd = open(path.c_str(), O_RDONLY);
-        if (m_procMemFd < 0) {
-            return Result<tpe::Memory, PlatformError>::error(
-                PlatformError::from_last_error("open /proc/PID/mem", m_pid));
-        }
+    if (!ensureProcMemFd(/*needWrite=*/false)) {
+        return Result<tpe::Memory, PlatformError>::error(
+            makeMemAccessError("open /proc/PID/mem", m_pid, errno));
     }
 
     tpe::Memory buffer(page.size);
@@ -231,7 +281,7 @@ Result<tpe::Memory, PlatformError> LinuxProcess::readViaProcMem(MemoryPage page)
 
     if (nread < 0) {
         return Result<tpe::Memory, PlatformError>::error(
-            PlatformError::from_last_error("pread /proc/PID/mem", m_pid));
+            makeMemAccessError("pread /proc/PID/mem", m_pid, errno));
     }
 
     if (static_cast<size_t>(nread) < page.size) {
@@ -244,13 +294,10 @@ Result<tpe::Memory, PlatformError> LinuxProcess::readViaProcMem(MemoryPage page)
 Result<void, PlatformError> LinuxProcess::writeViaProcMem(
     tpe::Address address, const tpe::Memory& value) const
 {
-    if (m_procMemFd < 0) {
-        std::string path = "/proc/" + std::to_string(m_pid) + "/mem";
-        m_procMemFd = open(path.c_str(), O_RDWR);
-        if (m_procMemFd < 0) {
-            return Result<void, PlatformError>::error(
-                PlatformError::from_last_error("open /proc/PID/mem for write", m_pid));
-        }
+    // fd 不存在或为只读时升级为 O_RDWR;升级失败返回明确错误(不使用 EBADF 只读句柄)
+    if (!ensureProcMemFd(/*needWrite=*/true)) {
+        return Result<void, PlatformError>::error(
+            makeMemAccessError("open /proc/PID/mem for write", m_pid, errno));
     }
 
     ssize_t nwritten = pwrite(m_procMemFd, value.data(), value.size(),
@@ -258,7 +305,7 @@ Result<void, PlatformError> LinuxProcess::writeViaProcMem(
 
     if (nwritten < 0) {
         return Result<void, PlatformError>::error(
-            PlatformError::from_last_error("pwrite /proc/PID/mem", m_pid));
+            makeMemAccessError("pwrite /proc/PID/mem", m_pid, errno));
     }
 
     if (static_cast<size_t>(nwritten) < value.size()) {
@@ -353,15 +400,17 @@ Result<void, PlatformError> LinuxProcess::ensurePtraceAttached() const {
                 advice = "Target process no longer exists";
                 break;
             case EBUSY:
+            case EEXIST:
                 advice = "Target is already being traced by another debugger";
                 break;
             default:
                 advice = "ptrace PTRACE_ATTACH failed";
                 break;
         }
+        // FR-021/C-P4:三类诊断必须进入错误消息本身(不依赖 stderr 日志)
         std::cerr << "[ERROR] LinuxProcess::ensurePtraceAttached: " << advice << std::endl;
         return Result<void, PlatformError>::error(
-            PlatformError::from_last_error("ptrace PTRACE_ATTACH", m_pid));
+            PlatformError::from_last_error("ptrace PTRACE_ATTACH", m_pid, advice));
     }
 
     // 等待目标进程 SIGSTOP 就绪，5 秒超时
@@ -399,5 +448,7 @@ void LinuxProcess::ensurePtraceDetached() const {
     ptrace(PTRACE_DETACH, static_cast<pid_t>(m_pid), nullptr, nullptr);
     m_ptraceAttached = false;
 }
+
+} // namespace tpe::platform
 
 #endif // __linux__

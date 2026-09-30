@@ -1,5 +1,4 @@
-#ifndef MEMORY_PAGE_H
-#define MEMORY_PAGE_H
+#pragma once
 
 #include <cstddef>
 #include <cstdint>
@@ -11,8 +10,6 @@ using Byte    = unsigned char;
 using Address = std::uintptr_t;
 using Memory  = std::vector<Byte>;
 using Size    = std::size_t;
-
-} // namespace tpe
 
 /**
  * Memory page of the memory space of a process.
@@ -27,4 +24,4 @@ struct MemoryPage
     MemoryPage(tpe::Address start, tpe::Size size) : start{start}, size{size} {}
 };
 
-#endif
+} // namespace tpe

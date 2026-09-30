@@ -1,7 +1,7 @@
 # 公共源文件
 add_library(PlatformLib STATIC Platform.cpp)
 
-# 平台选择
+# 平台选择（用 UNIX 谓词：LINUX 变量为 CMake 3.25+ 引入，本项目基线 3.10 下恒为假）
 if(WIN32)
     add_subdirectory(Windows)
 
@@ -11,7 +11,7 @@ if(WIN32)
     
     target_include_directories(PlatformLib PUBLIC ${CMAKE_SOURCE_DIR}/include/Platform/Windows)
     
-elseif(LINUX)
+elseif(UNIX)
     add_subdirectory(Linux)
 
     # 添加 Linux平台相关源文件
@@ -33,13 +33,6 @@ target_include_directories(PlatformLib PUBLIC
 # elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 #     target_compile_definitions(${PROJECT_NAME} PRIVATE PLATFORM_LINUX)
 # endif()
-
-# 设置文件编码（MSVC 专用）
-if(MSVC)
-    add_compile_options(/source-charset:utf-8)
-else()
-    add_compile_options(-finput-charset=UTF-8)
-endif()
 
 # 模块相互依赖（Phase 1 修复：PlatformLib 为最底层，不依赖任何上层库）
 # 原 target_link_libraries(PlatformLib PUBLIC TinyProcessEngineLib) 已移除

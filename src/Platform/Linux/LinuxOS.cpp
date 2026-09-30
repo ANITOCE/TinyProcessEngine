@@ -1,7 +1,7 @@
 #ifdef __linux__
 
-#include "LinuxOS.h"
-#include "LinuxProcess.h"
+#include "LinuxOS.hpp"
+#include "LinuxProcess.hpp"
 
 #include <dirent.h>
 #include <cstdlib>
@@ -11,6 +11,8 @@
 #include <fstream>
 #include <sstream>
 #include <cstring>
+
+namespace tpe::platform {
 
 // ============================================================
 // 辅助: 从路径提取文件名
@@ -62,12 +64,31 @@ std::string LinuxOS::readProcessName(Pid_t pid)
 // ============================================================
 // 进程枚举
 // ============================================================
-std::vector<Pid_t> LinuxOS::getAllProcessesPid()
+// ============================================================
+// 构造:枚举进程列表(与 WindowsOS 对齐;缺陷⑧/FR-024)
+// ============================================================
+LinuxOS::LinuxOS()
+{
+    auto pids = getAllProcessesPid();
+    if (pids) {
+        getAllProcesses(pids.value());
+    }
+}
+
+// ============================================================
+// 进程枚举
+// ============================================================
+Result<std::vector<Pid_t>, PlatformError> LinuxOS::getAllProcessesPid()
 {
     std::vector<Pid_t> pids;
     DIR *dir = opendir("/proc");
     if (!dir)
-        return pids;
+    {
+        // 缺陷⑧(FR-023/C-P5):枚举失败上报错误,不得以空列表伪装成功。
+        const PlatformError err = PlatformError::from_last_error("opendir /proc", 0);
+        m_enumerationError = err;
+        return Result<std::vector<Pid_t>, PlatformError>::error(err);
+    }
     struct dirent *entry;
     while ((entry = readdir(dir)) != nullptr)
     {
@@ -79,15 +100,11 @@ std::vector<Pid_t> LinuxOS::getAllProcessesPid()
         }
     }
     closedir(dir);
-    return pids;
+    return Result<std::vector<Pid_t>, PlatformError>::success(std::move(pids));
 }
 
 void LinuxOS::getAllProcesses(std::vector<Pid_t> allPid)
 {
-    if (allPid.empty()) {
-        std::cerr << "[WARN] PidList is empty!" << std::endl;
-        return;
-    }
     for (auto pid : allPid) {
         this->ProcessList.push_back(
             std::make_shared<LinuxProcess>(pid, readProcessName(pid)));
@@ -98,5 +115,7 @@ std::shared_ptr<PlatformProcess> LinuxOS::open(Pid_t pid)
 {
     return std::make_shared<LinuxProcess>(pid, readProcessName(pid));
 }
+
+} // namespace tpe::platform
 
 #endif // __linux__

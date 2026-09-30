@@ -4,8 +4,16 @@
 .vscode/
 
 build/
+build-linux/
 
 doc/
 specs/
 skills-*
+
+# AI 开发工作流私有区(公开边界定义见 docs/plan/first-mvp-guide.md 第 3 节)
+docs/templates/
+docs/phases/
+docs/superpowers/
+.superpowers/
+.worktrees/
 

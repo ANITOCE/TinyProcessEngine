@@ -1,14 +1,15 @@
-#ifndef TPE_SCAN_TYPES_H_
-#define TPE_SCAN_TYPES_H_
+#pragma once
 
-#include "MemoryPage.h"
+#include "MemoryPage.hpp"
 
 #include <cstdint>
 #include <optional>
 
+namespace tpe {
+
 // ============================================================
 // ScanCondition — 扫描条件枚举
-//   首轮: ExactValue, Unknown
+//   首轮: ExactValue, Unknown, GreaterThan, LessThan
 //   增量轮: ExactValue, Changed, Unchanged, Increased, Decreased
 // ============================================================
 enum class ScanCondition {
@@ -18,6 +19,8 @@ enum class ScanCondition {
     Unchanged,    // 值未变化（仅增量轮）
     Increased,    // 值变大（仅增量轮）
     Decreased,    // 值变小（仅增量轮）
+    GreaterThan,  // 当前值严格大于外部目标值（仅首轮；与外部值比较，next-scan 不接受）
+    LessThan,     // 当前值严格小于外部目标值（仅首轮；与外部值比较，next-scan 不接受）
 };
 
 // ============================================================
@@ -70,4 +73,4 @@ struct ScanRecord {
 
 static_assert(sizeof(ScanRecord) == 17, "ScanRecord must be exactly 17 bytes (packed)");
 
-#endif // TPE_SCAN_TYPES_H_
+} // namespace tpe

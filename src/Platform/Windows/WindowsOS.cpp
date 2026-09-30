@@ -1,15 +1,20 @@
 #ifdef _WIN32
 
-#include "WindowsOS.h"
-#include "WindowsProcess.h"
-#include "HelpFunction.h"
+#include "WindowsOS.hpp"
+#include "WindowsProcess.hpp"
+#include "HelpFunction.hpp"
 
 #include <TlHelp32.h>
 #include <Psapi.h>
 
+namespace tpe::platform {
+
 WindowsOS::WindowsOS()
 {
-    getAllProcesses(getAllProcessesPid());
+    auto pids = getAllProcessesPid();
+    if (pids) {
+        getAllProcesses(pids.value());
+    }
 }
 
 WindowsOS::~WindowsOS()
@@ -17,25 +22,45 @@ WindowsOS::~WindowsOS()
     
 }
 
-std::vector<Pid_t> WindowsOS::getAllProcessesPid() {
+Result<std::vector<Pid_t>, PlatformError> WindowsOS::getAllProcessesPid() {
     std::vector<Pid_t> processIds(1024);
     DWORD cbNeeded = 0;
-    if (!EnumProcesses(processIds.data(), processIds.size() * sizeof(Pid_t), &cbNeeded))
+    // 显式窄化转换：缓冲区字节数（Windows API 要求 DWORD）（FR-005/C-B3）
+    if (!EnumProcesses(processIds.data(), static_cast<DWORD>(processIds.size() * sizeof(Pid_t)), &cbNeeded))
     {
-        return {};
+        // 缺陷⑧(FR-023/C-P5):枚举失败上报错误,不得以空列表伪装成功。
+        const PlatformError err = PlatformError::from_last_error("EnumProcesses", 0);
+        m_enumerationError = err;
+        return Result<std::vector<Pid_t>, PlatformError>::error(err);
     }
     size_t count = cbNeeded / sizeof(DWORD);
     processIds.resize(count);
-    return processIds;
+    return Result<std::vector<Pid_t>, PlatformError>::success(std::move(processIds));
 }
 
 std::shared_ptr<PlatformProcess> WindowsOS::open(Pid_t pid)
 {
-    ScopedHandle hProcess(OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid));
+    // 缺陷③(FR-008/FR-009,C-P1):读写权限优先;被拒则降级只读(读取零退化);
+    // 都失败返回 nullptr(既有失败路径不变)。
+    constexpr DWORD kReadWriteAccess = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ
+                                     | PROCESS_VM_WRITE | PROCESS_VM_OPERATION;
+    constexpr DWORD kReadOnlyAccess  = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ;
+
+    ScopedHandle hProcess(OpenProcess(kReadWriteAccess, FALSE, pid));
+    bool readOnly = false;
+    if (!hProcess) {
+        hProcess = ScopedHandle(OpenProcess(kReadOnlyAccess, FALSE, pid));
+        readOnly = true;
+    }
     if (!hProcess) {
         return nullptr;
     }
-    return std::make_shared<WindowsProcess>(pid, "Unknown", std::move(hProcess));
+
+    auto process = std::make_shared<WindowsProcess>(pid, "Unknown", std::move(hProcess));
+    if (readOnly) {
+        process->markReadOnly();
+    }
+    return process;
 }
 
 // std::vector<std::shared_ptr<PlatformProcess>> WindowsOS::getAllProcesses(std::vector<Pid_t> AllProcessesPid)
@@ -64,13 +89,12 @@ std::shared_ptr<PlatformProcess> WindowsOS::open(Pid_t pid)
 
 void WindowsOS::getAllProcesses(std::vector<Pid_t> allPid)
 {
-    if(allPid.empty()) {
-       std::cerr << "PidList is empty!" << std::endl;
-    }
     // std::vector<std::shared_ptr<PlatformProcess>> processes;
     for (auto pid : allPid) {
         this->ProcessList.push_back(std::make_shared<WindowsProcess>(pid));
     }
 }
+
+} // namespace tpe::platform
 
 #endif // _WIN32

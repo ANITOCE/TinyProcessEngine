@@ -13,9 +13,14 @@
 #include <unistd.h>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <string>
 
-#include "LinuxOS.h"
-#include "LinuxProcess.h"
+#include "LinuxOS.hpp"
+#include "LinuxProcess.hpp"
+
+using tpe::platform::LinuxOS;
+using tpe::platform::Pid_t;
 
 // ============================================================
 // 测试 Fixture: 启动辅助进程，提供 PID 供测试
@@ -32,6 +37,19 @@ protected:
             _exit(127);  // exec 失败
         }
         ASSERT_GT(m_childPid, 0) << "fork failed";
+
+        // 等 exec 完成（有界 ≤2 秒）: fork 后子进程短暂保留父进程镜像，
+        // 此时 /proc/<pid>/comm 尚为 tpe_tests，需轮询到名称被替换
+        const std::string commPath =
+            "/proc/" + std::to_string(m_childPid) + "/comm";
+        for (int i = 0; i < 200; ++i) {
+            std::ifstream comm(commPath);
+            std::string name;
+            if (comm >> name && name != "tpe_tests") {
+                break;  // exec 已完成（comm 变为 sleep）
+            }
+            usleep(10000);  // 10ms × 200 次 = 2s 上限，超时继续由断言判定
+        }
     }
 
     void TearDown() override {

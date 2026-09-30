@@ -1,5 +1,7 @@
-#include "ValueType.h"
-#include "HelpFunction.h"
+#include "ValueType.hpp"
+#include "HelpFunction.hpp"
+
+namespace tpe {
 
 namespace {
     std::vector<std::unique_ptr<ValueType>> createTypes() {
@@ -14,6 +16,12 @@ namespace {
         types.push_back(std::make_unique<String>());
         return types;
     }
+}
+
+std::optional<tpe::Memory> ValueType::parse(std::string_view, std::string &error) const
+{
+    error = "value type '" + name + "' does not support text parsing";
+    return std::nullopt;
 }
 
 const std::vector<std::unique_ptr<ValueType>> TYPES = createTypes();
@@ -40,3 +48,5 @@ const ValueType& ValueType::choose_type()
     assert(0 <= index && index < TYPES_COUNT);
     return *TYPES[index];
 }
+
+} // namespace tpe

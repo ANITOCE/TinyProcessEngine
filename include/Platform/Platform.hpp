@@ -1,26 +1,29 @@
-#ifndef _PLATFORM_H_
-#define _PLATFORM_H_
+#pragma once
 
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
-#include "MemoryPage.h"
-#include "TinyProcessEngine/Result.h"
+#include "MemoryPage.hpp"
+#include "TinyProcessEngine/Result.hpp"
 
 #ifdef _WIN32
 #include <Windows.h>
 #include <Psapi.h>
 #include <TlHelp32.h>
-
-typedef DWORD Pid_t;
-typedef HANDLE pHandle_t;
-
 #elif defined(__linux__)
 #include <unistd.h>
-typedef int Pid_t;
+#endif // __linux__ or win32
 
+namespace tpe::platform {
+
+#ifdef _WIN32
+typedef DWORD Pid_t;
+typedef HANDLE pHandle_t;
+#elif defined(__linux__)
+typedef int Pid_t;
 #endif // __linux__ or win32
 
 class PlatformProcess
@@ -50,14 +53,22 @@ public:
     std::vector<std::shared_ptr<PlatformProcess>> ProcessList;
 
     virtual std::shared_ptr<PlatformProcess> open(Pid_t pid) = 0;
-    virtual std::vector<Pid_t> getAllProcessesPid() = 0;
+    // 缺陷⑧(FR-023;C-P5):枚举失败通过返回值上报,不得以空列表伪装成功。
+    virtual Result<std::vector<Pid_t>, PlatformError> getAllProcessesPid() = 0;
     virtual void getAllProcesses(std::vector<Pid_t> allPid)= 0;
 
+    /// 最近一次枚举失败的原因(缺陷⑧):枚举成功(含空列表)时为空。
+    const std::optional<PlatformError>& enumerationError() const { return m_enumerationError; }
+
     virtual ~PlatformOS() = default;
+
+protected:
+    // 由平台实现在枚举失败时填充(缺陷⑧;C-P5)。
+    std::optional<PlatformError> m_enumerationError;
 };
 
 std::shared_ptr<PlatformProcess> createPlatformProcess(Pid_t pid, std::string p_name);
 std::unique_ptr<PlatformOS> createPlatformOS();
 Pid_t str_to_pid(std::string str);
 
-#endif // _PLATFORM_H_
+} // namespace tpe::platform

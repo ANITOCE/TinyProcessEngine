@@ -1,0 +1,645 @@
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
+#include <initializer_list>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "CliParser.hpp"
+#include "CliValueType.hpp"
+#include "MemoryScanner.hpp"
+#include "ValueFormatter.hpp"
+#include "ValueType.hpp"
+
+using tpe::Double;
+using tpe::Float;
+using tpe::Int16;
+using tpe::Int32;
+using tpe::Int64;
+using tpe::MemoryPage;
+using tpe::MemoryScanner;
+using tpe::PlatformError;
+using tpe::Result;
+using tpe::ScanRecord;
+using tpe::String;
+using tpe::UnsignedByte;
+using tpe::ValueType;
+using tpe::platform::Pid_t;
+using tpe::platform::PlatformProcess;
+
+namespace {
+
+std::vector<tpe::Byte> bytes(std::initializer_list<unsigned> values)
+{
+    std::vector<tpe::Byte> out;
+    out.reserve(values.size());
+    for (const unsigned value : values) {
+        out.push_back(static_cast<tpe::Byte>(value));
+    }
+    return out;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// ValueType::parse — 各类型成功路径(小端表示)
+// ---------------------------------------------------------------------------
+
+TEST(ValueParse, Int32ParsesSignedDecimalLittleEndian)
+{
+    const Int32 type;
+    std::string error;
+
+    const auto positive = type.parse("42", error);
+    ASSERT_TRUE(positive.has_value()) << error;
+    EXPECT_EQ(*positive, bytes({0x2A, 0x00, 0x00, 0x00}));
+
+    const auto negative = type.parse("-2", error);
+    ASSERT_TRUE(negative.has_value()) << error;
+    EXPECT_EQ(*negative, bytes({0xFE, 0xFF, 0xFF, 0xFF}));
+}
+
+TEST(ValueParse, Int16ParsesSignedDecimalLittleEndian)
+{
+    const Int16 type;
+    std::string error;
+
+    const auto result = type.parse("300", error);
+    ASSERT_TRUE(result.has_value()) << error;
+    EXPECT_EQ(*result, bytes({0x2C, 0x01}));
+
+    const auto upper = type.parse("32767", error);
+    ASSERT_TRUE(upper.has_value()) << error;
+    EXPECT_EQ(*upper, bytes({0xFF, 0x7F}));
+
+    const auto lower = type.parse("-32768", error);
+    ASSERT_TRUE(lower.has_value()) << error;
+    EXPECT_EQ(*lower, bytes({0x00, 0x80}));
+}
+
+TEST(ValueParse, Int64ParsesSignedDecimalLittleEndian)
+{
+    const Int64 type;
+    std::string error;
+
+    const auto result = type.parse("1099511627776", error); // 2^40
+    ASSERT_TRUE(result.has_value()) << error;
+    EXPECT_EQ(*result, bytes({0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00}));
+
+    const auto upper = type.parse("9223372036854775807", error); // INT64_MAX
+    ASSERT_TRUE(upper.has_value()) << error;
+    EXPECT_EQ(*upper, bytes({0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F}));
+}
+
+TEST(ValueParse, UnsignedByteAcceptsRangeBoundaries)
+{
+    const UnsignedByte type;
+    std::string error;
+
+    const auto low = type.parse("0", error);
+    ASSERT_TRUE(low.has_value()) << error;
+    ASSERT_FALSE(low->empty());
+    EXPECT_EQ(low->front(), static_cast<tpe::Byte>(0x00));
+
+    const auto high = type.parse("255", error);
+    ASSERT_TRUE(high.has_value()) << error;
+    ASSERT_FALSE(high->empty());
+    EXPECT_EQ(high->front(), static_cast<tpe::Byte>(0xFF));
+    // 注:u8 序列化宽度(4 字节回退)的修复属开发指南 Phase 05 范围,本用例只断言最低字节
+}
+
+TEST(ValueParse, FloatParsesDecimalLittleEndian)
+{
+    const Float type;
+    std::string error;
+
+    const auto result = type.parse("1.5", error);
+    ASSERT_TRUE(result.has_value()) << error;
+    EXPECT_EQ(*result, bytes({0x00, 0x00, 0xC0, 0x3F}));
+
+    const auto negative = type.parse("-2.25", error);
+    ASSERT_TRUE(negative.has_value()) << error;
+    EXPECT_EQ(*negative, bytes({0x00, 0x00, 0x10, 0xC0}));
+}
+
+TEST(ValueParse, DoubleParsesDecimalLittleEndian)
+{
+    const Double type;
+    std::string error;
+
+    const auto result = type.parse("2.5", error);
+    ASSERT_TRUE(result.has_value()) << error;
+    EXPECT_EQ(*result, bytes({0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x40}));
+}
+
+TEST(ValueParse, StringTakesWholeTextAsBytes)
+{
+    const String type;
+    std::string error;
+
+    const auto result = type.parse("abc def", error);
+    ASSERT_TRUE(result.has_value()) << error;
+    EXPECT_EQ(*result, bytes({'a', 'b', 'c', ' ', 'd', 'e', 'f'}));
+
+    const auto folded = type.parse("a  b", error);
+    ASSERT_TRUE(folded.has_value()) << error;
+    EXPECT_EQ(*folded, bytes({'a', ' ', ' ', 'b'}));
+}
+
+// ---------------------------------------------------------------------------
+// ValueType::parse — 失败路径(空文本 / 非数字 / 尾随垃圾 / 越界)
+// ---------------------------------------------------------------------------
+
+TEST(ValueParse, RejectsEmptyTextForEveryType)
+{
+    const UnsignedByte u8;
+    const Int16 i16;
+    const Int32 i32;
+    const Int64 i64;
+    const Float f;
+    const Double d;
+    const String s;
+
+    std::string error;
+    for (const ValueType* type : {static_cast<const ValueType*>(&u8),
+                                  static_cast<const ValueType*>(&i16),
+                                  static_cast<const ValueType*>(&i32),
+                                  static_cast<const ValueType*>(&i64),
+                                  static_cast<const ValueType*>(&f),
+                                  static_cast<const ValueType*>(&d),
+                                  static_cast<const ValueType*>(&s)}) {
+        error.clear();
+        EXPECT_FALSE(type->parse("", error).has_value()) << type->name;
+        EXPECT_FALSE(error.empty()) << type->name;
+    }
+}
+
+TEST(ValueParse, RejectsTrailingGarbage)
+{
+    const Int32 i32;
+    const Int64 i64;
+    const Float f;
+    const Double d;
+
+    std::string error;
+    error.clear();
+    EXPECT_FALSE(i32.parse("12abc", error).has_value());
+    EXPECT_FALSE(error.empty());
+
+    error.clear();
+    EXPECT_FALSE(i64.parse("1234567890123x", error).has_value());
+
+    error.clear();
+    EXPECT_FALSE(f.parse("1.5abc", error).has_value());
+
+    error.clear();
+    EXPECT_FALSE(d.parse("2.5x", error).has_value());
+}
+
+TEST(ValueParse, RejectsNonNumericText)
+{
+    const Int32 i32;
+    const Float f;
+
+    std::string error;
+    error.clear();
+    EXPECT_FALSE(i32.parse("abc", error).has_value());
+    EXPECT_FALSE(error.empty());
+
+    error.clear();
+    EXPECT_FALSE(i32.parse("0x10", error).has_value()); // 值输入只接受十进制
+
+    error.clear();
+    EXPECT_FALSE(f.parse("abc", error).has_value());
+}
+
+TEST(ValueParse, RejectsOutOfRangeIntegersWithRangeError)
+{
+    const UnsignedByte u8;
+    const Int16 i16;
+    const Int32 i32;
+
+    std::string error;
+    error.clear();
+    EXPECT_FALSE(i16.parse("32768", error).has_value());
+    EXPECT_NE(error.find("range"), std::string::npos) << error;
+
+    error.clear();
+    EXPECT_FALSE(i32.parse("3000000000", error).has_value());
+    EXPECT_NE(error.find("range"), std::string::npos) << error;
+
+    error.clear();
+    EXPECT_FALSE(u8.parse("256", error).has_value());
+    EXPECT_NE(error.find("range"), std::string::npos) << error;
+
+    error.clear();
+    EXPECT_FALSE(u8.parse("-1", error).has_value());
+    EXPECT_NE(error.find("range"), std::string::npos) << error;
+}
+
+TEST(ValueParse, RejectsOutOfRangeFloatsAndInt64Overflow)
+{
+    const Int64 i64;
+    const Float f;
+    const Double d;
+
+    std::string error;
+    error.clear();
+    EXPECT_FALSE(i64.parse("9223372036854775808", error).has_value());
+
+    error.clear();
+    EXPECT_FALSE(f.parse("1e40", error).has_value());
+
+    error.clear();
+    EXPECT_FALSE(d.parse("1e400", error).has_value());
+}
+
+// ---------------------------------------------------------------------------
+// write 值转换(US3 T026;契约 C-R4:值文本 → ValueType::parse)
+// ---------------------------------------------------------------------------
+
+TEST(WriteValue, ConvertsSingleTokenToTypeRepresentation)
+{
+    const tpe::cli::CliValueType* i32 = tpe::cli::findCliValueTypeByShortName("i32");
+    ASSERT_NE(i32, nullptr);
+    const tpe::cli::ReplCommand command = tpe::cli::parseReplCommand("write 0x10 -2");
+    ASSERT_EQ(command.kind, tpe::cli::ReplCommandKind::Write);
+
+    std::string error;
+    const std::optional<std::string> text =
+        tpe::cli::extractWriteValueText(command, *i32, error);
+    ASSERT_TRUE(text.has_value()) << error;
+    const std::optional<tpe::Memory> data = i32->type->parse(*text, error);
+    ASSERT_TRUE(data.has_value()) << error;
+    EXPECT_EQ(*data, bytes({0xFE, 0xFF, 0xFF, 0xFF}));
+}
+
+TEST(WriteValue, StringWriteKeepsSpacesAndConvertsRawBytes)
+{
+    const tpe::cli::CliValueType* stringType = tpe::cli::findCliValueTypeByShortName("string");
+    ASSERT_NE(stringType, nullptr);
+    const tpe::cli::ReplCommand command = tpe::cli::parseReplCommand("write 0x10 hello world");
+    ASSERT_EQ(command.kind, tpe::cli::ReplCommandKind::Write);
+
+    std::string error;
+    const std::optional<std::string> text =
+        tpe::cli::extractWriteValueText(command, *stringType, error);
+    ASSERT_TRUE(text.has_value()) << error;
+    const std::optional<tpe::Memory> data = stringType->type->parse(*text, error);
+    ASSERT_TRUE(data.has_value()) << error;
+    EXPECT_EQ(*data, bytes({'h', 'e', 'l', 'l', 'o', ' ', 'w', 'o', 'r', 'l', 'd'}));
+}
+
+TEST(WriteValue, OutOfRangeValueIsRejectedByTargetTypeParse)
+{
+    const tpe::cli::CliValueType* u8 = tpe::cli::findCliValueTypeByShortName("u8");
+    ASSERT_NE(u8, nullptr);
+    const tpe::cli::ReplCommand command = tpe::cli::parseReplCommand("write 0x10 256");
+    ASSERT_EQ(command.kind, tpe::cli::ReplCommandKind::Write);
+
+    std::string error;
+    const std::optional<std::string> text =
+        tpe::cli::extractWriteValueText(command, *u8, error);
+    ASSERT_TRUE(text.has_value()) << error;
+    error.clear();
+    EXPECT_FALSE(u8->type->parse(*text, error).has_value());
+    EXPECT_NE(error.find("range"), std::string::npos) << error;
+}
+
+// ---------------------------------------------------------------------------
+// CliValueType — 旗标 ↔ 短名 ↔ ValueType 映射
+// ---------------------------------------------------------------------------
+
+TEST(CliValueType, ExposesSevenTypesInFixedOrder)
+{
+    const std::vector<tpe::cli::CliValueType>& types = tpe::cli::cliValueTypes();
+    ASSERT_EQ(types.size(), 7u);
+    const char* expected[] = {"u8", "i16", "i32", "i64", "float", "double", "string"};
+    for (std::size_t i = 0; i < types.size(); ++i) {
+        EXPECT_EQ(types[i].flagName, expected[i]);
+        EXPECT_EQ(types[i].shortName, expected[i]);
+        EXPECT_NE(types[i].type, nullptr) << types[i].shortName;
+    }
+}
+
+TEST(CliValueType, LooksUpByFlagWithOrWithoutPrefix)
+{
+    const tpe::cli::CliValueType* plain = tpe::cli::findCliValueTypeByFlag("i16");
+    const tpe::cli::CliValueType* prefixed = tpe::cli::findCliValueTypeByFlag("--i16");
+    ASSERT_NE(plain, nullptr);
+    ASSERT_NE(prefixed, nullptr);
+    EXPECT_EQ(plain, prefixed);
+    EXPECT_EQ(plain->kind, tpe::cli::CliValueKind::I16);
+    EXPECT_EQ(plain->type->name, std::string("16-bit integer"));
+}
+
+TEST(CliValueType, LooksUpByShortName)
+{
+    const tpe::cli::CliValueType* entry = tpe::cli::findCliValueTypeByShortName("string");
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->kind, tpe::cli::CliValueKind::String);
+    EXPECT_EQ(entry->type->name, std::string("string"));
+}
+
+TEST(CliValueType, ReturnsNullForUnknownNames)
+{
+    EXPECT_EQ(tpe::cli::findCliValueTypeByFlag("unknown"), nullptr);
+    EXPECT_EQ(tpe::cli::findCliValueTypeByFlag("--nope"), nullptr);
+    EXPECT_EQ(tpe::cli::findCliValueTypeByShortName("nope"), nullptr);
+    EXPECT_EQ(tpe::cli::findCliValueTypeByShortName("--i32"), nullptr); // 短名查找不剥前缀
+}
+
+TEST(CliValueType, DefaultsToI32)
+{
+    const tpe::cli::CliValueType& entry = tpe::cli::defaultCliValueType();
+    EXPECT_EQ(entry.kind, tpe::cli::CliValueKind::I32);
+    EXPECT_EQ(entry.flagName, "i32");
+    EXPECT_EQ(entry.type, tpe::cli::findCliValueTypeByFlag("i32")->type);
+}
+
+TEST(CliValueType, EveryMappedValueTypeParsesText)
+{
+    std::string error;
+    for (const tpe::cli::CliValueType& entry : tpe::cli::cliValueTypes()) {
+        ASSERT_NE(entry.type, nullptr) << entry.shortName;
+        const auto parsed = entry.type->parse("42", error);
+        EXPECT_TRUE(parsed.has_value()) << entry.shortName << ": " << error;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ValueFormatter — 地址与快照值格式化
+// ---------------------------------------------------------------------------
+
+namespace {
+
+ScanRecord recordWith(tpe::Address address, std::initializer_list<unsigned> snapshot)
+{
+    tpe::Memory memory;
+    memory.reserve(snapshot.size());
+    for (const unsigned value : snapshot) {
+        memory.push_back(static_cast<tpe::Byte>(value));
+    }
+    return ScanRecord{address, memory};
+}
+
+const tpe::cli::CliValueType& cliType(std::string_view name)
+{
+    const tpe::cli::CliValueType* entry = tpe::cli::findCliValueTypeByFlag(name);
+    assert(entry != nullptr);
+    return *entry;
+}
+
+} // namespace
+
+TEST(ValueFormatter, FormatsAddressAs16DigitUppercaseHex)
+{
+    EXPECT_EQ(tpe::cli::formatAddress(0x1C0A10), "0x00000000001C0A10");
+    EXPECT_EQ(tpe::cli::formatAddress(0), "0x0000000000000000");
+    EXPECT_EQ(tpe::cli::formatAddress(~static_cast<tpe::Address>(0)), "0xFFFFFFFFFFFFFFFF");
+}
+
+TEST(ValueFormatter, FormatsSignedIntegersAsDecimal)
+{
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0x2A, 0x00, 0x00, 0x00}), cliType("i32")), "42");
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0xFE, 0xFF, 0xFF, 0xFF}), cliType("i32")), "-2");
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0xFF, 0x7F}), cliType("i16")), "32767");
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0xFF, 0xFF}), cliType("i16")), "-1");
+    EXPECT_EQ(tpe::cli::formatValue(
+                  recordWith(0x1000, {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}), cliType("i64")),
+              "-1");
+    EXPECT_EQ(tpe::cli::formatValue(
+                  recordWith(0x1000, {0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00}), cliType("i64")),
+              "1099511627776");
+}
+
+TEST(ValueFormatter, FormatsUnsignedByteAsUnsignedDecimal)
+{
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0xC8}), cliType("u8")), "200");
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0xFF}), cliType("u8")), "255");
+}
+
+// Phase 05 US3(缺陷 ②)/ FR-006 / C-S5:u8.parse 产出的快照必须可按 1 字节
+// 解码为十进制(修复前:parse 产 4 字节 → 宽度不符 → 回退十六进制字节串)
+TEST(ValueFormatter, ShowsNumberForSingleByteU8Snapshot)
+{
+    const tpe::cli::CliValueType& u8 = cliType("u8");
+    std::string error;
+    const auto parsed = u8.type->parse("200", error);
+    ASSERT_TRUE(parsed.has_value()) << error;
+
+    const ScanRecord record(0x1008, *parsed);
+    EXPECT_EQ(tpe::cli::formatValue(record, u8), "200");
+}
+
+TEST(ValueFormatter, FormatsFloatingPointWithDefaultStreamFormatting)
+{
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0x00, 0x00, 0xC0, 0x3F}), cliType("float")), "1.5");
+    EXPECT_EQ(tpe::cli::formatValue(
+                  recordWith(0x1000, {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x40}), cliType("double")),
+              "2.5");
+}
+
+TEST(ValueFormatter, FormatsStringAsRawBytes)
+{
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {'a', 'b', 'c'}), cliType("string")), "abc");
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {}), cliType("string")), "");
+}
+
+TEST(ValueFormatter, FallsBackToHexBytesOnSnapshotSizeMismatch)
+{
+    // i32 需要 4 字节,快照只有 2 字节 → 十六进制字节串(内存序,空格分隔)
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0x10, 0x0A}), cliType("i32")), "10 0A");
+    // u8 需要 1 字节,快照 4 字节 → 同样回退
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {0xC8, 0x00, 0x00, 0x00}), cliType("u8")), "C8 00 00 00");
+    // 空快照与非零宽度不匹配 → 空字节串
+    EXPECT_EQ(tpe::cli::formatValue(recordWith(0x1000, {}), cliType("i64")), "");
+}
+
+// ---------------------------------------------------------------------------
+// list 实时重读格式化(Phase 07 US3 · T018;FR-013–016 / C-D6 / E4):
+// `formatValueBytes`(实时字节)与既有 `formatValue`(快照)同规则等例;
+// 实时值版 `formatListEntry` 的 `??` 语义与 string 原样字节行为。
+// ---------------------------------------------------------------------------
+
+TEST(ValueFormatter, FormatValueBytesDecodesLikeSnapshotPath)
+{
+    // u8 / i16 / i32 / i64:镜像 FormatsSignedIntegersAsDecimal / FormatsUnsignedByteAsUnsignedDecimal
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0xC8}), cliType("u8")), "200");
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0xFF}), cliType("u8")), "255");
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0xFF, 0x7F}), cliType("i16")), "32767");
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0xFF, 0xFF}), cliType("i16")), "-1");
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0x2A, 0x00, 0x00, 0x00}), cliType("i32")), "42");
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0xFE, 0xFF, 0xFF, 0xFF}), cliType("i32")), "-2");
+    EXPECT_EQ(tpe::cli::formatValueBytes(
+                  bytes({0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}), cliType("i64")),
+              "-1");
+    // float / double:默认流式格式化(镜像 FormatsFloatingPointWithDefaultStreamFormatting)
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0x00, 0x00, 0xC0, 0x3F}), cliType("float")),
+              "1.5");
+    EXPECT_EQ(tpe::cli::formatValueBytes(
+                  bytes({0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x40}), cliType("double")),
+              "2.5");
+    // string:原样字节(不截 NUL);空字节序列 → 空串(而非 `??`,`??` 由调用方以 nullopt 表达)
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({'a', 'b', 'c'}), cliType("string")), "abc");
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({}), cliType("string")), "");
+}
+
+TEST(ValueFormatter, FormatValueBytesFallsBackToHexOnWidthMismatch)
+{
+    // 镜像 FallsBackToHexBytesOnSnapshotSizeMismatch:非零宽度不符回退十六进制字节串,空字节 → 空串
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0x10, 0x0A}), cliType("i32")), "10 0A");
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0xC8, 0x00, 0x00, 0x00}), cliType("u8")),
+              "C8 00 00 00");
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({}), cliType("i64")), "");
+}
+
+TEST(ValueFormatter, FormatValueBytesOutputMatchesSnapshotPath)
+{
+    // 同一字节序列经两条路径输出逐字一致(快照路径委托实字节路径的行为锁定)
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0xFE, 0xFF, 0xFF, 0xFF}), cliType("i32")),
+              tpe::cli::formatValue(recordWith(0x1000, {0xFE, 0xFF, 0xFF, 0xFF}), cliType("i32")));
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({'h', 'e', 'l', 'l', 'o'}), cliType("string")),
+              tpe::cli::formatValue(recordWith(0x1000, {'h', 'e', 'l', 'l', 'o'}), cliType("string")));
+    EXPECT_EQ(tpe::cli::formatValueBytes(bytes({0x10, 0x0A}), cliType("i32")),
+              tpe::cli::formatValue(recordWith(0x1000, {0x10, 0x0A}), cliType("i32")));
+}
+
+// ---------------------------------------------------------------------------
+// list 渲染格式(T024;契约 C-R3 / 规范 §11.6)
+// ---------------------------------------------------------------------------
+
+TEST(ListRendering, FormatsEntryAsIndentedAddressValuePair)
+{
+    EXPECT_EQ(tpe::cli::formatListEntry(recordWith(0x1C0A10, {0x64, 0x00, 0x00, 0x00}), cliType("i32")),
+              "  0x00000000001C0A10 | 100");
+}
+
+TEST(ListRendering, FormatsEntryValueByCurrentType)
+{
+    // 首扫记录无快照(Phase 05 缺陷 #1 的可见表现):值列回退为空字节串
+    EXPECT_EQ(tpe::cli::formatListEntry(recordWith(0x1000, {}), cliType("i32")),
+              "  0x0000000000001000 | ");
+    // string 值原样
+    EXPECT_EQ(tpe::cli::formatListEntry(recordWith(0x1000, {'h', 'i'}), cliType("string")),
+              "  0x0000000000001000 | hi");
+}
+
+TEST(ListRendering, FormatsMatchesTotalLine)
+{
+    EXPECT_EQ(tpe::cli::formatMatchesTotal(0), "Total: 0 matches");
+    EXPECT_EQ(tpe::cli::formatMatchesTotal(1), "Total: 1 matches");
+    EXPECT_EQ(tpe::cli::formatMatchesTotal(15234), "Total: 15234 matches");
+}
+
+TEST(ListRendering, FormatsTruncationNotice)
+{
+    EXPECT_EQ(tpe::cli::formatTruncationNotice(5234), "... and 5234 more");
+}
+
+TEST(ListRendering, LiveEntryShowsLiteralPlaceholderWhenValueUnavailable)
+{
+    // nullopt(读取失败 / 短读 / 零宽)→ 值列逐字 `??`(不回退快照;FR-015/C-D6)
+    EXPECT_EQ(tpe::cli::formatListEntry(0x1C0A10, std::nullopt, cliType("i32")),
+              "  0x00000000001C0A10 | ??");
+
+    // 有实时字节 → 正常格式化(与快照条目同形)
+    const std::optional<tpe::Memory> live = bytes({0x64, 0x00, 0x00, 0x00});
+    EXPECT_EQ(tpe::cli::formatListEntry(0x1C0A10, live, cliType("i32")),
+              "  0x00000000001C0A10 | 100");
+}
+
+TEST(ListRendering, LiveEntryFormatsStringBytesRaw)
+{
+    // string 实时读取宽度 = 记录快照宽度(≤8):所读字节原样展示(不截 NUL、不加空白)
+    EXPECT_EQ(tpe::cli::formatListEntry(0x1000, bytes({'h', 'i'}), cliType("string")),
+              "  0x0000000000001000 | hi");
+    // 空字节序列(string 实时读得 0 字节)→ 空显示而非 `??`(`??` 仅由调用方以 nullopt 表达)
+    EXPECT_EQ(tpe::cli::formatListEntry(0x1000, bytes({}), cliType("string")),
+              "  0x0000000000001000 | ");
+}
+
+// ---------------------------------------------------------------------------
+// 首扫快照端到端(Phase 05 US1 T012 / FR-005 / SC-003):
+// `firstScan` 产出的记录必须可直接经 `formatListEntry` 显示数值;
+// 修复前首扫不写快照 → 值列空白(C-S1)。
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// 单页内存进程替身(test_scanner.cpp 的 FakeProcess 最小同构实现)。
+class FirstScanProcess : public PlatformProcess
+{
+public:
+    FirstScanProcess(tpe::Address base, tpe::Size size)
+        : PlatformProcess(static_cast<Pid_t>(5252)),
+          m_base(base),
+          m_size(size),
+          m_bytes(static_cast<std::size_t>(size), 0) {}
+
+    tpe::Memory& bytes() { return m_bytes; }
+
+    std::vector<MemoryPage> getCheatablePages() const override
+    {
+        return {MemoryPage(m_base, m_size)};
+    }
+
+    Result<tpe::Memory, PlatformError> read(MemoryPage page) const override
+    {
+        if (!contains(page.start, page.size)) {
+            return Result<tpe::Memory, PlatformError>::error(makeError());
+        }
+        const std::size_t offset = static_cast<std::size_t>(page.start - m_base);
+        return Result<tpe::Memory, PlatformError>::success(
+            tpe::Memory(m_bytes.begin() + offset, m_bytes.begin() + offset + page.size));
+    }
+
+    Result<void, PlatformError> write(tpe::Address address, const tpe::Memory& value) override
+    {
+        if (!contains(address, value.size())) {
+            return Result<void, PlatformError>::error(makeError());
+        }
+        std::copy(value.begin(), value.end(),
+                  m_bytes.begin() + static_cast<std::size_t>(address - m_base));
+        return Result<void, PlatformError>::success();
+    }
+
+private:
+    bool contains(tpe::Address address, tpe::Size length) const
+    {
+        if (address < m_base) return false;
+        const tpe::Size offset = address - m_base;
+        return offset <= m_size && length <= m_size - offset;
+    }
+
+    PlatformError makeError() const
+    {
+        return PlatformError{"FirstScanProcess", static_cast<unsigned long>(getPid()), 0,
+                              "out of range"};
+    }
+
+    tpe::Address m_base;
+    tpe::Size m_size;
+    tpe::Memory m_bytes;
+};
+
+} // namespace
+
+TEST(ValueFormatter, ShowsNumberForFirstScanSnapshot)
+{
+    FirstScanProcess process(0x1000, 0x40);
+    MemoryScanner scanner;
+    process.bytes()[0x08] = 42;
+
+    const tpe::cli::CliValueType& i32 = cliType("i32");
+    std::string error;
+    const auto pattern = i32.type->parse("42", error);
+    ASSERT_TRUE(pattern.has_value()) << error;
+
+    const std::vector<ScanRecord> records = scanner.firstScan(process, *i32.type, *pattern);
+    ASSERT_EQ(records.size(), 1u);
+    EXPECT_EQ(tpe::cli::formatListEntry(records[0], i32), "  0x0000000000001008 | 42");
+}

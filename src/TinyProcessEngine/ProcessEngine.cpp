@@ -1,6 +1,16 @@
-#include "ProcessEngine.h"
+#include "ProcessEngine.hpp"
+
+#include <cassert>
+
+namespace tpe {
 
 ProcessEngine::ProcessEngine()
+    : m_os(tpe::platform::createPlatformOS())
+{
+}
+
+ProcessEngine::ProcessEngine(std::unique_ptr<tpe::platform::PlatformOS> os)
+    : m_os(std::move(os))
 {
 }
 
@@ -8,15 +18,21 @@ ProcessEngine::~ProcessEngine()
 {
 }
 
-void ProcessEngine::getProcessList() const
+Result<void, PlatformError> ProcessEngine::getProcessList() const
 {
+    // 缺陷⑧(FR-023/C-P5):平台枚举失败优先上报;不得以空列表伪装成功。
+    const std::optional<PlatformError>& enumerationError = m_os->enumerationError();
+    if (enumerationError.has_value()) {
+        return Result<void, PlatformError>::error(*enumerationError);
+    }
     for(auto process : m_os->ProcessList)
     {
         std::cout << "PID: " << process->getPid() << " ProcessName: " << process->getProcessName() << std::endl;
     }
+    return Result<void, PlatformError>::success();
 }
 
-std::shared_ptr<PlatformProcess> ProcessEngine::openProcess(Pid_t pid)
+std::shared_ptr<tpe::platform::PlatformProcess> ProcessEngine::openProcess(tpe::platform::Pid_t pid)
 {
     m_currentProcess = m_os->open(pid);
     if (!m_currentProcess) {
@@ -25,19 +41,19 @@ std::shared_ptr<PlatformProcess> ProcessEngine::openProcess(Pid_t pid)
     return m_currentProcess;
 }
 
-std::string ProcessEngine::searchProcess(Pid_t pid) const
+std::optional<std::string> ProcessEngine::searchProcess(tpe::platform::Pid_t pid) const
 {
     for(auto process : m_os->ProcessList)
     {
         if (process->getPid() == pid)
         {
-            return "Pid: " + std::to_string(pid) + " ProcessName:" + process->getProcessName();
+            return process->getProcessName();
         }
     }
-    return "Not Found";
+    return std::nullopt;
 }
 
-uint64_t ProcessEngine::searchMemory(const ValueType& type)
+uint64_t ProcessEngine::searchMemory(const ValueType& type, const tpe::Memory& pattern)
 {
     if (!m_currentProcess) {
         std::cerr << "No process opened. Use 'open-process <PID>' first." << std::endl;
@@ -48,12 +64,56 @@ uint64_t ProcessEngine::searchMemory(const ValueType& type)
     m_session = std::make_unique<ScanSession>(m_currentProcess);
     m_session->beginScan(type);
 
-    // Execute first scan
+    // Execute first scan (pattern is provided by the caller; no interactive prompt)
     ScanOptions options;
-    auto results = m_scanner.firstScan(*m_currentProcess, type, options);
+    auto results = m_scanner.firstScan(*m_currentProcess, type, pattern, options);
 
     // Commit results to session
     m_session->commitFirstScan(std::move(results));
+
+    return m_session->resultCount();
+}
+
+uint64_t ProcessEngine::searchUnknown(const ValueType& type)
+{
+    if (!m_currentProcess) {
+        std::cerr << "No process opened. Use 'open-process <PID>' first." << std::endl;
+        return 0;
+    }
+
+    // Initialize scan session
+    m_session = std::make_unique<ScanSession>(m_currentProcess);
+    m_session->beginScan(type);
+
+    // Execute unknown-initial-value first scan（无目标值;按类型宽度对齐枚举候选）
+    ScanOptions options;
+    auto results = m_scanner.firstScanUnknown(*m_currentProcess, type, options);
+
+    // Commit results with the correct first-round condition (C-D11)
+    m_session->commitFirstScan(std::move(results), ScanCondition::Unknown);
+
+    return m_session->resultCount();
+}
+
+uint64_t ProcessEngine::searchComparison(const ValueType& type, ScanCondition condition,
+                                         const tpe::Memory& target)
+{
+    if (!m_currentProcess) {
+        std::cerr << "No process opened. Use 'open-process <PID>' first." << std::endl;
+        return 0;
+    }
+
+    // Initialize scan session
+    m_session = std::make_unique<ScanSession>(m_currentProcess);
+    m_session->beginScan(type);
+
+    // Execute first-round comparison scan（严格 GT/LT;采集步进=类型宽度对齐）
+    ScanOptions options;
+    auto results =
+        m_scanner.firstScanComparison(*m_currentProcess, type, condition, target, options);
+
+    // Commit results with the correct first-round condition (C-D2/C-D11)
+    m_session->commitFirstScan(std::move(results), condition);
 
     return m_session->resultCount();
 }
@@ -81,8 +141,11 @@ uint64_t ProcessEngine::nextScan(ScanCondition condition, const ValueType& type,
     auto filteredResults = m_scanner.nextScan(*m_currentProcess, previousResults,
                                                condition, type, newValue);
 
-    // Commit to session
-    m_session->commitNextScan(condition, std::move(filteredResults));
+    // Commit to session(前置已检查 Ready,失败为不可达路径;C-E3)
+    const Result<void, SessionError> committed =
+        m_session->commitNextScan(condition, std::move(filteredResults));
+    assert(committed.has_value());
+    (void)committed;
 
     return m_session->resultCount();
 }
@@ -118,8 +181,10 @@ void ProcessEngine::modifyMemory() {
             } else {
                 std::cerr << "Write failed: " << result.error().message << std::endl;
             }
-        } catch (const std::exception &e) {
+        } catch (const std::exception &) {
             std::cerr << "Invalid input. Please try again." << std::endl;
         }
     }
 }
+
+} // namespace tpe
