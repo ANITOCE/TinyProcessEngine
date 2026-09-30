@@ -143,7 +143,7 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 | Phase 04 | CLI 交互重构 | 按《CLI 交互规范》落地终端旗标命令、REPL、startup 分层与 Test.exe,废弃旧交互流程 | 无(前置 Phase 01–03 已完成) | `specs/004-cli-interaction-refactor` | `merged`(2026-09-21) |
 | Phase 05 | 遗留缺陷修复 | 清零 7 项审计缺陷 + 1 项 Phase 04 移交缺陷(`--all-processes` 枚举失败信号),每项先复现后修复并带回归测试 | Phase 04 | `specs/005-defect-remediation` | `merged`(2026-09-24) |
 | Phase 06 | 规范符合性收敛 | 收敛审计规范偏差:命名空间、头文件风格、库层异常、构建告警 | Phase 05 | `specs/006-spec-compliance` | `merged`(2026-09-26) |
-| Phase 07 | 功能补齐 → MVP | 补齐 `--unknown`/`--greater`/`--less` 首扫、`list` 实时重读,占位清零,完成 MVP 验收 | Phase 06 | `specs/007-mvp-completion` | `planned` |
+| Phase 07 | 功能补齐 → MVP | 补齐 `--unknown`/`--greater`/`--less` 首扫、`list` 实时重读,占位清零,完成 MVP 验收 | Phase 06 | `specs/007-mvp-completion` | `merged`(2026-09-30) |
 
 状态机: `planned → in-progress → in-review → merged → done`(由 Phase 收尾步骤更新)。
 
@@ -187,7 +187,7 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 - **依赖**: Phase 06。
 - **交付物**: `specs/007-*` 制品;MVP 验收记录(扫描 → 过滤 → 定位 → 修改全流程运行输出)。
 - **验收**: MVP 验收清单通过并附本次运行输出;CLI 全流程无占位(`not implemented` 类提示不再出现);全量测试通过;项目级 DoD(§6.2)达成;由人确认后封存本指南。
-- **状态**: `planned`
+- **状态**: `merged`(2026-09-30 本地合并至 `feat/first-mvp`,合并提交 `eced045`,**无 PR**;验证证据:需求方人工验证**完全通过** + 全量测试 **Windows 247 通过 / 0 失败、Linux(容器)254 通过 / 0 失败、双平台 ctest 100% passed**(合并前/后各复跑一次);三功能面(`--unknown` 首扫 + `--greater`/`--less` 首扫 + `list` 实时重读)与两处契约变更(C-D4/C-D5)落地、占位清零、帮助文本与规范 §11 更新;收敛判定 `/speckit.converge` = converged(0 新增任务);证据见私有区 `specs/007-mvp-completion/evidence-matrix.md`、`evidence/mvp-acceptance.md`,Phase 文档见 `docs/phases/first-mvp-phase-07.md`)
 
 ### 4.3 并行与顺序
 
