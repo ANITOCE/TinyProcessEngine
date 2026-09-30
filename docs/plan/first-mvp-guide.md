@@ -1,3 +1,5 @@
+> 🔒 **本指南已封存(只读)**:全部 Phase 已完成并验收通过。禁止修改本文件任何内容;后续迭代请新建开发指南。
+
 # TinyProcessEngine First MVP 开发指南
 
 > **存放位置**: `docs/plan/first-mvp-guide.md`(**公开区**,纳入 git)
@@ -11,11 +13,11 @@
 | 字段 | 内容 |
 |---|---|
 | 项目/功能名 | TinyProcessEngine — First MVP |
-| 指南版本 | 1.0.3 |
-| 状态 | `accepted`(2026-09-18 评审通过;全部 Phase 完成验收后置 `done(已封存,只读)`) |
+| 指南版本 | 1.0.4 |
+| 状态 | `done(已封存,只读)`(2026-09-30 全部 Phase 完成并验收通过,项目级 DoD §6.2 逐项通过,按 §9 封存;原 2026-09-18 评审通过) |
 | 负责人(owner) | anitoce |
 | 创建日期 | 2026-09-18 |
-| 最近更新 | 2026-09-26 |
+| 最近更新 | 2026-09-30 |
 | 关联仓库 | 本地 Git 仓库(未配置远端;如建立公开远端,按第 3 节公开边界执行) |
 | 工具链 | VS Code Copilot Chat(不使用 Copilot CLI);spec-kit `0.16.1`(copilot 集成,PowerShell 脚本) |
 | 场景 | 存量迭代 |
@@ -140,12 +142,14 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 
 | Phase | 名称 | 目标(一句话) | 依赖 | 产出 | 状态 |
 |---|---|---|---|---|---|
-| Phase 04 | CLI 交互重构 | 按《CLI 交互规范》落地终端旗标命令、REPL、startup 分层与 Test.exe,废弃旧交互流程 | 无(前置 Phase 01–03 已完成) | `specs/004-cli-interaction-refactor` | `merged`(2026-09-21) |
-| Phase 05 | 遗留缺陷修复 | 清零 7 项审计缺陷 + 1 项 Phase 04 移交缺陷(`--all-processes` 枚举失败信号),每项先复现后修复并带回归测试 | Phase 04 | `specs/005-defect-remediation` | `merged`(2026-09-24) |
-| Phase 06 | 规范符合性收敛 | 收敛审计规范偏差:命名空间、头文件风格、库层异常、构建告警 | Phase 05 | `specs/006-spec-compliance` | `merged`(2026-09-26) |
-| Phase 07 | 功能补齐 → MVP | 补齐 `--unknown`/`--greater`/`--less` 首扫、`list` 实时重读,占位清零,完成 MVP 验收 | Phase 06 | `specs/007-mvp-completion` | `merged`(2026-09-30) |
+| Phase 04 | CLI 交互重构 | 按《CLI 交互规范》落地终端旗标命令、REPL、startup 分层与 Test.exe,废弃旧交互流程 | 无(前置 Phase 01–03 已完成) | `specs/004-cli-interaction-refactor` | `done`(2026-09-30) |
+| Phase 05 | 遗留缺陷修复 | 清零 7 项审计缺陷 + 1 项 Phase 04 移交缺陷(`--all-processes` 枚举失败信号),每项先复现后修复并带回归测试 | Phase 04 | `specs/005-defect-remediation` | `done`(2026-09-30) |
+| Phase 06 | 规范符合性收敛 | 收敛审计规范偏差:命名空间、头文件风格、库层异常、构建告警 | Phase 05 | `specs/006-spec-compliance` | `done`(2026-09-30) |
+| Phase 07 | 功能补齐 → MVP | 补齐 `--unknown`/`--greater`/`--less` 首扫、`list` 实时重读,占位清零,完成 MVP 验收 | Phase 06 | `specs/007-mvp-completion` | `done`(2026-09-30) |
 
 状态机: `planned → in-progress → in-review → merged → done`(由 Phase 收尾步骤更新)。
+
+> **项目级收口(2026-09-30)**:全部 Phase 完成并验收通过后,各状态由 `merged` 转 `done`;项目级 DoD(§6.2)逐项通过;本指南按 §9 封存为只读。
 
 **合并策略**(2026-09-21 决定,适用于 Phase 05–07):各 Phase 分支先 `--no-ff` 本地合并至集成分支 `feat/first-mvp`;全部 Phase 完成后由 `feat/first-mvp` 一次性合入 `main`,随后各 Phase 状态由 `merged` 转 `done`、执行项目级 DoD 校验并封存本指南。
 
@@ -160,7 +164,7 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 - **依赖**: 无(前置 Phase 01–03 已完成)。
 - **交付物**: `specs/004-*` 制品;更新后的本路线图状态;CLI 测试与手工验证记录。
 - **验收**: §11.2 各命令行为与退出码逐项符合;REPL 命令与提示符状态(§11.3–§11.8)按规范工作;`startup` / `startup_cli` / `startup_gui`(占位)分层落地;Test.exe 可用并与扫描流程联调通过;旧交互流程无残留;全量测试通过(附输出)。
-- **状态**: `merged`(2026-09-21 本地合并至 `feat/first-mvp`,**无 PR**;验证证据:需求方人工验证完全通过 + 全量测试 **187 通过 / 0 失败**;Phase 文档与制品位于私有区 `docs/phases/first-mvp-phase-04.md`、`specs/004-cli-interaction-refactor/`;遗留的 Phase 05 依赖项见 Phase 文档 P10 移交记录)
+- **状态**: `done`(2026-09-30 项目级收口:全流程完成并验收通过;此前 2026-09-21 本地合并至 `feat/first-mvp`,**无 PR**;验证证据:需求方人工验证完全通过 + 全量测试 **187 通过 / 0 失败**;Phase 文档与制品位于私有区 `docs/phases/first-mvp-phase-04.md`、`specs/004-cli-interaction-refactor/`;遗留的 Phase 05 依赖项见 Phase 文档 P10 移交记录)
 
 #### Phase 05:遗留缺陷修复(Phase 01–03 审计)
 
@@ -169,7 +173,7 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 - **依赖**: Phase 04。
 - **交付物**: `specs/005-*` 制品;缺陷—测试—证据对照表。
 - **验收**: 8 项逐项关闭并附复现/回归测试;顶层 `ctest` 可发现并运行全部用例(`N 通过 / 0 失败`);Windows 上 `modifyMemory` 写入流程可验证(附运行证据);Linux 相关项附复现证据,或按 §2.5 记录获批的证据缺口例外。
-- **状态**: `merged`(2026-09-24 本地合并至 `feat/first-mvp`,合并提交 `4db7b5f`,**无 PR**;验证证据:需求方人工验证**完全通过** + 全量测试 **Windows 208 通过 / 0 失败、Linux(容器)215 通过 / 0 失败、双平台 ctest 100% passed**;8 项缺陷逐项红→绿,缺陷—测试—证据对照表见私有区 `specs/005-defect-remediation/evidence-matrix.md`,Phase 文档见 `docs/phases/first-mvp-phase-05.md`;过程中附带修复 3 项既有缺陷(CMake `LINUX` 变量平台选择恒假致 Linux 平台源未入构、Linux 进程名测试 exec 竞态、`ValueType.h`(现 `ValueType.hpp`)两处 -Werror 告警),详见 Phase 文档 P9 记录)
+- **状态**: `done`(2026-09-30 项目级收口:全流程完成并验收通过;此前 2026-09-24 本地合并至 `feat/first-mvp`,合并提交 `4db7b5f`,**无 PR**;验证证据:需求方人工验证**完全通过** + 全量测试 **Windows 208 通过 / 0 失败、Linux(容器)215 通过 / 0 失败、双平台 ctest 100% passed**;8 项缺陷逐项红→绿,缺陷—测试—证据对照表见私有区 `specs/005-defect-remediation/evidence-matrix.md`,Phase 文档见 `docs/phases/first-mvp-phase-05.md`;过程中附带修复 3 项既有缺陷(CMake `LINUX` 变量平台选择恒假致 Linux 平台源未入构、Linux 进程名测试 exec 竞态、`ValueType.h`(现 `ValueType.hpp`)两处 -Werror 告警),详见 Phase 文档 P9 记录)
 
 #### Phase 06:规范符合性收敛
 
@@ -178,7 +182,7 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 - **依赖**: Phase 05。
 - **交付物**: `specs/006-*` 制品;构建零告警证据。
 - **验收**: 全量构建零告警(覆盖 UTF-8 代码页、弃用 API 与 Phase 05 移交告警 C4819 / C4996 / C4267;或仅剩经批准的例外);全量测试通过;公共 API 均在 `tpe::` 命名空间;头文件全部 `.hpp` + `#pragma once`。
-- **状态**: `merged`(2026-09-26 本地合并至 `feat/first-mvp`,合并提交 `3eb12a2`,**无 PR**;验证证据:需求方人工验证**完全通过** + 全量测试 **Windows 211 通过 / 0 失败、Linux(容器)218 通过 / 0 失败、双平台 ctest 100% passed**;五类编译告警 308→0、配置零弃用告警、外部行为零差异(对照 Phase 06 基线);收敛明细与 SC/FR 证据映射见私有区 `specs/006-spec-compliance/evidence-matrix.md`,Phase 文档见 `docs/phases/first-mvp-phase-06.md`)
+- **状态**: `done`(2026-09-30 项目级收口:全流程完成并验收通过;此前 2026-09-26 本地合并至 `feat/first-mvp`,合并提交 `3eb12a2`,**无 PR**;验证证据:需求方人工验证**完全通过** + 全量测试 **Windows 211 通过 / 0 失败、Linux(容器)218 通过 / 0 失败、双平台 ctest 100% passed**;五类编译告警 308→0、配置零弃用告警、外部行为零差异(对照 Phase 06 基线);收敛明细与 SC/FR 证据映射见私有区 `specs/006-spec-compliance/evidence-matrix.md`,Phase 文档见 `docs/phases/first-mvp-phase-06.md`)
 
 #### Phase 07:功能补齐 → MVP
 
@@ -187,7 +191,7 @@ TinyProcessEngine 是跨平台(Windows/Linux)的进程内存扫描与编辑工�
 - **依赖**: Phase 06。
 - **交付物**: `specs/007-*` 制品;MVP 验收记录(扫描 → 过滤 → 定位 → 修改全流程运行输出)。
 - **验收**: MVP 验收清单通过并附本次运行输出;CLI 全流程无占位(`not implemented` 类提示不再出现);全量测试通过;项目级 DoD(§6.2)达成;由人确认后封存本指南。
-- **状态**: `merged`(2026-09-30 本地合并至 `feat/first-mvp`,合并提交 `eced045`,**无 PR**;验证证据:需求方人工验证**完全通过** + 全量测试 **Windows 247 通过 / 0 失败、Linux(容器)254 通过 / 0 失败、双平台 ctest 100% passed**(合并前/后各复跑一次);三功能面(`--unknown` 首扫 + `--greater`/`--less` 首扫 + `list` 实时重读)与两处契约变更(C-D4/C-D5)落地、占位清零、帮助文本与规范 §11 更新;收敛判定 `/speckit.converge` = converged(0 新增任务);证据见私有区 `specs/007-mvp-completion/evidence-matrix.md`、`evidence/mvp-acceptance.md`,Phase 文档见 `docs/phases/first-mvp-phase-07.md`)
+- **状态**: `done`(2026-09-30 项目级收口:全流程完成并验收通过;同日本地合并至 `feat/first-mvp`,合并提交 `eced045`,**无 PR**;验证证据:需求方人工验证**完全通过** + 全量测试 **Windows 247 通过 / 0 失败、Linux(容器)254 通过 / 0 失败、双平台 ctest 100% passed**(合并前/后各复跑一次);三功能面(`--unknown` 首扫 + `--greater`/`--less` 首扫 + `list` 实时重读)与两处契约变更(C-D4/C-D5)落地、占位清零、帮助文本与规范 §11 更新;收敛判定 `/speckit.converge` = converged(0 新增任务);证据见私有区 `specs/007-mvp-completion/evidence-matrix.md`、`evidence/mvp-acceptance.md`,Phase 文档见 `docs/phases/first-mvp-phase-07.md`)
 
 ### 4.3 并行与顺序
 
@@ -219,13 +223,13 @@ Phase 04 → 05 → 06 → 07 为**硬依赖链,全部串行**:修复基于重�
 
 所有 Phase 达成各自 Phase 文档"验收标准"后,还必须满足:
 
-- [ ] 路线图全部 Phase 状态为 `done`,无悬空依赖
-- [ ] 每个 Phase 的验收标准与 §4.2 对应条目一致,且有证据(测试输出、运行记录)
-- [ ] Constitution 条款(§2.1–§2.6)全部符合,无未声明的例外(证据缺口例外已记录并经批准)
-- [ ] 风险与开放问题(第 7 节)全部闭环或转经评审接受的遗留清单
-- [ ] 已合并分支已删除
-- [ ] 公开仓库提交不含私有区文件(见第 3 节公开边界)
-- [ ] **本指南已按第 9 节封存为只读**
+- [x] 路线图全部 Phase 状态为 `done`,无悬空依赖(2026-09-30:Phase 04–07 全部收口)
+- [x] 每个 Phase 的验收标准与 §4.2 对应条目一致,且有证据(测试输出、运行记录)(各 Phase 文档 §5 逐项确认 + 双平台 `ctest`/`N 通过 / 0 失败` 输出 + 私有区证据矩阵)
+- [x] Constitution 条款(§2.1–§2.6)全部符合,无未声明的例外(证据缺口例外已记录并经批准)(各 Phase plan Constitution Check 6 PASS 且 Phase -1 门禁通过;无例外记录)
+- [x] 风险与开放问题(第 7 节)全部闭环或转经评审接受的遗留清单(#2/#3/#4/#7 已关闭;#1(已缓解)、#5、#6 为经评审接受的遗留项)
+- [x] 已合并分支已删除(`004/005/006/007` 均已删除;保留集成分支 `feat/first-mvp`)
+- [x] 公开仓库提交不含私有区文件(见第 3 节公开边界)(各 Phase 提交均为公开区;`git status --porcelain` 干净)
+- [x] **本指南已按第 9 节封存为只读**(2026-09-30 封存提交 `docs: seal development guide first-mvp`)
 
 ### 6.3 回归策略(存量迭代必填)
 
@@ -261,6 +265,7 @@ Phase 04 → 05 → 06 → 07 为**硬依赖链,全部串行**:修复基于重�
 | 1.0.1 | 2026-09-21 | 一致性修订(PATCH):spec-kit 版本勘误 `0.11.9` → `0.16.1`(文档信息/术语表/§3);单检出表述澄清(既有 worktree 内操作、不新建 worktree;§2.2/§3);§4.1 新增"合并策略"段;Phase 05 条目补充 Phase 04 移交缺陷 ⑧(§4.1/§4.2);§7 风险 #2 关闭、#4 措辞同步;文档信息版本/最近更新同步 | GitHub Copilot | anitoce |
 | 1.0.2 | 2026-09-24 | 一致性修订(PATCH):§1.1 完成状态与 §2.5 容器验证口径同步(constitution v1.0.2);§4.2 Phase 06 条目纳入 Phase 05 移交告警(C4819/C4996/C4267);§6.3 测试口径切换为顶层 `ctest`(Windows + Docker 双平台);§7 风险 #1 缓解更新、#2 注记、#4 关闭、新增 #7;文档信息版本/最近更新同步 | GitHub Copilot | anitoce |
 | 1.0.3 | 2026-09-26 | 一致性修订(PATCH):§1.1 完成状态同步(Phase 06 规范收敛);§3 构建系统更新为 CMake ≥ 3.14 + `FetchContent_MakeAvailable`;§7 风险 #3、#7 关闭(五类告警 308 → 0、配置零弃用告警);§4.2 Phase 05 历史记录补注现名(`ValueType.hpp`);文档信息版本/最近更新同步 | GitHub Copilot | anitoce |
+| 1.0.4 | 2026-09-30 | 项目级收口与封存:路线图 Phase 04–07 状态 `merged` → `done`;§6.2 项目级 DoD 逐项通过并勾选;按 §9 封存为只读(封存横幅 + 文件只读属性 + 提交 `docs: seal development guide first-mvp`);Phase 07 路线图回写(提交 `7f02cc4`,合并提交 `eced045`) | GitHub Copilot | anitoce |
 
 ---
 
