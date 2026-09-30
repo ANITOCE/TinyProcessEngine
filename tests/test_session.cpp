@@ -284,6 +284,36 @@ TEST(ScanSessionTest, BeginScanThenCommitFirstScan) {
     EXPECT_EQ(r0->address, 0x1000ULL);
 }
 
+TEST(ScanSessionTest, CommitFirstScanRecordsRequestedCondition)
+{
+    // T007 / C-D11:新首扫(--unknown 等)以实参记录首轮条件,供 lastCondition() 查询
+    ScanSession session(makeNullProcess());
+    MockValueType mockType;
+    session.beginScan(mockType);
+
+    std::vector<ScanRecord> results;
+    results.emplace_back(0x1000ULL);
+    session.commitFirstScan(std::move(results), ScanCondition::Unknown);
+
+    EXPECT_EQ(session.lastCondition(), ScanCondition::Unknown);
+    EXPECT_EQ(session.state(), SessionState::Ready);
+    EXPECT_EQ(session.resultCount(), 1u);
+}
+
+TEST(ScanSessionTest, CommitFirstScanDefaultsToExactValue)
+{
+    // 默认形参(R3):既有调用点零改动,条件保持 ExactValue 语义
+    ScanSession session(makeNullProcess());
+    MockValueType mockType;
+    session.beginScan(mockType);
+
+    std::vector<ScanRecord> results;
+    results.emplace_back(0x1000ULL);
+    session.commitFirstScan(std::move(results));
+
+    EXPECT_EQ(session.lastCondition(), ScanCondition::ExactValue);
+}
+
 TEST(ScanSessionTest, CommitNextScanEnablesUndo) {
     ScanSession session(makeNullProcess());
     MockValueType mockType;

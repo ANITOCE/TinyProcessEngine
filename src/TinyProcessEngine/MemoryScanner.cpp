@@ -58,6 +58,71 @@ static bool floatTolerantMatch(const uint8_t* memBytes, const uint8_t* searchByt
 }
 
 // ============================================================
+// Page filtering + aligned candidate enumeration helpers（R1/R2）
+//   页过滤与分块读取骨架由 firstScan / firstScanUnknown 共用；
+//   对齐步进枚举服务 --unknown（后续 --greater/--less 复用同骨架）。
+// ============================================================
+
+namespace {
+
+/// 页过滤：仅保留与选项地址范围相交的页（既有 firstScan 语义，抽取为共享 helper）。
+std::vector<MemoryPage> filterScannablePages(const std::vector<MemoryPage>& pages,
+                                             const ScanOptions& options)
+{
+    std::vector<MemoryPage> filtered;
+    for (const auto& page : pages) {
+        if (options.rangeStart && page.start + page.size <= *options.rangeStart) continue;
+        if (options.rangeEnd   && page.start >= *options.rangeEnd) continue;
+        filtered.push_back(page);
+    }
+    return filtered;
+}
+
+/// 首个 >= address 且按 width 对齐的地址（width >= 1）。
+tpe::Address alignUpAddress(tpe::Address address, size_t width)
+{
+    const tpe::Address remainder = address % width;
+    return remainder == 0 ? address : address + (width - remainder);
+}
+
+/// 按类型宽度对齐枚举页内候选地址（R2）：
+/// - 起点 = align_up(page.start, width)；末候选的 width 字节必须完整位于页内（不跨页）；
+/// - 分块读取（每块 <= options.chunkSize），不可读块跳过（不影响其余结果）；
+/// - 块间按 width 网格连续推进（推进量 = 块内完整候选数 × width；
+///   chunkSize 非 width 整数倍时同样无漂移、无重复、无漏采）；
+/// - accept(address, bytes) 对每个候选调用一次（bytes = 块内当轮实读的 width 字节）。
+template <typename Accept>
+void enumerateAlignedCandidates(tpe::platform::PlatformProcess& process,
+                                const std::vector<MemoryPage>& pages,
+                                size_t width, const ScanOptions& options, Accept&& accept)
+{
+    for (const MemoryPage& page : pages) {
+        if (page.size < width) continue;
+
+        const tpe::Address pageEnd = page.start + page.size;
+        tpe::Address cursor = alignUpAddress(page.start, width); // 对齐网格起点
+        while (cursor + width <= pageEnd) {
+            const size_t avail = static_cast<size_t>(pageEnd - cursor);
+            size_t chunkSz = (std::min)(avail, options.chunkSize);
+            if (chunkSz < width) chunkSz = width; // 防御：块长至少容纳一个候选
+            auto rd = process.read(MemoryPage(cursor, chunkSz));
+            if (!rd || rd.value().size() < width) {
+                cursor += (chunkSz / width) * width; // 跳过不可读块；保持网格（>= width）
+                continue;
+            }
+            const tpe::Memory& chunk = rd.value();
+            const size_t count = (chunk.size() - width) / width + 1; // 块内完整候选数
+            for (size_t k = 0; k < count; ++k) {
+                accept(cursor + k * width, chunk.data() + k * width);
+            }
+            cursor += count * width; // 网格连续推进（对齐不漂移）
+        }
+    }
+}
+
+} // namespace
+
+// ============================================================
 // firstScan — Full linear scan of all readable pages
 // ============================================================
 std::vector<ScanRecord> MemoryScanner::firstScan(
@@ -72,14 +137,9 @@ std::vector<ScanRecord> MemoryScanner::firstScan(
     bool isDouble = (type.name.find("double") != std::string::npos && typeWidth == 8);
     bool isFloatingPoint = isFloat || isDouble;
 
-    auto pages = process.getCheatablePages();
-    // Filter by address range
-    std::vector<MemoryPage> filteredPages;
-    for (auto& page : pages) {
-        if (options.rangeStart && page.start + page.size <= *options.rangeStart) continue;
-        if (options.rangeEnd   && page.start >= *options.rangeEnd) continue;
-        filteredPages.push_back(page);
-    }
+    // Filter by address range（与 firstScanUnknown 共用页过滤口径；行为不变）
+    std::vector<MemoryPage> filteredPages =
+        filterScannablePages(process.getCheatablePages(), options);
 
     tpe::Memory overlapBuf;
 
@@ -140,6 +200,32 @@ std::vector<ScanRecord> MemoryScanner::firstScan(
             remaining -= chunkSz;
         }
     }
+    return results;
+}
+
+// ============================================================
+// firstScanUnknown — 未知初值首扫:按类型宽度对齐枚举候选（不做值过滤）
+//   C-D1/FR-002/FR-003/INV-R:候选=可扫描区域内按类型宽度对齐的地址;
+//   每条记录携带当轮实读宽度字节快照(供 next-scan 过滤链)。
+// ============================================================
+std::vector<ScanRecord> MemoryScanner::firstScanUnknown(
+    tpe::platform::PlatformProcess& process, const ValueType& type, const ScanOptions& options)
+{
+    std::vector<ScanRecord> results;
+
+    const size_t width = type.byteWidth();
+    if (width == 0) {
+        // 变长类型无对齐口径（CLI 层已对 string 显式拒绝；此处防御）
+        return results;
+    }
+
+    const std::vector<MemoryPage> pages =
+        filterScannablePages(process.getCheatablePages(), options);
+    enumerateAlignedCandidates(process, pages, width, options,
+        [&results, width](tpe::Address address, const tpe::Byte* bytes) {
+            // 快照 = 当轮实读 width 字节（>8 由 ScanRecord 构造器截断；INV-R）
+            results.emplace_back(address, tpe::Memory(bytes, bytes + width));
+        });
     return results;
 }
 
@@ -223,7 +309,94 @@ bool compareNumeric(ScanCondition condition, NumericKind kind, const ScanRecord&
     }
 }
 
+/// 首轮“与外部目标值”比较的判定（R4/C-D3/FR-008）：
+/// 严格 GT/LT（相等不保留）；按 NumericKind 分派（有符号/无符号按数值语义、
+/// 浮点按 IEEE；NaN 参与比较一律不匹配，±Inf 按 IEEE）。
+/// 条件非 GreaterThan/LessThan、NumericKind::Other、宽度 0/超 8 字节、
+/// 目标值不足 width → 一律不匹配（不保留）。
+bool matchAgainstTarget(ScanCondition op, NumericKind kind, const uint8_t* bytes,
+                        const tpe::Memory& target, size_t width)
+{
+    if ((op != ScanCondition::GreaterThan && op != ScanCondition::LessThan) ||
+        kind == NumericKind::Other || width == 0 || width > sizeof(ScanRecord::snapshot_data) ||
+        target.size() < width) {
+        return false;
+    }
+
+    switch (kind) {
+    case NumericKind::SignedInteger: {
+        const int64_t currentVal = readSignedLittleEndian(bytes, width);
+        const int64_t targetVal = readSignedLittleEndian(target.data(), width);
+        return (op == ScanCondition::GreaterThan) ? (currentVal > targetVal)
+                                                  : (currentVal < targetVal);
+    }
+    case NumericKind::UnsignedInteger: {
+        const uint64_t currentVal = readUnsignedLittleEndian(bytes, width);
+        const uint64_t targetVal = readUnsignedLittleEndian(target.data(), width);
+        return (op == ScanCondition::GreaterThan) ? (currentVal > targetVal)
+                                                  : (currentVal < targetVal);
+    }
+    case NumericKind::FloatingPoint: {
+        if (width == sizeof(float)) {
+            float currentVal{}, targetVal{};
+            std::memcpy(&currentVal, bytes, width);
+            std::memcpy(&targetVal, target.data(), width);
+            if (std::isnan(currentVal) || std::isnan(targetVal)) return false; // NaN 不匹配
+            return (op == ScanCondition::GreaterThan) ? (currentVal > targetVal)
+                                                      : (currentVal < targetVal);
+        }
+        if (width == sizeof(double)) {
+            double currentVal{}, targetVal{};
+            std::memcpy(&currentVal, bytes, width);
+            std::memcpy(&targetVal, target.data(), width);
+            if (std::isnan(currentVal) || std::isnan(targetVal)) return false; // NaN 不匹配
+            return (op == ScanCondition::GreaterThan) ? (currentVal > targetVal)
+                                                      : (currentVal < targetVal);
+        }
+        return false; // 其他浮点宽度不可比较
+    }
+    default:
+        return false;
+    }
+}
+
 } // namespace
+
+// ============================================================
+// firstScanComparison — 首轮大小比较:保留当前值严格 GT/LT 外部目标值的地址
+//   C-D2/C-D3/FR-007–008/FR-011:采集步进与 --unknown 同为类型宽度对齐;
+//   每条保留记录携带当轮实读 width 字节快照(供 next-scan 过滤链)。
+// ============================================================
+std::vector<ScanRecord> MemoryScanner::firstScanComparison(
+    tpe::platform::PlatformProcess& process, const ValueType& type, ScanCondition condition,
+    const tpe::Memory& target, const ScanOptions& options)
+{
+    std::vector<ScanRecord> results;
+
+    // 仅首轮外部值比较(GreaterThan/LessThan);其它条件无此语义(防御)
+    if (condition != ScanCondition::GreaterThan && condition != ScanCondition::LessThan) {
+        return results;
+    }
+
+    const size_t width = type.byteWidth();
+    if (width == 0 || width > sizeof(ScanRecord::snapshot_data) || target.size() < width) {
+        // 变长/超宽/目标值不足以解码 → 无比较口径(CLI 层另有显式拒绝;防御)
+        return results;
+    }
+
+    const NumericKind kind = type.numericKind();
+    const std::vector<MemoryPage> pages =
+        filterScannablePages(process.getCheatablePages(), options);
+    enumerateAlignedCandidates(process, pages, width, options,
+        [&results, condition, kind, &target, width](tpe::Address address, const tpe::Byte* bytes) {
+            if (!matchAgainstTarget(condition, kind, bytes, target, width)) {
+                return; // 不满足严格比较(含 == 边界) → 不保留
+            }
+            // 快照 = 当轮实读 width 字节(>8 由 ScanRecord 构造器截断;INV-R)
+            results.emplace_back(address, tpe::Memory(bytes, bytes + width));
+        });
+    return results;
+}
 
 // ============================================================
 // nextScan — Incremental filtering

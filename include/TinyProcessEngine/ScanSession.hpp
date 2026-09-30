@@ -38,7 +38,10 @@ public:
 
     // ── 会话生命周期 ──
     void beginScan(const ValueType& type, ScanOptions options = {});
-    void commitFirstScan(std::vector<ScanRecord> results);
+    /// 提交首轮扫描结果；`condition` 记录为本轮条件(C-D11)并可由 `lastCondition()` 查询。
+    /// 默认 `ExactValue`：既有等值首扫调用点零改动；`--unknown` 等新首扫传对应条件(R3)。
+    void commitFirstScan(std::vector<ScanRecord> results,
+                         ScanCondition condition = ScanCondition::ExactValue);
     [[nodiscard]] Result<void, SessionError> commitNextScan(ScanCondition condition,
                                                             std::vector<ScanRecord> results);
     [[nodiscard]] Result<void, SessionError> undo();

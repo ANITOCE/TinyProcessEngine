@@ -23,13 +23,13 @@ void ScanSession::beginScan(const ValueType& type, ScanOptions /*options*/) {
     m_prevStorage.reset();
 }
 
-void ScanSession::commitFirstScan(std::vector<ScanRecord> results) {
+void ScanSession::commitFirstScan(std::vector<ScanRecord> results, ScanCondition condition) {
     m_storage = ResultStorage{};
     for (const auto& record : results) {
         m_storage.append(record);
     }
     m_round = 1;
-    m_condition = ScanCondition::ExactValue;
+    m_condition = condition; // R3:记录本轮条件(默认 ExactValue;--unknown 等新首扫随实参)
     m_state = SessionState::Ready;
 }
 

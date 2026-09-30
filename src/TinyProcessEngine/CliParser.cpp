@@ -384,19 +384,19 @@ ReplCommand parseScanCommand(const std::string& line, const CliParseResult& pars
         case ReplScanType::Unchanged:
             return replError(kind, "Unknown option: --" + std::string(scanTypeName(command.scanType)));
         case ReplScanType::Unknown:
-            // §11.5:--unknown 不传值;带值属未定义情形 → 按不传值旗标的严格策略拒绝
+            // C-D1/FR-005:该旗标已转正(执行真实首扫);不传值(缺值不报错,保持现状),
+            // 带值属未定义情形 → 按不传值旗标的严格策略拒绝
             if (command.hasValue) {
                 return replError(kind, "Unexpected argument: " + command.value);
             }
-            command.placeholder = true; // C-R7:占位,仅切换 scan-type(不执行扫描)
             break;
         case ReplScanType::Greater:
         case ReplScanType::Less:
-            // §11.5:new-scan 的 --greater / --less 值必传;缺值 → 用法错误(不执行、不切换)
+            // §11.5:new-scan 的 --greater / --less 值必传;缺值 → 用法错误(不执行、不切换)。
+            // T010 转正:值交执行层解析并执行首轮大小比较扫描。
             if (!command.hasValue) {
                 return replError(kind, "Missing value for new-scan.");
             }
-            command.placeholder = true; // 占位:值仅用于语法识别,不解析、不执行扫描
             break;
         default: // Equal(已实现)
             if (!command.hasValue) {
@@ -574,8 +574,6 @@ ReplOutcome planReplOutcome(const ReplCommand& command)
     case ReplCommandKind::Exit:
         return ReplOutcome::Exit;
     case ReplCommandKind::NewScan:
-        // 占位命令(US4 / C-R7):打印固定文案、仅切换提示符 scan-type
-        return command.placeholder ? ReplOutcome::Placeholder : ReplOutcome::Execute;
     case ReplCommandKind::NextScan:
     case ReplCommandKind::List:
     case ReplCommandKind::Write:
@@ -620,7 +618,27 @@ std::optional<ScanCondition> toScanCondition(ReplScanType type)
     case ReplScanType::Unchanged:
         return ScanCondition::Unchanged;
     case ReplScanType::Unknown:
-        return std::nullopt; // 仅 new-scan 占位(US4),无引擎条件
+        return std::nullopt; // 仅 new-scan(已转正);next-scan 解析层已拒绝该旗标
+    }
+    return std::nullopt;
+}
+
+std::optional<ScanCondition> toFirstScanCondition(ReplScanType type)
+{
+    // 首扫专用映射(T010):Greater/Less 在首轮是"与外部目标值"比较
+    // (GreaterThan/LessThan),与 next-scan 的相对快照语义(Increased/Decreased)分离。
+    switch (type) {
+    case ReplScanType::Equal:
+        return ScanCondition::ExactValue;
+    case ReplScanType::Unknown:
+        return ScanCondition::Unknown;
+    case ReplScanType::Greater:
+        return ScanCondition::GreaterThan;
+    case ReplScanType::Less:
+        return ScanCondition::LessThan;
+    case ReplScanType::Changed:
+    case ReplScanType::Unchanged:
+        return std::nullopt; // 非首扫条件(new-scan 解析层已拒绝该旗标)
     }
     return std::nullopt;
 }
@@ -630,8 +648,8 @@ std::string_view replHelpText()
     return
         "REPL commands:\n"
         "  new-scan [--equal] [--<value-type>] <value>   Start a new scan (destroys previous results)\n"
-        "  next-scan [--equal <value>] [--<value-type>]\n"
-        "  next-scan [--greater|--less|--changed|--unchanged] [--<value-type>]\n"
+        "  next-scan [--equal <value>]\n"
+        "  next-scan [--greater|--less|--changed|--unchanged]\n"
         "                                                Filter the previous scan results\n"
         "  list [<page>] | list --all                    Show matches (20 per page)\n"
         "  write <address> <new-value>                   Overwrite the value at an address\n"
@@ -641,14 +659,8 @@ std::string_view replHelpText()
         "\n"
         "Value types: u8, i16, i32 (default), i64, float, double, string\n"
         "Scan types (new-scan): --equal <value> (default) | --unknown | --greater <value> | --less <value>\n"
-        "The --unknown / --greater / --less scan types are recognized but not implemented yet.\n"
+        "Value types apply to new-scan only; string scans support --equal only.\n"
         "The --string value takes the rest of the line (spaces allowed).\n";
-}
-
-std::string_view replPlaceholderText()
-{
-    // §11.8 / FR-020:逐字固定,不得本地化或改写
-    return "This feature is not implemented yet.";
 }
 
 } // namespace tpe::cli

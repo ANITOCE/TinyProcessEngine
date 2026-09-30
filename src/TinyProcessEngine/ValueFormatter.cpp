@@ -1,5 +1,6 @@
 #include "ValueFormatter.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <iomanip>
@@ -58,10 +59,10 @@ std::string formatAddress(tpe::Address address)
     return out.str();
 }
 
-std::string formatValue(const ScanRecord& record, const CliValueType& valueType)
+std::string formatValueBytes(const tpe::Memory& bytes, const CliValueType& valueType)
 {
-    const std::uint8_t* data = record.snapshot_data;
-    const std::size_t size = record.snapshot_size;
+    const std::uint8_t* data = bytes.data();
+    const std::size_t size = bytes.size();
 
     switch (valueType.kind) {
     case CliValueKind::U8:
@@ -95,10 +96,23 @@ std::string formatValue(const ScanRecord& record, const CliValueType& valueType)
         }
         return toDefaultText(decodeLittleEndian<double>(data));
     case CliValueKind::String:
-        // string 无固定宽度:快照字节按原样输出
+        // string 无固定宽度:字节按原样输出;空字节序列 → 空串(空 vector 的 data() 可能为空)
+        if (size == 0) {
+            return {};
+        }
         return std::string(reinterpret_cast<const char*>(data), size);
     }
     return {};
+}
+
+std::string formatValue(const ScanRecord& record, const CliValueType& valueType)
+{
+    // 委托实时字节路径(同规则);快照 ≤8 字节,复制成本可忽略。
+    // 防御性截断:snapshot_size 语义上限 = sizeof(snapshot_data)(构造器已保证)。
+    const std::size_t size =
+        (std::min)(static_cast<std::size_t>(record.snapshot_size), sizeof(record.snapshot_data));
+    return formatValueBytes(tpe::Memory(record.snapshot_data, record.snapshot_data + size),
+                            valueType);
 }
 
 // ---------------------------------------------------------------------------
@@ -112,6 +126,18 @@ std::string formatListEntry(const ScanRecord& record, const CliValueType& valueT
     out += formatAddress(record.address);
     out += " | ";
     out += formatValue(record, valueType);
+    return out;
+}
+
+std::string formatListEntry(tpe::Address address, const std::optional<tpe::Memory>& liveBytes,
+                            const CliValueType& valueType)
+{
+    // "  " + 0x16位hex + " | " + 值(实时读取;C-D6/E4:
+    // nullopt = 读取失败/短读/零宽 → 值列逐字 `??`,不回退快照)
+    std::string out = "  ";
+    out += formatAddress(address);
+    out += " | ";
+    out += liveBytes.has_value() ? formatValueBytes(*liveBytes, valueType) : "??";
     return out;
 }
 

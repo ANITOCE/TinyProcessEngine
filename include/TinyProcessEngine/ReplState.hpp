@@ -41,12 +41,10 @@ struct ReplState {
     /// T2/T3:带值扫描成功 → scanType/valueType 更新,lastValue = 输入值,matchesTotal 更新。
     void onValueScan(ReplScanType type, const CliValueType& vt, std::string value, uint64_t total);
 
-    /// T5:无值扫描成功 → scanType/valueType 更新;`--changed`/`--unchanged` 清空 lastValue,
+    /// T5:无值扫描成功 → scanType/valueType 更新;`--changed`/`--unchanged`/`--unknown`
+    /// 清空 lastValue(`--unknown` 属本次无值扫描 → 值段隐藏;FR-004/C-D1),
     /// `--greater`/`--less` 保持;matchesTotal 更新。
     void onValuelessScan(ReplScanType type, const CliValueType& vt, uint64_t total);
-
-    /// T4:占位命令 → 仅切换 scanType(可选 valueType);lastValue 与 matchesTotal 不变。
-    void onPlaceholder(ReplScanType type, const CliValueType* vt = nullptr);
 
     /// T6:undo 后同步总量(matchesTotal 回退;提示符其余不变)。
     void onUndo(uint64_t total);

@@ -51,13 +51,61 @@ constexpr const char* kListUsage = "Usage: list [<page>] | list --all";
 constexpr const char* kWriteUsage = "Usage: write <address> <new-value>";
 constexpr const char* kNoResultsHint = "No scan results available. Run 'new-scan' first.";
 
-/// new-scan(契约 C-R1):默认 equal + 当前类型;成功不打印输出,仅更新提示符状态。
+/// new-scan(契约 C-R1;US1 C-D1;US2 C-D2/C-D3;FR-012/FR-027 C-D5):默认 equal + 当前类型;
+/// 成功不打印输出,仅更新提示符状态。三种首扫形态:
+/// - Unknown:无值首扫(FR-001–004),不进行值解析;
+/// - Greater/Less:值必传(解析层已保证);值解析口径与 equal 一致,失败 → 既有非法值提示;
+/// - Equal:既有等值首扫。
+/// --string 仅等值扫描:非等值形态与 string 组合(命令旗标或会话继承)→ 用法错误。
 void executeNewScan(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& state,
                     ProcessEngine& engine)
 {
     const tpe::cli::CliValueType& vt =
         command.valueType != nullptr ? *command.valueType : *state.valueType;
 
+    // FR-012/FR-027(C-D5,契约变更):string 仅等值扫描——--unknown/--greater/--less
+    // 与 --string 组合(显式旗标或当前会话类型)一律用法错误显式拒绝
+    // (含 Usage、不执行、不改变会话状态;不得以空结果替代拒绝)。
+    // 先于值解析:组合非法性与值是否可解析无关,避免后者掩盖前者。
+    if (vt.kind == tpe::cli::CliValueKind::String &&
+        command.scanType != tpe::cli::ReplScanType::Equal) {
+        printMessage("Scan type --" + std::string(tpe::cli::scanTypeName(command.scanType)) +
+                     " does not support --string.\n" + kNewScanUsage);
+        return; // 不执行、不改变会话状态
+    }
+
+    if (command.scanType == tpe::cli::ReplScanType::Unknown) {
+        // C-D1/FR-004:成功后 scan-type=unknown、值段隐藏(lastValue 清空);
+        // 带值已由解析层按用法错误拒绝(严格策略保持)。
+        const uint64_t total = engine.searchUnknown(*vt.type);
+        state.onValuelessScan(tpe::cli::ReplScanType::Unknown, vt, total);
+        return;
+    }
+
+    if (command.scanType == tpe::cli::ReplScanType::Greater ||
+        command.scanType == tpe::cli::ReplScanType::Less) {
+        // C-D2/C-D3/FR-007–011:首轮大小比较(严格 GT/LT);
+        // 值解析失败 → 既有非法值提示(不执行、不改变会话状态);
+        // 成功后提示符显示本次比较值(§11.3 带值扫描)。
+        std::string reason;
+        const std::optional<tpe::Memory> target = vt.type->parse(command.value, reason);
+        if (!target.has_value()) {
+            printMessage(invalidValueMessage(vt, reason, kNewScanUsage));
+            return; // 不执行、不改变会话状态
+        }
+
+        const std::optional<ScanCondition> condition =
+            tpe::cli::toFirstScanCondition(command.scanType);
+        if (!condition.has_value()) {
+            return; // Greater/Less 映射恒有值;防御(不可达)
+        }
+
+        const uint64_t total = engine.searchComparison(*vt.type, *condition, *target);
+        state.onValueScan(command.scanType, vt, command.value, total);
+        return;
+    }
+
+    // Equal(默认):既有等值首扫
     std::string reason;
     const std::optional<tpe::Memory> pattern = vt.type->parse(command.value, reason);
     if (!pattern.has_value()) {
@@ -69,10 +117,33 @@ void executeNewScan(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& s
     state.onValueScan(tpe::cli::ReplScanType::Equal, vt, command.value, total);
 }
 
-/// next-scan(契约 C-R2):条件 → ScanCondition;无结果时明确提示、不执行、不改变状态。
+/// next-scan(契约 C-R2;FR-026/FR-027 C-D4/C-D5):条件 → ScanCondition;无结果时明确提示、
+/// 不执行、不改变状态。类型一致性:会话类型仅由 new-scan 设定——同类旗标无操作、异类拒绝;
+/// string 会话仅等值扫描。
 void executeNextScan(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& state,
                      ProcessEngine& engine)
 {
+    // FR-026(C-D4,契约变更):数值类型一致性——会话类型仅由 new-scan 设定;
+    // 异类类型旗标 → 用法错误(含 Usage、不执行、不改变会话状态)。
+    // 先于会话/结果检查,保证用法错误输出确定(不受当前结果集状态影响)。
+    if (command.valueType != nullptr &&
+        command.valueType->shortName != state.valueType->shortName) {
+        printMessage("next-scan cannot change the value type (current: " +
+                     std::string(state.valueType->shortName) + ", requested: " +
+                     std::string(command.valueType->shortName) + ").\n" + kNextScanUsage);
+        return; // 不执行、不改变会话状态
+    }
+
+    // FR-027(C-D5,契约变更):string 会话仅支持等值扫描——--changed/--unchanged/
+    // --greater/--less 在 --string 会话中 → 用法错误(含 Usage、不执行、不改变会话状态;
+    // 不得以空结果(0 条)替代拒绝)。
+    if (state.valueType->kind == tpe::cli::CliValueKind::String &&
+        command.scanType != tpe::cli::ReplScanType::Equal) {
+        printMessage("Scan type --" + std::string(tpe::cli::scanTypeName(command.scanType)) +
+                     " does not support --string.\n" + kNextScanUsage);
+        return; // 不执行、不改变会话状态
+    }
+
     ScanSession* session = engine.session();
     if (session == nullptr || session->state() != SessionState::Ready) {
         printMessage(std::string(kNoResultsHint) + "\n" + kNextScanUsage);
@@ -105,7 +176,11 @@ void executeNextScan(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& 
     }
 }
 
-/// list(契约 C-R3):`--all` 上限 10000 与截断提示;分页 20/页;越界/空结果明确提示。
+/// list(契约 C-R3;FR-013–018/C-D6):值列 = 展示时从目标进程实时重读的当前值——
+/// 宽度:数值 = 类型宽度(`byteWidth()`),string = 记录快照宽度(≤8);
+/// 零宽(snapshot_size == 0)/ 读取失败 / 短读 → 值列逐字 `??`(不回退快照)。
+/// `--all` 上限 10000 与截断提示、分页 20/页、越界/空结果提示不变;
+/// 实时读取为纯展示,不影响会话状态(Total / 分页 / undo 栈不变)。
 void executeList(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& state,
                  ProcessEngine& engine)
 {
@@ -121,15 +196,36 @@ void executeList(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& stat
         return;
     }
 
+    // FR-013–016/C-D6(E4/INV-L):逐条读取当前内存值;失败 / 短读 / 零宽 → nullopt。
+    const auto readLiveBytes = [&](const ScanRecord& record) -> std::optional<tpe::Memory> {
+        if (record.snapshot_size == 0) {
+            return std::nullopt; // 零宽:视为不可读(E4:`??`)
+        }
+        const tpe::Size width = state.valueType->kind == tpe::cli::CliValueKind::String
+                                    ? static_cast<tpe::Size>(record.snapshot_size)
+                                    : state.valueType->type->byteWidth();
+        const Result<tpe::Memory, PlatformError> bytes =
+            session->readMemory(record.address, width);
+        if (!bytes.has_value() || bytes.value().size() < width) {
+            return std::nullopt; // 读取失败 / 短读(FR-015)
+        }
+        return bytes.value();
+    };
+
     std::ostringstream out;
+    const auto appendRow = [&](uint64_t index) {
+        const std::optional<ScanRecord> record = session->resultAt(index);
+        if (record.has_value()) {
+            out << tpe::cli::formatListEntry(record->address, readLiveBytes(*record),
+                                             *state.valueType) << "\n";
+        }
+    };
+
     if (command.listAll) {
         out << tpe::cli::formatMatchesTotal(total) << "\n";
         const uint64_t shown = (std::min)(total, tpe::cli::kListDisplayCap);
         for (uint64_t index = 0; index < shown; ++index) {
-            const std::optional<ScanRecord> record = session->resultAt(index);
-            if (record.has_value()) {
-                out << tpe::cli::formatListEntry(*record, *state.valueType) << "\n";
-            }
+            appendRow(index);
         }
         if (total > shown) {
             out << tpe::cli::formatTruncationNotice(total - shown) << "\n";
@@ -148,10 +244,7 @@ void executeList(const tpe::cli::ReplCommand& command, tpe::cli::ReplState& stat
     const uint64_t first = static_cast<uint64_t>(command.page - 1) * tpe::cli::kReplPageSize;
     const uint64_t last = (std::min)(first + tpe::cli::kReplPageSize, total);
     for (uint64_t index = first; index < last; ++index) {
-        const std::optional<ScanRecord> record = session->resultAt(index);
-        if (record.has_value()) {
-            out << tpe::cli::formatListEntry(*record, *state.valueType) << "\n";
-        }
+        appendRow(index);
     }
     std::cout << out.str() << std::flush;
 }
@@ -258,12 +351,6 @@ int runRepl(ProcessEngine& engine, const std::string& processName)
             break;
         case tpe::cli::ReplOutcome::UsageError:
             printMessage(command.error); // 含 Usage 提示;不执行、不改变状态
-            break;
-        case tpe::cli::ReplOutcome::Placeholder:
-            // 占位(§11.8 / C-R7 / FR-020):打印固定文案;仅切换提示符 scan-type
-            // (可选 value-type);不执行扫描、匹配集与 [<value>] 均不变。
-            printMessage(std::string(tpe::cli::replPlaceholderText()));
-            state.onPlaceholder(command.scanType, command.valueType);
             break;
         case tpe::cli::ReplOutcome::Exit:
             return tpe::cli::kExitOk;

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cctype>
 #include <limits>
 #include <string>
 
@@ -393,48 +394,47 @@ TEST(ReplCommandParse, NewScanRejectsConflictingOrUnknownFlags)
     EXPECT_FALSE(parseReplCommand("new-scan --changed").error.empty()); // new-scan 旗标表无此项
 }
 
-TEST(ReplCommandParse, NewScanPlaceholderScanTypesAreRecognized)
+TEST(ReplCommandParse, NewScanScanTypesAreRecognized)
 {
-    // FR-020 / C-R7:--unknown / --greater / --less 语法可识别(不再以“未实现”错误拒绝)
+    // FR-020 / C-D7:--unknown / --greater / --less 语法可识别且为真实语义;
+    // 三旗标处置决策恒为 Execute(执行真实首扫)。
     const ReplCommand unknown = parseReplCommand("new-scan --unknown");
     ASSERT_EQ(unknown.kind, ReplCommandKind::NewScan);
     EXPECT_EQ(unknown.scanType, ReplScanType::Unknown);
-    EXPECT_TRUE(unknown.placeholder);
     EXPECT_FALSE(unknown.hasValue);
     EXPECT_TRUE(unknown.error.empty());
+    EXPECT_EQ(tpe::cli::planReplOutcome(unknown), tpe::cli::ReplOutcome::Execute);
 
     const ReplCommand greater = parseReplCommand("new-scan --greater 100");
     ASSERT_EQ(greater.kind, ReplCommandKind::NewScan);
     EXPECT_EQ(greater.scanType, ReplScanType::Greater);
-    EXPECT_TRUE(greater.placeholder);
-    EXPECT_TRUE(greater.hasValue); // 值仅用于语法识别;占位不解析、不执行
+    EXPECT_TRUE(greater.hasValue);
     EXPECT_TRUE(greater.error.empty());
+    EXPECT_EQ(tpe::cli::planReplOutcome(greater), tpe::cli::ReplOutcome::Execute);
 
     const ReplCommand less = parseReplCommand("new-scan --less 100");
     EXPECT_EQ(less.scanType, ReplScanType::Less);
-    EXPECT_TRUE(less.placeholder);
     EXPECT_TRUE(less.error.empty());
+    EXPECT_EQ(tpe::cli::planReplOutcome(less), tpe::cli::ReplOutcome::Execute);
 }
 
-TEST(ReplCommandParse, NewScanPlaceholderAcceptsFlagCombinations)
+TEST(ReplCommandParse, NewScanAcceptsScanTypeFlagCombinations)
 {
     // CHK030 / Edge Cases:new-scan --unknown --i16 等旗标组合保持语法可识别
     const ReplCommand withType = parseReplCommand("new-scan --unknown --i16");
     ASSERT_EQ(withType.scanType, ReplScanType::Unknown);
     ASSERT_NE(withType.valueType, nullptr);
     EXPECT_EQ(withType.valueType->shortName, "i16");
-    EXPECT_TRUE(withType.placeholder);
     EXPECT_TRUE(withType.error.empty());
 
     const ReplCommand withValueAndType = parseReplCommand("new-scan --greater --i64 42");
     ASSERT_EQ(withValueAndType.scanType, ReplScanType::Greater);
     ASSERT_NE(withValueAndType.valueType, nullptr);
     EXPECT_EQ(withValueAndType.valueType->shortName, "i64");
-    EXPECT_TRUE(withValueAndType.placeholder);
     EXPECT_TRUE(withValueAndType.error.empty());
 }
 
-TEST(ReplCommandParse, NewScanPlaceholderValueRules)
+TEST(ReplCommandParse, NewScanScanTypeValueRules)
 {
     // §11.5:--greater / --less 值必传,缺值 → 用法错误(不执行、不切换 scan-type);
     // --unknown 不传值(缺值不报错),带值属未定义情形 → 按严格策略拒绝(与 next-scan 一致)
@@ -443,7 +443,6 @@ TEST(ReplCommandParse, NewScanPlaceholderValueRules)
         EXPECT_FALSE(command.error.empty()) << line;
         EXPECT_NE(command.error.find("Missing value"), std::string::npos) << line;
         EXPECT_NE(command.error.find("Usage"), std::string::npos) << line;
-        EXPECT_FALSE(command.placeholder) << line;
     }
 
     EXPECT_TRUE(parseReplCommand("new-scan --unknown").error.empty());
@@ -741,15 +740,49 @@ TEST(ReplHelp, CoversEveryReplCommandWithUsage)
     EXPECT_NE(help.find("undo"), std::string::npos);
 }
 
-TEST(ReplHelp, DocumentsPlaceholderScanTypes)
+TEST(ReplHelp, DocumentsImplementedScanTypes)
 {
-    // FR-020 + US4 帮助可发现性:new-scan 的占位扫描类型(语法可识别)须在帮助中可发现
-    // (§11.5:--unknown 不传值;--greater / --less 值必传)
+    // FR-020 / C-D7(帮助文本契约;T020 红):全部扫描类型已实现——帮助不得含占位提示,
+    // new-scan 扫描类型行保留(逐字),next-scan 行不再携带类型旗标,并含 string 仅等值说明。
     const std::string help(tpe::cli::replHelpText());
-    EXPECT_NE(help.find("--unknown"), std::string::npos);
-    EXPECT_NE(help.find("--greater <value>"), std::string::npos);
-    EXPECT_NE(help.find("--less <value>"), std::string::npos);
-    EXPECT_NE(help.find("not implemented yet"), std::string::npos);
+
+    // (1) 不得含实现状态说明(大小写不敏感;按 "implemented" 词根作更宽覆盖,涵盖历史占位语)
+    std::string lowered;
+    lowered.reserve(help.size());
+    for (const char ch : help) {
+        lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
+    }
+    EXPECT_EQ(lowered.find("implemented"), std::string::npos) << help;
+
+    // (2) new-scan 扫描类型行保留(逐字)
+    EXPECT_NE(help.find("Scan types (new-scan): --equal <value> (default) | --unknown | "
+                        "--greater <value> | --less <value>"),
+              std::string::npos)
+        << help;
+
+    // (3) next-scan 相关行不得再含 [--<value-type>](类型由 new-scan 确定,不可变更)
+    for (std::size_t begin = 0; begin < help.size();) {
+        const std::size_t end = help.find('\n', begin);
+        const std::string line =
+            help.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+        if (line.find("next-scan") != std::string::npos) {
+            EXPECT_EQ(line.find("[--<value-type>]"), std::string::npos) << line;
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        begin = end + 1;
+    }
+
+    // (4) 新增说明行(逐字)
+    EXPECT_NE(help.find("Value types apply to new-scan only; string scans support --equal only."),
+              std::string::npos)
+        << help;
+
+    // (5) --string 取值规则行保留(逐字)
+    EXPECT_NE(help.find("The --string value takes the rest of the line (spaces allowed)."),
+              std::string::npos)
+        << help;
 }
 
 TEST(ReplScanConditionMap, MapsEachConditionToEngineValue)
@@ -761,4 +794,17 @@ TEST(ReplScanConditionMap, MapsEachConditionToEngineValue)
     EXPECT_EQ(toScanCondition(ReplScanType::Changed), ScanCondition::Changed);
     EXPECT_EQ(toScanCondition(ReplScanType::Unchanged), ScanCondition::Unchanged);
     EXPECT_FALSE(toScanCondition(ReplScanType::Unknown).has_value());
+}
+
+TEST(ReplScanConditionMap, MapsFirstScanConditionsToEngineValue)
+{
+    // T010:new-scan 首扫专用映射(Greater/Less = 与外部目标值的严格比较;
+    // 与 next-scan 的相对快照映射 toScanCondition 分离)。
+    using tpe::cli::toFirstScanCondition;
+    EXPECT_EQ(toFirstScanCondition(ReplScanType::Equal), ScanCondition::ExactValue);
+    EXPECT_EQ(toFirstScanCondition(ReplScanType::Unknown), ScanCondition::Unknown);
+    EXPECT_EQ(toFirstScanCondition(ReplScanType::Greater), ScanCondition::GreaterThan);
+    EXPECT_EQ(toFirstScanCondition(ReplScanType::Less), ScanCondition::LessThan);
+    EXPECT_FALSE(toFirstScanCondition(ReplScanType::Changed).has_value());
+    EXPECT_FALSE(toFirstScanCondition(ReplScanType::Unchanged).has_value());
 }

@@ -42,6 +42,23 @@ public:
     /// Returns the number of matches found (0 if scan failed or no process).
     uint64_t searchMemory(const ValueType& type, const tpe::Memory& pattern);
 
+    /// Execute first scan with unknown initial value (`new-scan --unknown`).
+    /// 记录按类型宽度对齐步进的候选地址（不做值过滤；C-D1/FR-002），
+    /// 每条携带当轮实读快照；会话条件记为 `ScanCondition::Unknown`。
+    /// @param type 值类型（决定对齐步进宽度）
+    /// Returns the number of candidates recorded (0 if scan failed or no process).
+    uint64_t searchUnknown(const ValueType& type);
+
+    /// Execute first-round comparison scan (`new-scan --greater` / `--less`).
+    /// 保留“当前值严格大于/小于 target”的地址（严格 GT/LT；C-D2/C-D3/FR-007–011），
+    /// 采集步进同为类型宽度对齐，每条携带当轮实读快照；会话条件记为 `condition`。
+    /// @param type      值类型（决定步进宽度与数值分派）
+    /// @param condition GreaterThan（严格大于）或 LessThan（严格小于）
+    /// @param target    外部目标值（小端内存表示）
+    /// Returns the number of matches kept (0 if scan failed or no process).
+    uint64_t searchComparison(const ValueType& type, ScanCondition condition,
+                              const tpe::Memory& target);
+
     /// Execute next (incremental) scan on existing results.
     uint64_t nextScan(ScanCondition condition, const ValueType& type,
                       const std::optional<tpe::Memory>& newValue = std::nullopt);
