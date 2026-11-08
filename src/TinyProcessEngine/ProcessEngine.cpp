@@ -1,8 +1,22 @@
 #include "ProcessEngine.hpp"
 
 #include <cassert>
+#include <string>
+#include <utility>
 
 namespace tpe {
+
+namespace {
+
+/// 渲染单个进程的列表行(T016):本地 `getProcessList()` 与 `processListText()`
+/// 共用同一渲染器,防止两处格式漂移;行分隔固定 LF,行尾带换行。
+std::string formatProcessListLine(const tpe::platform::PlatformProcess& process)
+{
+    return "PID: " + std::to_string(process.getPid()) +
+           " ProcessName: " + process.getProcessName() + '\n';
+}
+
+} // namespace
 
 ProcessEngine::ProcessEngine()
     : m_os(tpe::platform::createPlatformOS())
@@ -20,24 +34,33 @@ ProcessEngine::~ProcessEngine()
 
 Result<void, PlatformError> ProcessEngine::getProcessList() const
 {
-    // 缺陷⑧(FR-023/C-P5):平台枚举失败优先上报;不得以空列表伪装成功。
-    const std::optional<PlatformError>& enumerationError = m_os->enumerationError();
-    if (enumerationError.has_value()) {
-        return Result<void, PlatformError>::error(*enumerationError);
+    // T016:成功/失败均复用 processListText(),保证本地 stdout 与远程文本逐字节一致
+    // (FR-016/C-P5);枚举失败不打印任何进程行(缺陷⑧)。
+    const Result<std::string, PlatformError> text = processListText();
+    if (!text.has_value()) {
+        return Result<void, PlatformError>::error(text.error());
     }
-    for(auto process : m_os->ProcessList)
-    {
-        std::cout << "PID: " << process->getPid() << " ProcessName: " << process->getProcessName() << std::endl;
-    }
+
+    std::cout << text.value();
+    std::cout.flush(); // 与旧实现逐行 std::endl 的最终可见性一致;不改变输出内容。
     return Result<void, PlatformError>::success();
 }
 
 Result<std::string, PlatformError> ProcessEngine::processListText() const
 {
-    // T013 占位:仅为让 RED 测试可编译,不含真实枚举/渲染逻辑(T016 实现)。
-    // 错误码/消息与真实枚举失败明显区分,便于 RED 阶段辨识。
-    return Result<std::string, PlatformError>::error(
-        PlatformError{"ProcessEngine", 0, 0, "processListText not implemented"});
+    // 缺陷⑧(FR-023/C-P5):平台枚举失败原样透传;不得以空列表伪装成功。
+    const std::optional<PlatformError>& enumerationError = m_os->enumerationError();
+    if (enumerationError.has_value()) {
+        return Result<std::string, PlatformError>::error(*enumerationError);
+    }
+
+    // 按 ProcessList 顺序拼接;空列表返回空字符串;不打印、不做 UTF-8/长度校验
+    // (校验归 T017 响应层,契约 contracts/cli.md §5)。
+    std::string text;
+    for (const std::shared_ptr<tpe::platform::PlatformProcess>& process : m_os->ProcessList) {
+        text += formatProcessListLine(*process);
+    }
+    return Result<std::string, PlatformError>::success(std::move(text));
 }
 
 std::shared_ptr<tpe::platform::PlatformProcess> ProcessEngine::openProcess(tpe::platform::Pid_t pid)
