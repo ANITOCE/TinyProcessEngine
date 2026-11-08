@@ -37,6 +37,13 @@ set(TPE_TEST_SOURCES
   # US6(缺陷⑧):CLI 装配层以源文件形式编入测试目标(该文件同时被 exe 目标编译,
   # 两目标互不冲突;注入接缝 runCliWithEngine 的声明见 src/startup/startup_cli.hpp)
   ${CMAKE_SOURCE_DIR}/src/startup/startup_cli.cpp
+  # T012:远程启动参数与入口分流契约用例(骨架期 RED,T018/T024 实现后转绿)
+  test_startup_remote.cpp
+  # T012:启动装配层以源文件形式编入测试目标(同样为 exe 目标源文件,两目标互不冲突;
+  # startup.cpp 依赖 runCli(startup_cli.cpp)与 CliParser(TinyProcessEngineLib),
+  # startup_remote.cpp 提供 parseRemoteStartupArgs/runRemote/setRemoteEntryForTesting)
+  ${CMAKE_SOURCE_DIR}/src/startup/startup.cpp
+  ${CMAKE_SOURCE_DIR}/src/startup/startup_remote.cpp
 )
 
 # Linux 集成测试（缺陷⑥）：仅 Linux 构建纳入源列表；Windows 下整文件被 __linux__ 包裹
