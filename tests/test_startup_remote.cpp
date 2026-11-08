@@ -134,6 +134,28 @@ TEST(RemoteStartupArgs, ServerWithExplicitPortUsesIt)
     EXPECT_EQ(options.port, std::uint16_t{9000});
 }
 
+/// §1：端口下边界 1 是合法取值。
+TEST(RemoteStartupArgs, ServerWithMinimumPortParses)
+{
+    const auto result = tpe::app::parseRemoteStartupArgs({"--server", "-port", "1"});
+
+    ASSERT_TRUE(result.has_value()) << "expected --server -port 1 to parse successfully";
+    const RemoteStartupOptions& options = result.value();
+    EXPECT_EQ(options.mode, RemoteMode::Server);
+    EXPECT_EQ(options.port, std::uint16_t{1});
+}
+
+/// §1：端口上边界 65535 是合法取值。
+TEST(RemoteStartupArgs, ServerWithMaximumPortParses)
+{
+    const auto result = tpe::app::parseRemoteStartupArgs({"--server", "-port", "65535"});
+
+    ASSERT_TRUE(result.has_value()) << "expected --server -port 65535 to parse successfully";
+    const RemoteStartupOptions& options = result.value();
+    EXPECT_EQ(options.mode, RemoteMode::Server);
+    EXPECT_EQ(options.port, std::uint16_t{65535});
+}
+
 /// §1：Client 需要 IPv4 字面量地址与端口。
 TEST(RemoteStartupArgs, ClientWithHostAndPortParses)
 {
@@ -153,10 +175,23 @@ TEST(RemoteStartupArgs, ServerAndConnectTogetherAreRejected)
     expectParseError({"--server", "--connect", "127.0.0.1", "-port", "9000"});
 }
 
+/// §1：互斥与次序无关——先 --connect 后 --server 同样是用法错误。
+TEST(RemoteStartupArgs, ServerAfterConnectIsRejected)
+{
+    expectParseError({"--connect", "127.0.0.1", "-port", "9000", "--server"});
+}
+
 /// §1：重复 --server 为用法错误。
 TEST(RemoteStartupArgs, DuplicateServerIsRejected)
 {
     expectParseError({"--server", "--server"});
+}
+
+/// §1：重复 --connect 为用法错误。
+TEST(RemoteStartupArgs, DuplicateConnectIsRejected)
+{
+    expectParseError(
+        {"--connect", "127.0.0.1", "-port", "9000", "--connect", "127.0.0.1", "-port", "9000"});
 }
 
 /// §1：端口只能是 1–65535 的十进制整数。
@@ -166,6 +201,12 @@ TEST(RemoteStartupArgs, OutOfRangeOrNonNumericPortIsRejected)
         SCOPED_TRACE(std::string("-port ") + port);
         expectParseError({"--server", "-port", port});
     }
+}
+
+/// §1/§8：-port 缺取值（Server 侧悬空）为用法错误。
+TEST(RemoteStartupArgs, DanglingPortValueIsRejected)
+{
+    expectParseError({"--server", "-port"});
 }
 
 /// §1/§8：Client 缺地址（-port 前没有 IP）为用法错误。
@@ -184,6 +225,12 @@ TEST(RemoteStartupArgs, ClientWithoutPortIsRejected)
 TEST(RemoteStartupArgs, InvalidIpv4LiteralIsRejected)
 {
     expectParseError({"--connect", "999.1.1.1", "-port", "9000"});
+}
+
+/// §1：主机名不是 IPv4 字面量，--connect localhost 属用法错误。
+TEST(RemoteStartupArgs, HostnameInsteadOfIpv4LiteralIsRejected)
+{
+    expectParseError({"--connect", "localhost", "-port", "9000"});
 }
 
 /// §8：未知参数为用法错误。
