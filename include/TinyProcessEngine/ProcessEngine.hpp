@@ -31,6 +31,12 @@ public:
 
     /// 打印进程列表(格式不变);平台枚举失败时返回该错误(FR-023/FR-024)。
     Result<void, PlatformError> getProcessList() const;
+
+    /// 返回与本地 `getProcessList()` 相同数据、相同格式的整份文本:
+    /// 每个进程一行 `PID: <pid> ProcessName: <name>`,行分隔为 LF,不含提示符;
+    /// 平台枚举失败时返回该错误(不打印)。供远程执行器使用(实现见 T016)。
+    Result<std::string, PlatformError> processListText() const;
+
     std::shared_ptr<tpe::platform::PlatformProcess> openProcess(tpe::platform::Pid_t pid);
 
     /// 按 PID 查找进程名(单行);未命中时返回 std::nullopt(契约 C-T2)。

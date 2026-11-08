@@ -32,6 +32,14 @@ Result<void, PlatformError> ProcessEngine::getProcessList() const
     return Result<void, PlatformError>::success();
 }
 
+Result<std::string, PlatformError> ProcessEngine::processListText() const
+{
+    // T013 占位:仅为让 RED 测试可编译,不含真实枚举/渲染逻辑(T016 实现)。
+    // 错误码/消息与真实枚举失败明显区分,便于 RED 阶段辨识。
+    return Result<std::string, PlatformError>::error(
+        PlatformError{"ProcessEngine", 0, 0, "processListText not implemented"});
+}
+
 std::shared_ptr<tpe::platform::PlatformProcess> ProcessEngine::openProcess(tpe::platform::Pid_t pid)
 {
     m_currentProcess = m_os->open(pid);
