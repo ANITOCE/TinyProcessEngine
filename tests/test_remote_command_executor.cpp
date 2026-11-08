@@ -67,12 +67,25 @@ public:
         return Result<void, PlatformError>::error(notSupported());
     }
 
+    /// 记录 PID 读取次数：T017 若经 ProcessEngine::searchProcess() 遍历
+    /// ProcessList（绕过 open）也会触碰 getPid，这里同样纳入“未访问引擎”断言。
+    Pid_t getPid() const override
+    {
+        ++m_pidCalls;
+        return PlatformProcess::getPid();
+    }
+
+    /// `getPid` 调用次数；查询参数错误时必须保持执行前的值。
+    std::size_t pidCalls() const { return m_pidCalls; }
+
 private:
     PlatformError notSupported() const
     {
         return PlatformError{"FakeQueryProcess", static_cast<unsigned long>(getPid()), 0,
                              "not supported"};
     }
+
+    mutable std::size_t m_pidCalls = 0;
 };
 
 /// 平台替身：按 PID 维护伪进程；`open` 记录调用次数，
@@ -269,25 +282,34 @@ TEST(RemoteCommandExecutor, UnknownCommandReportsContractText)
 TEST(RemoteCommandExecutor, SearchProcessWithoutPidReportsUsageAndSkipsEngine)
 {
     FakeEngine fake = makeEngine();
-    fake.os->addProcess(static_cast<Pid_t>(4321), "fake.exe");
+    auto process = fake.os->addProcess(static_cast<Pid_t>(4321), "fake.exe");
 
+    const std::size_t pidCallsBefore = process->pidCalls();
     const RemoteCommandResult result = execute("--search-process", *fake.engine);
 
     expectSearchProcessUsageError(result);
     // 缺参数不得访问引擎/平台：fake 的 open 调用计数必须保持 0，
+    // 且不得经 ProcessList 读取 PID（T017 可能用 searchProcess 而非 open），
     // 同时不得崩溃（能走到这里即已执行完毕）。
     EXPECT_EQ(fake.os->openCalls(), std::size_t{0});
+    EXPECT_EQ(process->pidCalls(), pidCallsBefore)
+        << "malformed arguments must not read process PIDs (e.g. via "
+           "ProcessEngine::searchProcess)";
 }
 
 TEST(RemoteCommandExecutor, SearchProcessWithNonNumericPidReportsUsage)
 {
     FakeEngine fake = makeEngine();
-    fake.os->addProcess(static_cast<Pid_t>(4321), "fake.exe");
+    auto process = fake.os->addProcess(static_cast<Pid_t>(4321), "fake.exe");
 
+    const std::size_t pidCallsBefore = process->pidCalls();
     const RemoteCommandResult result = execute("--search-process abc", *fake.engine);
 
     expectSearchProcessUsageError(result);
     EXPECT_EQ(fake.os->openCalls(), std::size_t{0});
+    EXPECT_EQ(process->pidCalls(), pidCallsBefore)
+        << "malformed arguments must not read process PIDs (e.g. via "
+           "ProcessEngine::searchProcess)";
 }
 
 // ---------------------------------------------------------------------------
