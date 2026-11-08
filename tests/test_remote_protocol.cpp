@@ -389,12 +389,13 @@ TEST(RemoteProtocol, EncodeResponseWritesMultiByteBigEndianLengths)
     EXPECT_EQ(data[1], std::uint8_t{0x01}); // promptLen 大端
     EXPECT_EQ(data[2], std::uint8_t{0x2C});
 
+    // outputLen 为 uint32（契约 protocol.md §2 / data-model.md §4）：恰好 4 字节大端。
     const std::size_t outputLenOffset = 3 + prompt.size();
-    EXPECT_EQ(data[outputLenOffset + 0], std::uint8_t{0x00}); // outputLen 大端
-    EXPECT_EQ(data[outputLenOffset + 1], std::uint8_t{0x00});
-    EXPECT_EQ(data[outputLenOffset + 2], std::uint8_t{0x01});
-    EXPECT_EQ(data[outputLenOffset + 3], std::uint8_t{0x11});
-    EXPECT_EQ(data[outputLenOffset + 4], std::uint8_t{0x70});
+    EXPECT_EQ(data[outputLenOffset + 0], std::uint8_t{0x00}); // outputLen = 70000 = 0x00011170
+    EXPECT_EQ(data[outputLenOffset + 1], std::uint8_t{0x01});
+    EXPECT_EQ(data[outputLenOffset + 2], std::uint8_t{0x11});
+    EXPECT_EQ(data[outputLenOffset + 3], std::uint8_t{0x70});
+    EXPECT_EQ(data[outputLenOffset + 4], std::uint8_t{'o'}); // output 首字节紧跟在 4 字节 outputLen 之后
 }
 
 TEST(RemoteProtocol, EncodeResponseRejectsPromptLongerThanUint16)
