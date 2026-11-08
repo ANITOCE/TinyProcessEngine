@@ -336,6 +336,19 @@ TEST(RemoteProtocol, ValidatePayloadEnforcesCommandSizeLimit)
     EXPECT_EQ(error->code, ErrorCode::InvalidPayload);
 }
 
+TEST(RemoteProtocol, ValidatePayloadRejectsCommandLineBreaks)
+{
+    // 契约 §2：COMMAND payload 不得包含 CR/LF；空格等普通字符合法。
+    for (const std::string& payload : {std::string("a\nb"), std::string("a\rb")}) {
+        SCOPED_TRACE(payload);
+        const auto error = tpe::remote::validatePayload(MessageType::Command, ascii(payload));
+        ASSERT_TRUE(error.has_value());
+        EXPECT_EQ(error->code, ErrorCode::InvalidPayload);
+    }
+
+    EXPECT_FALSE(tpe::remote::validatePayload(MessageType::Command, ascii("show running")).has_value());
+}
+
 // ---------------------------------------------------------------------------
 // RESPONSE 编码（contracts/protocol.md §2/§8；data-model.md §4）
 // ---------------------------------------------------------------------------
