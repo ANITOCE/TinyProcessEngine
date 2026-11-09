@@ -35,9 +35,11 @@
  *   - T032 增加 US3 单连接用例：Active/长查询期间第二连接收到 BUSY、首会话不受
  *     影响；清理完成后被处理的连接被接纳；首字节/完整帧的 A/B/C 时点边界。
  *     长查询由 BlockingPlatformOS 注入（目标进程名称读取在 release() 前阻塞）。
- *   - T033 增加 Draining 与 FR-012 命令处置用例：长查询后处理 BYE，已排队的新连接
- *     在 Draining 被处理时收到 BUSY，清理完成后被接纳；未开始命令（已在接收缓冲区
- *     的完整帧/不完整帧）在断开后不执行；已开始命令自然结束且写回失败被忽略。
+ *   - T033 增加 Draining 与 FR-012 命令处置用例：用 Draining 清理延迟接缝把
+ *     “会话已结束、清理未完成”的窗口拉长到可观测，窗口内被处理的连接收到 BUSY、
+ *     清理完成后被接纳；同一读取事件中缓冲的完整 COMMAND 不得在首条 RESPONSE 后
+ *     被续行执行；未开始命令（缓冲完整帧/不完整帧）在断开后不执行；已开始命令
+ *     自然结束且写回失败被忽略。
  *   - T034 增加退出/BYE/断线用例：exit/EOF 经 BYE 确认退出 0；确认前断线与确认超时
  *     退出 1；等待响应/输入时断线的报告时机；活动期 ERROR 原因；非空 BYE 双向处理；
  *     断线与 EOF 竞态；以及 RawSocket 活动会话发送非空 BYE 的 Server 侧应答。
@@ -3473,19 +3475,51 @@ TEST(RemoteSessionSingleConnection, TimingBoundaryCIncompleteWhenFrameExceedsDea
 // ---------------------------------------------------------------------------
 // 套件 RemoteSessionDraining — US3 清理与命令处置（T033）
 //
-// Draining 构造（不新增生产接口）：首 Client 在长查询执行的同一 TCP 缓冲中追加
-// BYE。Server 在同一消息回调内先执行命令、再处理 BYE，之后才回到事件循环；
-// 期间连接的新 Client 事件已排队。T035 应在处理 BYE 后保持 Draining（清理完成
-// 前不回到 Listening），使该排队连接在处理时收到 BUSY；清理完成后连接被接纳。
-// 当前实现处理 BYE 时立即释放会话，排队连接会被当作新会话接纳 → BUSY 断言 RED。
+// Draining 构造（T035 评审修复 C1）：通过
+// RemoteServer::setDrainingCleanupDelayForTesting 注入 500 ms 清理延迟，把
+// “会话已结束、清理尚未完成”的窗口拉长到可观测：
+//   1) 首会话执行长查询期间另写 BYE（新读取事件，命令完成后才会被处理）；
+//   2) 等待 Server stdout 出现 disconnect/ok（证明 BYE 已被处理、进入 Draining）；
+//   3) 窗口内发起第二连接：被处理的连接事件必须收到 BUSY，且 Server 记
+//      reject/busy（位置在 disconnect/ok 之后，排除“会话仍 Active 时被拒”）；
+//   4) 清理完成后发起新连接：必须被接纳（WELCOME → TPE>）。
+// 生产默认清理延迟仍为 10 ms，接缝只存储覆盖值，不改变清理语义。
 //
-// FR-012：未开始（完整帧仍在接收缓冲区/不完整帧）在断开后不得执行；已开始
-// （已进入执行函数）允许自然结束，写回失败忽略。计数由 BlockingPlatformOS
-// 的名称读取次数提供。所有等待有界。
+// FR-012（T035 评审修复 C2）：协议规定 Client 每次只发送一条 COMMAND 并等待
+// RESPONSE，因此一条 COMMAND 完成后不得在同一回调或任何定时器里“续行”执行
+// 同一接收事件中的后续帧。libhv 在定时器已过期时会先处理定时器、跳过本轮 IO
+// （hloop_process_events 的 `goto process_timers`），所以 1 ms 续行定时器可能
+// 先于已排队的 close 事件执行“未开始”的命令。现实现不再续行：剩余字节一律视为
+// “未开始”，只由后续新的读取事件处理；断开时随会话丢弃。
+// 未开始（完整帧仍在接收缓冲区/不完整帧）在断开后不得执行；已开始（已进入
+// 执行函数）允许自然结束，写回失败忽略。计数由 BlockingPlatformOS 的名称读取
+// 次数提供。所有等待有界。
 // ---------------------------------------------------------------------------
 
-/// 长查询执行期间排队的新连接：Draining 处理时收到 BUSY；清理完成后被接纳。
-/// 当前实现的 RED 点：BYE 处理会立即释放会话，排队连接被直接接纳（收不到 BUSY）。
+/// 在 Server 捕获输出中查找 `command=<event>` 且 `result=<result>` 的行起点
+/// （logging.md §1 字段顺序固定）；未找到返回 npos。
+std::size_t findServerLogLine(const std::string& text, const std::string& event,
+                              const std::string& result, std::size_t from = 0)
+{
+    std::size_t position = text.find("command=", from);
+    while (position != std::string::npos) {
+        const std::size_t lineEnd = text.find('\n', position);
+        const std::string line = text.substr(
+            position, lineEnd == std::string::npos ? std::string::npos : lineEnd - position);
+        if (line.find("command=" + event) != std::string::npos &&
+            line.find("result=" + result) != std::string::npos) {
+            return position;
+        }
+        if (lineEnd == std::string::npos) {
+            return std::string::npos;
+        }
+        position = text.find("command=", lineEnd);
+    }
+    return std::string::npos;
+}
+
+/// Draining 窗口：首会话以 BYE 结束并保持占用；窗口内被处理的连接收到 BUSY，
+/// 清理完成后的连接被接纳。
 TEST(RemoteSessionDraining, NewConnectionDuringDrainingGetsBusyThenAcceptedAfterCleanup)
 {
     ScopedRemoteStreams streams;
@@ -3493,6 +3527,8 @@ TEST(RemoteSessionDraining, NewConnectionDuringDrainingGetsBusyThenAcceptedAfter
     BlockingPlatformOS* const platform = os.get();
     LocalServer server(kDrainingBusyPort, std::move(os));
     ScopedPlatformRelease releaseOnExit(*platform);
+    // 拉长 Draining 观测窗口（生产默认 10 ms；见套件注释） 。
+    server.instance().setDrainingCleanupDelayForTesting(std::chrono::milliseconds{500});
 
     if (!server.start()) {
         if (isPortUnavailable(kDrainingBusyPort)) {
@@ -3510,50 +3546,84 @@ TEST(RemoteSessionDraining, NewConnectionDuringDrainingGetsBusyThenAcceptedAfter
     RawSocket first;
     ASSERT_TRUE(openRawSession(first, kDrainingBusyPort, failure)) << failure;
 
-    // 同一 TCP 缓冲：COMMAND 后紧跟 BYE。事件循环在命令执行完之前无法处理其它事件；
-    // 之后处理 BYE，T035 的 Draining 应覆盖已排队的连接事件。
-    std::vector<std::uint8_t> frames =
-        tpe::remote::encodeFrame(tpe::remote::MessageType::Command,
-                                 toBytes("--all-processes"));
-    const std::vector<std::uint8_t> bye =
-        tpe::remote::encodeFrame(tpe::remote::MessageType::Bye, {});
-    frames.insert(frames.end(), bye.begin(), bye.end());
-    ASSERT_TRUE(first.sendBytes(frames)) << "failed to send COMMAND+BYE";
+    // COMMAND 与 BYE 分开写：BYE 在命令执行期间到达，属于“后续新的读取事件”，
+    // 命令完成后才会被处理（C2 的不续行规则不允许它随 COMMAND 的读取事件先执行）。
+    ASSERT_TRUE(first.sendFrame(tpe::remote::MessageType::Command,
+                                toBytes("--all-processes")))
+        << "failed to send COMMAND";
 
     ASSERT_TRUE(platform->waitForNameReads(1, kLongWaitLimit))
         << "the long query must start within 10 s";
     ASSERT_TRUE(platform->waitForBlocked(kWaitLimit))
-        << "the long query must be executing while the second connection arrives";
-
-    // 在命令执行期间建连：TCP 握手由内核完成，Server 事件循环恢复后才处理该事件。
-    RawSocket second;
-    ASSERT_TRUE(second.connectTo(kDrainingBusyPort, failure)) << failure;
+        << "the long query must be executing while BYE arrives";
+    ASSERT_TRUE(first.sendFrame(tpe::remote::MessageType::Bye, {}))
+        << "failed to send BYE";
 
     platform->release();
 
+    // 进入 Draining 的前提：BYE 已被处理（disconnect/ok）。清理定时器随即开始计时。
+    ASSERT_TRUE(waitUntil(
+        [] {
+            return findServerLogLine(capturedServerOut(), "disconnect", "ok") !=
+                   std::string::npos;
+        },
+        kWaitLimit))
+        << "BYE must be handled on the next read event and recorded as disconnect/ok; "
+           "server stdout=["
+        << capturedServerOut() << "]";
+    const std::size_t disconnectAt =
+        findServerLogLine(capturedServerOut(), "disconnect", "ok");
+    ASSERT_NE(disconnectAt, std::string::npos);
+
+    // 清理窗口内被处理的连接必须收到 BUSY。若未进入 Draining（BYE 后立即释放会话），
+    // 该连接会被当作新会话等待 HELLO（收不到 BUSY）—— 这正是本用例要排除的
+    // “只是在 Active 时 BUSY”。
+    RawSocket second;
+    ASSERT_TRUE(second.connectTo(kDrainingBusyPort, failure)) << failure;
+
     tpe::remote::Frame reply;
-    const bool gotBusy = second.receiveFrame(std::chrono::milliseconds{3000}, reply, failure);
-    EXPECT_TRUE(gotBusy)
-        << "a connection processed while the server is Draining must receive BUSY; "
-           "failure="
+    ASSERT_TRUE(second.receiveFrame(std::chrono::milliseconds{3000}, reply, failure))
+        << "a connection processed while the server is Draining must receive BUSY within "
+           "the cleanup window; failure="
         << failure;
-    if (gotBusy) {
-        EXPECT_EQ(static_cast<int>(reply.header.type),
-                  static_cast<int>(tpe::remote::MessageType::Busy))
-            << "the Draining reply must be BUSY";
-        EXPECT_EQ(std::string(reply.payload.begin(), reply.payload.end()),
-                  "Server is busy.")
-            << "BUSY payload must be the fixed text";
-    }
+    EXPECT_EQ(static_cast<int>(reply.header.type),
+              static_cast<int>(tpe::remote::MessageType::Busy))
+        << "the Draining reply must be BUSY";
+    EXPECT_EQ(std::string(reply.payload.begin(), reply.payload.end()), "Server is busy.")
+        << "BUSY payload must be the fixed text";
+
+    // Server 日志顺序佐证：reject/busy 出现在首会话 disconnect/ok 之后，说明该连接是
+    // 在会话结束后的 Draining 中被处理，而不是会话仍 Active 时被拒。
+    ASSERT_TRUE(waitUntil(
+        [disconnectAt] {
+            return findServerLogLine(capturedServerOut(), "reject", "busy", disconnectAt) !=
+                   std::string::npos;
+        },
+        kWaitLimit))
+        << "Server must record reject/busy after disconnect/ok while Draining; stdout=["
+        << capturedServerOut() << "]";
+    const std::size_t busyAt =
+        findServerLogLine(capturedServerOut(), "reject", "busy", disconnectAt);
+    ASSERT_NE(busyAt, std::string::npos);
+
     second.close();
     first.close();
 
     EXPECT_EQ(platform->nameReadCount(), 1)
         << "the started command must execute exactly once (write-back failure ignored)";
+    // 37d8cf4：每次会话结束恰好 1 条 disconnect（Draining 期间自身的 close 事件不记录）。
+    EXPECT_EQ(countOccurrences(capturedServerOut(), "command=disconnect"), 1)
+        << "each session must record exactly one disconnect line; stdout=["
+        << capturedServerOut() << "]";
 
     // 清理完成后被处理的新连接必须被接纳（有界重试；期间 BUSY 属预期）。
     AcceptedClientStart accepted = connectClientAfterCleanup(kDrainingBusyPort, kLongWaitLimit);
     ASSERT_TRUE(accepted.client != nullptr) << accepted.failure;
+    EXPECT_NE(findServerLogLine(capturedServerOut(), "accept", "ok", busyAt),
+              std::string::npos)
+        << "the connection accepted after cleanup must be recorded after the Draining "
+           "reject/busy; stdout=["
+        << capturedServerOut() << "]";
     EXPECT_EQ(platform->nameReadCount(), 1)
         << "no discarded command may run during cleanup";
 
@@ -3565,8 +3635,9 @@ TEST(RemoteSessionDraining, NewConnectionDuringDrainingGetsBusyThenAcceptedAfter
     server.stop();
 }
 
-/// FR-012：断开时仍在接收缓冲区的完整 COMMAND 帧（未取出/未进入执行函数）必须丢弃。
-/// 当前实现 RED：首命令结束后会继续解析缓冲中的第二帧并执行（计数 2）。
+/// FR-012 / C2 回归拦截：同一读取事件中的第二条完整 COMMAND 在首条 RESPONSE 之后
+/// 不得被任何“续行”机制执行（同回调续行或定时器续行都会使计数变为 2、多出 RESPONSE）；
+/// 断开时仍未开始的缓冲帧直接丢弃，不得因续行先于 close 而执行。
 TEST(RemoteSessionDraining, BufferedCommandFrameIsDiscardedAfterDisconnect)
 {
     ScopedRemoteStreams streams;
@@ -3603,10 +3674,33 @@ TEST(RemoteSessionDraining, BufferedCommandFrameIsDiscardedAfterDisconnect)
     ASSERT_TRUE(platform->waitForNameReads(1, kLongWaitLimit))
         << "the first command must start within 10 s";
     ASSERT_TRUE(platform->waitForBlocked(kWaitLimit))
-        << "the first command must still be executing when the client disconnects";
+        << "the first command must still be executing when the peer disconnects";
 
-    first.close(); // 首命令执行期间断开：第二帧（完整但未开始）必须丢弃
     platform->release();
+
+    // 首条 RESPONSE 到达 = 首条命令已完成；此刻第二条完整帧仍在 Server 的接收缓冲。
+    tpe::remote::Frame reply;
+    ASSERT_TRUE(first.receiveFrame(kWaitLimit, reply, failure))
+        << "the first command must produce a RESPONSE; failure=" << failure;
+    EXPECT_EQ(static_cast<int>(reply.header.type),
+              static_cast<int>(tpe::remote::MessageType::Response))
+        << "the first completed command must answer with RESPONSE";
+
+    // 回归拦截点 1：没有新的读取事件时，缓冲帧不得被续行执行（旧实现的 1 ms
+    // 定时器会在此窗口内执行第二条命令并回第二条 RESPONSE）。
+    tpe::remote::Frame unexpected;
+    std::string noReplyFailure;
+    const bool resumed = first.receiveFrame(std::chrono::milliseconds{500}, unexpected,
+                                            noReplyFailure);
+    EXPECT_FALSE(resumed)
+        << "a COMMAND buffered in the same read event must not be resumed after the first "
+           "RESPONSE; received message type "
+        << static_cast<int>(unexpected.header.type);
+    EXPECT_EQ(platform->nameReadCount(), 1)
+        << "exactly one command per read event may enter the execution function";
+
+    // 回归拦截点 2：断开后仍未开始的缓冲帧必须丢弃（不得因续行先于 close 而执行）。
+    first.close();
 
     AcceptedClientStart accepted = connectClientAfterCleanup(kBufferedCommandPort, kLongWaitLimit);
     ASSERT_TRUE(accepted.client != nullptr) << accepted.failure;

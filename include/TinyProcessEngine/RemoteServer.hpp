@@ -49,6 +49,11 @@ public:
     /// 默认值保持契约（5000 ms，contracts/protocol.md §4）；T022 从 Impl 读取。
     void setHandshakeTimeoutForTesting(std::chrono::milliseconds timeout);
 
+    /// 测试接缝：覆盖 Draining 清理延迟（仅存储，不改变清理语义）。
+    /// 默认值保持契约行为（10 ms，contracts/protocol.md §3/§6），仅用于在测试中
+    /// 拉长“会话已结束、清理未完成”的观测窗口；须在 `start()` 之前调用。
+    void setDrainingCleanupDelayForTesting(std::chrono::milliseconds delay);
+
 private:
     struct Impl; // 定义在 .cpp：libhv 事件循环与会话状态
     std::unique_ptr<Impl> m_impl;

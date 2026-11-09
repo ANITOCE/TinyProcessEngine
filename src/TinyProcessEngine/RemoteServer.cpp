@@ -130,6 +130,8 @@ struct RemoteServer::Impl {
     /// 活动期 COMMAND 的执行目标；只在事件循环线程访问（contracts/logging.md §4）。
     tpe::ProcessEngine& engine;
     std::chrono::milliseconds handshakeTimeout{5000};
+    /// Draining 清理延迟；仅测试接缝覆盖（默认保持契约行为）。
+    std::chrono::milliseconds drainingCleanupDelay{kDrainingCleanupDelayMs};
 
     // ---- 控制面：start()/stop() 调用线程访问，与事件循环线程通过原子量同步 ----
     std::mutex controlMutex; // 串行化 start()/stop()
@@ -502,9 +504,13 @@ struct RemoteServer::Impl {
             finishDraining(current);
             return;
         }
+        int timeoutMs = static_cast<int>(drainingCleanupDelay.count());
+        if (timeoutMs < 1) {
+            timeoutMs = 1;
+        }
         const std::weak_ptr<Session> weak = current;
         current->cleanupTimer = loop->setTimeout(
-            kDrainingCleanupDelayMs, [this, weak](hv::TimerID) { onDrainingCleanup(weak); });
+            timeoutMs, [this, weak](hv::TimerID) { onDrainingCleanup(weak); });
     }
 
     void onDrainingCleanup(const std::weak_ptr<Session>& weak)
@@ -662,6 +668,11 @@ bool RemoteServer::isRunning() const
 void RemoteServer::setHandshakeTimeoutForTesting(std::chrono::milliseconds timeout)
 {
     m_impl->handshakeTimeout = timeout;
+}
+
+void RemoteServer::setDrainingCleanupDelayForTesting(std::chrono::milliseconds delay)
+{
+    m_impl->drainingCleanupDelay = delay;
 }
 
 } // namespace tpe::remote
