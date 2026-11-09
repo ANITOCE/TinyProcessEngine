@@ -694,6 +694,26 @@ PeerEvent waitForPeerEvent(SocketHandle handle, std::chrono::milliseconds timeou
     }
 }
 
+/// 消费并校验 Client 连接后必然发送的 HELLO 帧。
+/// ScriptedServer 的脚本必须先调用它，之后的 Data/Closed 判定才针对握手答复之后的行为；
+/// 否则 T023 正确实现时首个对端事件会是 HELLO，脚本会误判为失败。
+bool consumeClientHello(SocketHandle handle, std::string& failure)
+{
+    tpe::remote::Frame hello;
+    if (!receiveFrameBefore(handle, kWaitLimit, hello, failure)) {
+        return false;
+    }
+    if (hello.header.version != tpe::remote::kProtocolVersion) {
+        failure = "Client HELLO must use protocol version 1";
+        return false;
+    }
+    if (hello.header.type != tpe::remote::MessageType::Hello) {
+        failure = "Client must open the session with HELLO";
+        return false;
+    }
+    return true;
+}
+
 /// RAII 原始 Client socket（仅 127.0.0.1 回环），析构时关闭。
 class RawSocket {
 public:
@@ -1465,6 +1485,9 @@ TEST(RemoteSession, ServerHandshakeTimeoutReleasesSlot)
         << "ERROR must not arrive before the injected handshake deadline "
            "(100 ms - 20 ms tolerance); arrived after "
         << elapsed.count() << " ms";
+    EXPECT_LT(elapsed, std::chrono::milliseconds{500})
+        << "ERROR must arrive near the injected 100 ms handshake deadline; arrived after "
+        << elapsed.count() << " ms (an implementation ignoring the injected timeout would fail)";
 
     ASSERT_EQ(static_cast<int>(reply.header.type),
               static_cast<int>(tpe::remote::MessageType::Error));
@@ -1521,6 +1544,9 @@ TEST(RemoteSession, ClientReportsSilentServer)
 {
     ScopedRemoteStreams streams;
     ScriptedServer server([](SocketHandle socket, std::string& failure) {
+        if (!consumeClientHello(socket, failure)) {
+            return false;
+        }
         // 不发任何字节；等 Client 在注入的 100 ms 静默期限后关闭连接。
         if (waitForPeerEvent(socket, std::chrono::milliseconds{2000}) != PeerEvent::Closed) {
             failure = "Client must close the connection after the first-byte deadline";
@@ -1555,6 +1581,9 @@ TEST(RemoteSession, ClientAcceptsBusyWhenFirstByteArrivesBeforeDeadline)
     const std::vector<std::uint8_t> busyFrame =
         tpe::remote::encodeFrame(tpe::remote::MessageType::Busy, toBytes("Server is busy."));
     ScriptedServer server([busyFrame](SocketHandle socket, std::string& failure) {
+        if (!consumeClientHello(socket, failure)) {
+            return false;
+        }
         // 首字节 120 ms：比注入期限早 80 ms（> Windows 15.6 ms 计时粒度）。
         std::this_thread::sleep_for(std::chrono::milliseconds{120});
         if (!sendAllBytes(socket, busyFrame.data(), 1)) {
@@ -1635,6 +1664,9 @@ TEST(RemoteSession, ClientReportsIncompleteFrame)
 {
     ScopedRemoteStreams streams;
     ScriptedServer server([](SocketHandle socket, std::string& failure) {
+        if (!consumeClientHello(socket, failure)) {
+            return false;
+        }
         const std::vector<std::uint8_t> busyFrame =
             tpe::remote::encodeFrame(tpe::remote::MessageType::Busy, toBytes("Server is busy."));
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
@@ -1658,7 +1690,9 @@ TEST(RemoteSession, ClientReportsIncompleteFrame)
     ClientRun client("127.0.0.1", server.port(), timeouts);
     client.start();
 
-    ASSERT_TRUE(client.waitDone(kWaitLimit)) << "client did not return within 5 s";
+    ASSERT_TRUE(client.waitDone(std::chrono::milliseconds{1500}))
+        << "client must return after the injected frameComplete deadline (200 ms), "
+           "well before the 2000 ms firstByte deadline";
     ASSERT_TRUE(client.join());
     ASSERT_EQ(client.exitCode(), 1);
     ASSERT_NE(client.err().find("Server sent an incomplete message."), std::string::npos)
@@ -1676,6 +1710,9 @@ TEST(RemoteSession, ClientReportsUnexpectedHandshakeType)
 {
     ScopedRemoteStreams streams;
     ScriptedServer server([](SocketHandle socket, std::string& failure) {
+        if (!consumeClientHello(socket, failure)) {
+            return false;
+        }
         const auto payload =
             tpe::remote::encodeResponse(tpe::remote::ResponseStatus::Continue, "", "");
         if (!payload.has_value()) {
@@ -1713,6 +1750,9 @@ TEST(RemoteSession, ClientReportsInvalidWelcomePayload)
 {
     ScopedRemoteStreams streams;
     ScriptedServer server([](SocketHandle socket, std::string& failure) {
+        if (!consumeClientHello(socket, failure)) {
+            return false;
+        }
         if (!sendFrameBytes(socket, tpe::remote::MessageType::Welcome, toBytes("x"))) {
             failure = "failed to send the non-empty WELCOME";
             return false;
