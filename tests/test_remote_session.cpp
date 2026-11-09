@@ -32,6 +32,9 @@
  *     枚举失败、未知命令、结果超限、不可编码、不可编码优先于超限）均保留 `TPE>`
  *     并可用 `help` 继续接收命令；发送前校验（65,537 字节、非法 UTF-8、裸 `CR`）
  *     由脚本化 Server 断言被拒命令未以 COMMAND 发出，且不产生未知命令响应。
+ *   - T032 增加 US3 单连接用例：Active/长查询期间第二连接收到 BUSY、首会话不受
+ *     影响；清理完成后被处理的连接被接纳；首字节/完整帧的 A/B/C 时点边界。
+ *     长查询由 BlockingPlatformOS 注入（目标进程名称读取在 release() 前阻塞）。
  *
  * 约束：仅 GoogleTest + 标准库 + 平台 socket API；不启动子进程；除 127.0.0.1
  * 回环外不访问网络。
@@ -113,6 +116,11 @@ constexpr std::uint16_t kPeerClosePort = 18086;
 constexpr std::uint16_t kQueryAllProcessesPort = 18087;
 constexpr std::uint16_t kQuerySearchProcessPort = 18088;
 constexpr std::uint16_t kQueryUtf8NamePort = 18089;
+
+/// T032 单连接用例的独立端口（18099–18101，与既有用例互不重叠）。
+constexpr std::uint16_t kActiveBusyPort = 18099;
+constexpr std::uint16_t kLongQueryPort = 18100;
+constexpr std::uint16_t kCleanupAcceptPort = 18101;
 
 /// T027 失败查询用例的独立端口（18090–18098，与既有用例互不重叠）。
 constexpr std::uint16_t kQueryFailurePidNotFoundPort = 18090;
@@ -311,6 +319,17 @@ public:
             const std::lock_guard<std::mutex> lock(m_mutex);
             m_text += text;
             m_eof = true;
+        }
+        m_condition.notify_all();
+    }
+
+    /// T032：追加输入但不置 EOF；文本消费完后继续等待下一条输入。
+    /// 用于同一会话内先发送查询、待响应后再发送 help/exit 的场景。
+    void pushInput(std::string text)
+    {
+        {
+            const std::lock_guard<std::mutex> lock(m_mutex);
+            m_text += text;
         }
         m_condition.notify_all();
     }
@@ -1175,6 +1194,134 @@ public:
 };
 
 // ---------------------------------------------------------------------------
+// T032 可控长查询平台
+//
+// 只扩展测试夹具（不改生产接口）：目标进程的 getProcessName() 在 release() 前阻塞，
+// 从而让一条 `--all-processes`/`--search-process` 查询持续执行；名称读取次数即
+// 命令进入执行函数的次数，用于断言“未开始命令丢弃 / 已开始命令自然结束”。
+// ---------------------------------------------------------------------------
+
+class BlockingPlatformOS;
+
+/// 目标进程：名称读取先登记并阻塞，release() 后恢复为正常名称。
+class BlockingProcess : public SnapshotProcess {
+public:
+    BlockingProcess(tpe::platform::Pid_t pid, std::string name, BlockingPlatformOS& owner)
+        : SnapshotProcess(pid, std::move(name))
+        , m_owner(owner)
+    {
+    }
+
+    std::string getProcessName() const override;
+
+private:
+    BlockingPlatformOS& m_owner;
+};
+
+/// 可控长查询平台：一个目标进程；名称读取可阻塞并可计数。
+class BlockingPlatformOS : public tpe::platform::PlatformOS {
+public:
+    BlockingPlatformOS()
+    {
+        ProcessList.push_back(std::make_shared<BlockingProcess>(4321, "blocking.exe", *this));
+    }
+
+    std::shared_ptr<tpe::platform::PlatformProcess> open(tpe::platform::Pid_t pid) override
+    {
+        for (const std::shared_ptr<tpe::platform::PlatformProcess>& process : ProcessList) {
+            if (process->getPid() == pid) {
+                return process;
+            }
+        }
+        return nullptr;
+    }
+
+    tpe::Result<std::vector<tpe::platform::Pid_t>, tpe::PlatformError> getAllProcessesPid()
+        override
+    {
+        std::vector<tpe::platform::Pid_t> pids;
+        for (const std::shared_ptr<tpe::platform::PlatformProcess>& process : ProcessList) {
+            pids.push_back(process->getPid());
+        }
+        return tpe::Result<std::vector<tpe::platform::Pid_t>, tpe::PlatformError>::success(
+            std::move(pids));
+    }
+
+    void getAllProcesses(std::vector<tpe::platform::Pid_t>) override {}
+
+    /// 名称读取次数（= 命令进入执行函数的次数）。
+    int nameReadCount() const { return m_nameReads.load(std::memory_order_acquire); }
+
+    bool waitForNameReads(int count, std::chrono::milliseconds timeout) const
+    {
+        return waitUntil([this, count] { return nameReadCount() >= count; }, timeout);
+    }
+
+    /// 当前是否有命令正在执行（名称读取尚未返回）。
+    bool isBlocked() const
+    {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        return m_blocked;
+    }
+
+    bool waitForBlocked(std::chrono::milliseconds timeout) const
+    {
+        return waitUntil([this] { return isBlocked(); }, timeout);
+    }
+
+    /// 放行所有（包括后续）名称读取；可重复调用。
+    void release()
+    {
+        {
+            const std::lock_guard<std::mutex> lock(m_mutex);
+            m_released = true;
+        }
+        m_condition.notify_all();
+    }
+
+    /// 夹具内部：登记一次名称读取并按需阻塞（带上限，绝不永久挂起）。
+    void enterNameRead() const
+    {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_nameReads.fetch_add(1, std::memory_order_acq_rel);
+        m_blocked = true;
+        m_condition.notify_all();
+        m_condition.wait_for(lock, std::chrono::seconds{30}, [this] { return m_released; });
+        m_blocked = false;
+    }
+
+private:
+    mutable std::mutex m_mutex;
+    mutable std::condition_variable m_condition;
+    mutable std::atomic<int> m_nameReads{0};
+    mutable bool m_blocked = false;
+    bool m_released = false;
+};
+
+std::string BlockingProcess::getProcessName() const
+{
+    m_owner.enterNameRead();
+    return SnapshotProcess::getProcessName();
+}
+
+/// RAII：用例提前返回时也必须放行长查询，避免 Server::stop() 等待阻塞调用。
+class ScopedPlatformRelease {
+public:
+    explicit ScopedPlatformRelease(BlockingPlatformOS& platform)
+        : m_platform(platform)
+    {
+    }
+
+    ~ScopedPlatformRelease() { m_platform.release(); }
+
+    ScopedPlatformRelease(const ScopedPlatformRelease&) = delete;
+    ScopedPlatformRelease& operator=(const ScopedPlatformRelease&) = delete;
+
+private:
+    BlockingPlatformOS& m_platform;
+};
+
+// ---------------------------------------------------------------------------
 // Server / Client 封装
 // ---------------------------------------------------------------------------
 
@@ -1565,6 +1712,12 @@ constexpr const char* kUnencodableCommandText =
     "Command cannot be encoded as UTF-8.";
 constexpr const char* kLineBreakCommandText =
     "Command must not contain line breaks.";
+
+/// 长查询用例的最长等待（单次有界；契约 30 秒语义由默认 ClientTimeouts 保持）。
+constexpr std::chrono::milliseconds kLongWaitLimit{10000};
+
+/// 长查询在第二连接进入等待后继续执行的目标时长（brief：>5 秒）。
+constexpr std::chrono::milliseconds kLongQueryDuration{5500};
 
 /// 非法 UTF-8 字节（0xFF 永不出现于合法 UTF-8 序列）的进程名。
 std::string invalidUtf8ProcessName()
@@ -2869,4 +3022,435 @@ TEST(RemoteSessionPreSendValidation, OversizeUnknownCommandOnlyHitsLocalLengthCh
     // 若该命令被发送，Server 会回 unknown 文本；脚本化 Server 要求首条 COMMAND 为
     // help，配合 expectLocalRejectionThenHelp 的“无未知命令响应”断言共同证明未发送。
     expectLocalRejectionThenHelp(result, kOversizeCommandText);
+}
+
+// ---------------------------------------------------------------------------
+// T032 单连接辅助
+// ---------------------------------------------------------------------------
+
+/// 以原始 socket 完成 HELLO/WELCOME，得到一个活动会话。
+bool openRawSession(RawSocket& socket, std::uint16_t port, std::string& failure)
+{
+    if (!socket.connectTo(port, failure)) {
+        return false;
+    }
+    if (!socket.sendFrame(tpe::remote::MessageType::Hello, toBytes("TPE"))) {
+        failure = "failed to send HELLO";
+        return false;
+    }
+    tpe::remote::Frame reply;
+    if (!socket.receiveFrame(kWaitLimit, reply, failure)) {
+        return false;
+    }
+    if (reply.header.type != tpe::remote::MessageType::Welcome) {
+        failure = "expected WELCOME while opening a raw session, got type " +
+                  std::to_string(static_cast<int>(reply.header.type));
+        return false;
+    }
+    if (!reply.payload.empty()) {
+        failure = "WELCOME payload must be empty";
+        return false;
+    }
+    return true;
+}
+
+/// 在清理完成后启动一个可用的 Client（有界重试；每次被 BUSY 拒绝都继续等待）。
+/// 返回 nullptr 时 failure 记录最后一次原因；调用方负责最终断言。
+struct AcceptedClientStart {
+    std::unique_ptr<ClientRun> client;
+    std::string failure;
+};
+
+AcceptedClientStart connectClientAfterCleanup(std::uint16_t port,
+                                              std::chrono::milliseconds budget)
+{
+    const auto deadline = std::chrono::steady_clock::now() + budget;
+    std::string lastFailure = "no connection attempted";
+    while (std::chrono::steady_clock::now() < deadline) {
+        auto candidate = std::make_unique<ClientRun>("127.0.0.1", port);
+        candidate->start();
+        if (waitUntil(
+                [&candidate] {
+                    return candidate->out().find("TPE>") != std::string::npos;
+                },
+                std::chrono::milliseconds{2000})) {
+            return {std::move(candidate), std::string{}};
+        }
+        if (!candidate->waitDone(std::chrono::milliseconds{2000})) {
+            return {nullptr,
+                    "candidate client neither reached 'TPE>' nor exited within 2 s"};
+        }
+        candidate->join();
+        lastFailure = "candidate exited with " + std::to_string(candidate->exitCode()) +
+                      "; stderr=[" + candidate->err() + "]";
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    }
+    return {nullptr, "server did not accept a client before the budget expired; last: " +
+                         lastFailure};
+}
+
+// ---------------------------------------------------------------------------
+// 套件 RemoteSessionSingleConnection — US3 单连接（T032）
+//
+// 占用判定以连接事件被处理时的状态为准（protocol §3）：Active/长查询期间的
+// 第二连接收到 BUSY 并退出 1，首会话不受影响；清理完成后被处理的连接被接纳。
+// 长查询由 BlockingPlatformOS 注入（目标进程名称读取阻塞）；所有等待有界。
+// ---------------------------------------------------------------------------
+
+/// Active 期间第二连接被处理时立即收到 BUSY；首会话保持可用（help 正常）。
+/// 该用例复用 US1 已实现的行为，作为回归基线记录，不为制造 RED 改实现。
+TEST(RemoteSessionSingleConnection, ActiveSessionSecondClientGetsBusyImmediately)
+{
+    ScopedRemoteStreams streams;
+    LocalServer server(kActiveBusyPort);
+    if (!server.start()) {
+        if (isPortUnavailable(kActiveBusyPort)) {
+            GTEST_SKIP() << "TCP port " << kActiveBusyPort
+                         << " is unavailable (bound by another process or reserved by the "
+                            "system); skipping instead of misreporting a genuine port "
+                            "conflict as a failure.";
+        }
+        FAIL() << "RemoteServer::start() must succeed on free port " << kActiveBusyPort;
+    }
+    ASSERT_TRUE(waitUntil([&server] { return server.instance().isRunning(); }, kWaitLimit))
+        << "isRunning() must become true within 5 s after start() returned true";
+
+    ClientRun first("127.0.0.1", kActiveBusyPort);
+    first.start();
+    if (!waitUntil([&first] { return first.out().find("TPE>") != std::string::npos; },
+                   kWaitLimit)) {
+        stdinBuffer().interrupt();
+        server.stop();
+        first.waitDone(std::chrono::milliseconds{1000});
+        FAIL() << "first client did not display 'TPE>' within 5 s; stdout=[" << first.out()
+               << "] stderr=[" << first.err() << "]";
+    }
+
+    const auto connectedAt = std::chrono::steady_clock::now();
+    ClientRun second("127.0.0.1", kActiveBusyPort);
+    second.start();
+    if (!second.waitDone(kWaitLimit)) {
+        stdinBuffer().interrupt();
+        server.stop();
+        second.waitDone(std::chrono::milliseconds{1000});
+        FAIL() << "second client did not return within 5 s; stdout=[" << second.out()
+               << "] stderr=[" << second.err() << "]";
+    }
+    ASSERT_TRUE(second.join());
+    const auto reactedAfter = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - connectedAt);
+
+    EXPECT_EQ(second.exitCode(), 1) << "BUSY must end the second client with exit code 1";
+    EXPECT_NE(second.err().find("Connection failed."), std::string::npos)
+        << "second client stderr=[" << second.err() << "]";
+    EXPECT_NE(second.err().find("Server is busy."), std::string::npos)
+        << "second client stderr=[" << second.err() << "]";
+    EXPECT_LT(reactedAfter, std::chrono::milliseconds{3000})
+        << "the server must send BUSY when it processes the connection event (not after an "
+           "idle delay); reaction took "
+        << reactedAfter.count() << " ms";
+
+    // 首会话不受影响：查询与 help 仍可用。
+    stdinBuffer().pushInput("help\n");
+    if (!waitUntil(
+            [&first] { return first.out().find(kHelpText) != std::string::npos; }, kWaitLimit)) {
+        stdinBuffer().interrupt();
+        server.stop();
+        first.waitDone(std::chrono::milliseconds{1000});
+        FAIL() << "first client must remain usable after the BUSY rejection; stdout=["
+               << first.out() << "] stderr=[" << first.err() << "]";
+    }
+
+    stdinBuffer().pushInput("exit\n");
+    ASSERT_TRUE(first.waitDone(kWaitLimit)) << "first client did not exit; stdout=["
+                                            << first.out() << "]";
+    ASSERT_TRUE(first.join());
+    EXPECT_EQ(first.exitCode(), 0);
+
+    server.stop();
+}
+
+/// 长查询（>5 秒）期间第二连接到达：首会话保持占用直到该连接事件被处理；
+/// 第二 Client 收到 BUSY 并退出 1；首查询完成后首 Client 仍可用（help）。
+TEST(RemoteSessionSingleConnection, LongRunningQueryKeepsSessionBusyAndFirstClientUsable)
+{
+    ScopedRemoteStreams streams;
+    auto os = std::make_unique<BlockingPlatformOS>();
+    BlockingPlatformOS* const platform = os.get();
+    LocalServer server(kLongQueryPort, std::move(os));
+    ScopedPlatformRelease releaseOnExit(*platform);
+
+    if (!server.start()) {
+        if (isPortUnavailable(kLongQueryPort)) {
+            GTEST_SKIP() << "TCP port " << kLongQueryPort
+                         << " is unavailable (bound by another process or reserved by the "
+                            "system); skipping instead of misreporting a genuine port "
+                            "conflict as a failure.";
+        }
+        FAIL() << "RemoteServer::start() must succeed on free port " << kLongQueryPort;
+    }
+    ASSERT_TRUE(waitUntil([&server] { return server.instance().isRunning(); }, kWaitLimit))
+        << "isRunning() must become true within 5 s after start() returned true";
+
+    ClientRun first("127.0.0.1", kLongQueryPort);
+    first.start();
+    if (!waitUntil([&first] { return first.out().find("TPE>") != std::string::npos; },
+                   kWaitLimit)) {
+        stdinBuffer().interrupt();
+        server.stop();
+        first.waitDone(std::chrono::milliseconds{1000});
+        FAIL() << "first client did not display 'TPE>' within 5 s; stdout=[" << first.out()
+               << "] stderr=[" << first.err() << "]";
+    }
+
+    stdinBuffer().pushInput("--all-processes\n");
+    if (!platform->waitForNameReads(1, kLongWaitLimit)) {
+        stdinBuffer().interrupt();
+        server.stop();
+        first.waitDone(std::chrono::milliseconds{1000});
+        FAIL() << "the long query did not start within 10 s; client stdout=[" << first.out()
+               << "] client stderr=[" << first.err() << "]";
+    }
+
+    ClientRun second("127.0.0.1", kLongQueryPort);
+    second.start();
+    std::this_thread::sleep_for(kLongQueryDuration);
+    EXPECT_TRUE(platform->isBlocked())
+        << "the query must keep executing more than 5 s after the second connection arrived";
+
+    platform->release();
+
+    if (!second.waitDone(kLongWaitLimit)) {
+        stdinBuffer().interrupt();
+        server.stop();
+        second.waitDone(std::chrono::milliseconds{1000});
+        FAIL() << "second client did not return within 10 s after the long query finished; "
+                  "stdout=["
+               << second.out() << "] stderr=[" << second.err() << "]";
+    }
+    ASSERT_TRUE(second.join());
+    EXPECT_EQ(second.exitCode(), 1)
+        << "BUSY (sent when the queued connection event is processed) must exit 1; stderr=["
+        << second.err() << "]";
+    EXPECT_NE(second.err().find("Server is busy."), std::string::npos)
+        << "second client stderr=[" << second.err() << "]";
+
+    // 首会话未被影响：查询结果正常渲染并回到 TPE>。
+    if (!waitUntil(
+            [&first] {
+                const std::string out = normalizedLineEndings(first.out());
+                return out.find("blocking.exe") != std::string::npos &&
+                       out.find("TPE>", out.find("blocking.exe")) != std::string::npos;
+            },
+            kLongWaitLimit)) {
+        server.stop();
+        FAIL() << "first client must render the query result after the long query finishes; "
+                  "stdout=["
+               << first.out() << "] stderr=[" << first.err() << "]";
+    }
+
+    stdinBuffer().pushInput("help\n");
+    if (!waitUntil([&first] { return first.out().find(kHelpText) != std::string::npos; },
+                   kWaitLimit)) {
+        stdinBuffer().interrupt();
+        server.stop();
+        first.waitDone(std::chrono::milliseconds{1000});
+        FAIL() << "first client must remain usable after the long query; stdout=["
+               << first.out() << "] stderr=[" << first.err() << "]";
+    }
+
+    stdinBuffer().pushInput("exit\n");
+    ASSERT_TRUE(first.waitDone(kWaitLimit)) << "first client did not exit; stdout=["
+                                            << first.out() << "]";
+    ASSERT_TRUE(first.join());
+    EXPECT_EQ(first.exitCode(), 0);
+
+    server.stop();
+}
+
+/// 首会话断开且清理完成后才被处理的连接被接纳（处理时状态唯一规则）。
+TEST(RemoteSessionSingleConnection, ConnectionProcessedAfterCleanupIsAccepted)
+{
+    ScopedRemoteStreams streams;
+    LocalServer server(kCleanupAcceptPort);
+    if (!server.start()) {
+        if (isPortUnavailable(kCleanupAcceptPort)) {
+            GTEST_SKIP() << "TCP port " << kCleanupAcceptPort
+                         << " is unavailable (bound by another process or reserved by the "
+                            "system); skipping instead of misreporting a genuine port "
+                            "conflict as a failure.";
+        }
+        FAIL() << "RemoteServer::start() must succeed on free port " << kCleanupAcceptPort;
+    }
+    ASSERT_TRUE(waitUntil([&server] { return server.instance().isRunning(); }, kWaitLimit))
+        << "isRunning() must become true within 5 s after start() returned true";
+
+    ClientRun first("127.0.0.1", kCleanupAcceptPort);
+    first.start();
+    if (!waitUntil([&first] { return first.out().find("TPE>") != std::string::npos; },
+                   kWaitLimit)) {
+        stdinBuffer().interrupt();
+        server.stop();
+        first.waitDone(std::chrono::milliseconds{1000});
+        FAIL() << "first client did not display 'TPE>' within 5 s; stdout=[" << first.out()
+               << "] stderr=[" << first.err() << "]";
+    }
+    stdinBuffer().pushInput("exit\n");
+    if (!first.waitDone(kWaitLimit)) {
+        stdinBuffer().interrupt();
+        server.stop();
+        FAIL() << "first client did not exit within 5 s; stdout=[" << first.out()
+               << "] stderr=[" << first.err() << "]";
+    }
+    ASSERT_TRUE(first.join());
+    ASSERT_EQ(first.exitCode(), 0)
+        << "fixture sanity: the first session must end normally before reconnecting";
+
+    // 清理完成后的连接必须被接纳；若仍处于清理/占用则收到 BUSY，有界重试。
+    AcceptedClientStart accepted = connectClientAfterCleanup(kCleanupAcceptPort, kLongWaitLimit);
+    ASSERT_TRUE(accepted.client != nullptr) << accepted.failure;
+
+    stdinBuffer().pushInput("help\n");
+    ASSERT_TRUE(waitUntil(
+        [&accepted] { return accepted.client->out().find(kHelpText) != std::string::npos; },
+        kWaitLimit))
+        << "the accepted client must start from a clean, usable prompt; stdout=["
+        << accepted.client->out() << "] stderr=[" << accepted.client->err() << "]";
+
+    stdinBuffer().pushInput("exit\n");
+    ASSERT_TRUE(accepted.client->waitDone(kWaitLimit));
+    ASSERT_TRUE(accepted.client->join());
+    EXPECT_EQ(accepted.client->exitCode(), 0);
+
+    server.stop();
+}
+
+/// 时点边界 A（缩短期限模拟 30 秒规则）：首字节及时、完整帧在首字节后期限内 → BUSY。
+TEST(RemoteSessionSingleConnection, TimingBoundaryABusyWhenFirstByteAndFrameAreOnTime)
+{
+    ScopedRemoteStreams streams;
+    const std::vector<std::uint8_t> busyFrame =
+        tpe::remote::encodeFrame(tpe::remote::MessageType::Busy, toBytes("Server is busy."));
+    ScriptedServer server([busyFrame](SocketHandle socket, std::string& failure) {
+        if (!consumeClientHello(socket, failure)) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{150});
+        if (!sendAllBytes(socket, busyFrame.data(), 1)) {
+            failure = "failed to send the first BUSY byte";
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+        if (!sendAllBytes(socket, busyFrame.data() + 1, busyFrame.size() - 1)) {
+            failure = "failed to send the remaining BUSY bytes";
+            return false;
+        }
+        if (waitForPeerEvent(socket, std::chrono::milliseconds{2000}) != PeerEvent::Closed) {
+            failure = "Client must close the connection after receiving BUSY";
+            return false;
+        }
+        return true;
+    });
+    ASSERT_TRUE(server.start()) << "scripted server must bind 127.0.0.1";
+
+    tpe::remote::ClientTimeouts timeouts;
+    timeouts.firstByte = std::chrono::milliseconds{500};
+    timeouts.frameComplete = std::chrono::milliseconds{400};
+    ClientRun client("127.0.0.1", server.port(), timeouts);
+    client.start();
+
+    ASSERT_TRUE(client.waitDone(kWaitLimit)) << "client did not return within 5 s";
+    ASSERT_TRUE(client.join());
+    ASSERT_EQ(client.exitCode(), 1);
+    EXPECT_NE(client.err().find("Server is busy."), std::string::npos)
+        << "a first byte inside the deadline and a complete frame inside the frame deadline "
+           "must be reported as BUSY; stderr=["
+        << client.err() << "]";
+    EXPECT_EQ(client.err().find("No response from server."), std::string::npos)
+        << "a timely first byte must not be reported as silence; stderr=[" << client.err()
+        << "]";
+
+    ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
+    EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
+}
+
+/// 时点边界 B：首字节迟到（晚于 30 秒语义的注入期限）→ 静默超时退出 1。
+TEST(RemoteSessionSingleConnection, TimingBoundaryBSilentTimeoutWhenFirstByteIsLate)
+{
+    ScopedRemoteStreams streams;
+    const std::vector<std::uint8_t> busyFrame =
+        tpe::remote::encodeFrame(tpe::remote::MessageType::Busy, toBytes("Server is busy."));
+    ScriptedServer server([busyFrame](SocketHandle socket, std::string& failure) {
+        if (!consumeClientHello(socket, failure)) {
+            return false;
+        }
+        // 首字节 600 ms：晚于注入的 500 ms 期限（保留 > Windows 计时粒度的余量）。
+        std::this_thread::sleep_for(std::chrono::milliseconds{600});
+        sendAllBytes(socket, busyFrame.data(), busyFrame.size());
+        waitForPeerEvent(socket, std::chrono::milliseconds{1000});
+        return true;
+    });
+    ASSERT_TRUE(server.start()) << "scripted server must bind 127.0.0.1";
+
+    tpe::remote::ClientTimeouts timeouts;
+    timeouts.firstByte = std::chrono::milliseconds{500};
+    ClientRun client("127.0.0.1", server.port(), timeouts);
+    client.start();
+
+    ASSERT_TRUE(client.waitDone(kWaitLimit)) << "client did not return within 5 s";
+    ASSERT_TRUE(client.join());
+    ASSERT_EQ(client.exitCode(), 1);
+    EXPECT_NE(client.err().find("No response from server."), std::string::npos)
+        << "a late first byte must be reported as silence; stderr=[" << client.err() << "]";
+    EXPECT_EQ(client.err().find("Server is busy."), std::string::npos)
+        << "a late first byte must not be treated as BUSY; stderr=[" << client.err() << "]";
+
+    ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
+    EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
+}
+
+/// 时点边界 C：首字节及时但完整帧超过首字节后期限 → incomplete message、退出 1。
+TEST(RemoteSessionSingleConnection, TimingBoundaryCIncompleteWhenFrameExceedsDeadline)
+{
+    ScopedRemoteStreams streams;
+    ScriptedServer server([](SocketHandle socket, std::string& failure) {
+        if (!consumeClientHello(socket, failure)) {
+            return false;
+        }
+        const std::vector<std::uint8_t> busyFrame =
+            tpe::remote::encodeFrame(tpe::remote::MessageType::Busy,
+                                     toBytes("Server is busy."));
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        // 只发送帧头（首字节已到达），其余字节永不到达。
+        const std::size_t partial = tpe::remote::kFrameLengthBytes + 2;
+        if (!sendAllBytes(socket, busyFrame.data(), partial)) {
+            failure = "failed to send the partial frame";
+            return false;
+        }
+        if (waitForPeerEvent(socket, std::chrono::milliseconds{2000}) != PeerEvent::Closed) {
+            failure = "Client must close the connection after the frame-complete deadline";
+            return false;
+        }
+        return true;
+    });
+    ASSERT_TRUE(server.start()) << "scripted server must bind 127.0.0.1";
+
+    tpe::remote::ClientTimeouts timeouts;
+    timeouts.firstByte = std::chrono::milliseconds{3000};
+    timeouts.frameComplete = std::chrono::milliseconds{300};
+    ClientRun client("127.0.0.1", server.port(), timeouts);
+    client.start();
+
+    ASSERT_TRUE(client.waitDone(std::chrono::milliseconds{1500}))
+        << "client must return after the injected frameComplete deadline (300 ms)";
+    ASSERT_TRUE(client.join());
+    ASSERT_EQ(client.exitCode(), 1);
+    EXPECT_NE(client.err().find("Server sent an incomplete message."), std::string::npos)
+        << "client stderr=[" << client.err() << "]";
+    EXPECT_EQ(client.err().find("Server is busy."), std::string::npos)
+        << "an incomplete frame must not be treated as BUSY; stderr=[" << client.err()
+        << "]";
+
+    ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
+    EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
 }
