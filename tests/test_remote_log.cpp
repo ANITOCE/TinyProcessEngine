@@ -7,6 +7,8 @@
 //       T010 段为纯格式化断言（不访问网络/进程/文件系统）；
 //       T039 段使用进程内 RemoteServer + 127.0.0.1 回环原始 socket，
 //       仅捕获 Server 标准输出，不启动子进程、不访问外部网络。
+//       T043 段的查询错误日志用例注入 PlatformOS（固定快照/枚举失败），
+//       同样只捕获 Server 标准输出，不读取宿主真实进程表。
 
 // 平台网络头必须最先包含：Windows 上 winsock2.h 必须先于任何 windows.h
 // （项目 Platform 头会间接包含 windows.h，若先包含会与 winsock.h 冲突重定义）。
@@ -281,6 +283,14 @@ constexpr std::uint16_t kLogDisconnectErrorPort = 18115;
 constexpr std::uint16_t kLogSearchFailurePort = 18116;
 constexpr std::uint16_t kLogHelpUnknownPort = 18117;
 constexpr std::uint16_t kLogPreSendPort = 18118;
+// T043（评审 I1）：查询错误日志用例端口（18119–18125）。
+constexpr std::uint16_t kLogAllProcessesEnumerationErrorPort = 18119;
+constexpr std::uint16_t kLogAllProcessesOversizePort = 18120;
+constexpr std::uint16_t kLogAllProcessesUnencodablePort = 18121;
+constexpr std::uint16_t kLogSearchParameterErrorPort = 18122;
+constexpr std::uint16_t kLogSearchUnreadablePort = 18123;
+constexpr std::uint16_t kLogSearchOversizePort = 18124;
+constexpr std::uint16_t kLogSearchUnencodablePort = 18125;
 
 /// 有界轮询：predicate 就绪返回 true；超时返回最后一次判定结果。
 bool waitUntil(const std::function<bool()>& predicate, std::chrono::milliseconds timeout)
@@ -760,6 +770,14 @@ public:
     {
     }
 
+    /// T043：注入平台实现（固定进程快照 / 可控枚举失败），
+    /// 查询错误日志用例因此不读取宿主真实进程表。
+    LocalLogServer(std::uint16_t port, std::unique_ptr<tpe::platform::PlatformOS> os)
+        : m_engine(std::move(os))
+        , m_server(port, m_engine)
+    {
+    }
+
     ~LocalLogServer() { m_server.stop(); }
 
     LocalLogServer(const LocalLogServer&) = delete;
@@ -782,6 +800,102 @@ ServerStart startLogServer(LocalLogServer& server, std::uint16_t port)
         return ServerStart::Ready;
     }
     return isPortUnavailable(port) ? ServerStart::PortUnavailable : ServerStart::Failed;
+}
+
+// ---------------------------------------------------------------------------
+// T043：固定进程快照平台（查询错误日志用例）
+//
+// 与 test_remote_session 的 SnapshotProcess/ConfigurablePlatformOS 同一模式：
+// 进程表在构造时固定，不读取宿主真实进程列表，避免“宿主恰好存在 PID 999999”
+// 之类的外部依赖；额外支持可控枚举失败、空名称与非法 UTF-8 名称。
+// ---------------------------------------------------------------------------
+
+/// 快照进程：只承载 PID 与名称；查询路径不扫描内存。
+class LogSnapshotProcess : public tpe::platform::PlatformProcess {
+public:
+    LogSnapshotProcess(tpe::platform::Pid_t pid, std::string name)
+        : PlatformProcess(pid, std::move(name))
+    {
+    }
+
+    std::vector<tpe::MemoryPage> getCheatablePages() const override { return {}; }
+
+    tpe::Result<tpe::Memory, tpe::PlatformError> read(tpe::MemoryPage) const override
+    {
+        return tpe::Result<tpe::Memory, tpe::PlatformError>::error(notSupported());
+    }
+
+    tpe::Result<void, tpe::PlatformError> write(tpe::Address, const tpe::Memory&) override
+    {
+        return tpe::Result<void, tpe::PlatformError>::error(notSupported());
+    }
+
+private:
+    tpe::PlatformError notSupported() const
+    {
+        return tpe::PlatformError{"LogSnapshotProcess",
+                                  static_cast<unsigned long>(getPid()), 0, "not supported"};
+    }
+};
+
+/// 可配置平台实现：固定进程列表 + 可选枚举失败（枚举失败与
+/// `getAllProcessesPid()` 的错误返回保持一致）。
+class LogSnapshotPlatformOS : public tpe::platform::PlatformOS {
+public:
+    void addProcess(tpe::platform::Pid_t pid, std::string name)
+    {
+        ProcessList.push_back(std::make_shared<LogSnapshotProcess>(pid, std::move(name)));
+    }
+
+    void setEnumerationFailure(std::string message)
+    {
+        m_enumerationError =
+            tpe::PlatformError{"LogSnapshotPlatformOS", 0, 0, std::move(message)};
+    }
+
+    std::shared_ptr<tpe::platform::PlatformProcess> open(tpe::platform::Pid_t pid) override
+    {
+        for (const std::shared_ptr<tpe::platform::PlatformProcess>& process : ProcessList) {
+            if (process->getPid() == pid) {
+                return process;
+            }
+        }
+        return nullptr;
+    }
+
+    tpe::Result<std::vector<tpe::platform::Pid_t>, tpe::PlatformError> getAllProcessesPid()
+        override
+    {
+        if (m_enumerationError.has_value()) {
+            return tpe::Result<std::vector<tpe::platform::Pid_t>, tpe::PlatformError>::error(
+                *m_enumerationError);
+        }
+        std::vector<tpe::platform::Pid_t> pids;
+        pids.reserve(ProcessList.size());
+        for (const std::shared_ptr<tpe::platform::PlatformProcess>& process : ProcessList) {
+            pids.push_back(process->getPid());
+        }
+        return tpe::Result<std::vector<tpe::platform::Pid_t>, tpe::PlatformError>::success(
+            std::move(pids));
+    }
+
+    void getAllProcesses(std::vector<tpe::platform::Pid_t>) override {}
+};
+
+/// 非法 UTF-8 字节（0xFF 永不出现于合法 UTF-8 序列）的进程名。
+std::string invalidUtf8LogFixtureName()
+{
+    std::string name = "bad";
+    name.push_back(static_cast<char>(0xFF));
+    name += "-name.exe";
+    return name;
+}
+
+/// 超限名称：长度达到单条 RESPONSE payload 上限（合法 ASCII，
+/// `PID: ... ProcessName: <name>` 或名称本身因此必然超过 1 MiB）。
+std::string oversizeLogFixtureName()
+{
+    return std::string(static_cast<std::size_t>(tpe::remote::kMaxPayloadBytes), 'x');
 }
 
 /// 从捕获文本中提取 Server 日志行（含 peer= 与 command= 的完整行）。
@@ -849,6 +963,95 @@ std::size_t countQueryLogLines(const std::string& text)
     return count;
 }
 
+// ---------------------------------------------------------------------------
+// T043：日志行严格断言（contracts/logging.md §1–§4）
+//
+// 以“恰好 5 个单空格分隔字段”作为结构断言：任何附加原因文本、进程名或
+// 完整命令行都会增加字段数或改变字段内容，从而被拒绝。
+// ---------------------------------------------------------------------------
+
+/// 按单个空格拆分日志行；连续/尾随空格会产生空字段，从而被字段数断言拒绝。
+std::vector<std::string> splitLogFields(const std::string& line)
+{
+    std::vector<std::string> fields;
+    std::size_t begin = 0;
+    for (;;) {
+        const std::size_t end = line.find(' ', begin);
+        fields.push_back(line.substr(
+            begin, end == std::string::npos ? std::string::npos : end - begin));
+        if (end == std::string::npos) {
+            break;
+        }
+        begin = end + 1;
+    }
+    return fields;
+}
+
+/// 严格校验单条日志行：utcTime/peer/command/pid/result 五个字段，
+/// 且 command/pid/result 逐字相等（无原因文本/进程名）。
+::testing::AssertionResult logLineFieldsMatch(const std::string& line,
+                                              const std::string& command,
+                                              const std::string& pidField,
+                                              const std::string& result)
+{
+    const std::vector<std::string> fields = splitLogFields(line);
+    if (fields.size() != std::size_t{5}) {
+        return ::testing::AssertionFailure()
+               << "日志行必须恰好 5 个字段（无原因文本/进程名），实际 " << fields.size()
+               << " 个：[" << line << "]";
+    }
+    if (fields[0].size() != std::size_t{20} || fields[0][10] != 'T' ||
+        fields[0].back() != 'Z') {
+        return ::testing::AssertionFailure()
+               << "utcTime 必须是 YYYY-MM-DDTHH:MM:SSZ：[" << line << "]";
+    }
+    if (fields[1].rfind("peer=", 0) != 0 || fields[1].size() <= 5) {
+        return ::testing::AssertionFailure() << "peer 字段无效：[" << line << "]";
+    }
+    if (fields[2] != "command=" + command) {
+        return ::testing::AssertionFailure()
+               << "command 期望 " << command << "：[" << line << "]";
+    }
+    if (fields[3] != "pid=" + pidField) {
+        return ::testing::AssertionFailure()
+               << "pid 期望 " << pidField << "：[" << line << "]";
+    }
+    if (fields[4] != "result=" + result) {
+        return ::testing::AssertionFailure()
+               << "result 期望 " << result << "：[" << line << "]";
+    }
+    return ::testing::AssertionSuccess();
+}
+
+/// 断言：捕获文本中查询日志恰好 expectedCount 条，且每一条字段与期望一致。
+::testing::AssertionResult queryLogsMatch(const std::string& text,
+                                          std::size_t expectedCount,
+                                          const std::string& command,
+                                          const std::string& pidField,
+                                          const std::string& result)
+{
+    std::vector<std::string> queryLines;
+    for (const std::string& line : extractServerLogLines(text)) {
+        if (line.find("command=--all-processes") != std::string::npos ||
+            line.find("command=--search-process") != std::string::npos) {
+            queryLines.push_back(line);
+        }
+    }
+    if (queryLines.size() != expectedCount) {
+        return ::testing::AssertionFailure()
+               << "期望 " << expectedCount << " 条查询日志，实际 " << queryLines.size()
+               << " 条；server stdout=[" << text << "]";
+    }
+    for (const std::string& line : queryLines) {
+        const ::testing::AssertionResult match =
+            logLineFieldsMatch(line, command, pidField, result);
+        if (!match) {
+            return match;
+        }
+    }
+    return ::testing::AssertionSuccess();
+}
+
 /// 完成 HELLO/WELCOME 握手；返回 false 时 failure 说明原因。
 bool openRawSession(RawSocket& socket, std::uint16_t port, std::string& failure)
 {
@@ -908,6 +1111,38 @@ bool closeWithBye(RawSocket& socket, std::string& failure)
     if (ack.header.type != MessageType::Bye) {
         failure = "expected BYE acknowledgement, got type " +
                   std::to_string(static_cast<int>(ack.header.type));
+        return false;
+    }
+    return true;
+}
+
+/// T043：在已启动的 Server 上依次执行命令并正常结束会话；等待 disconnect/ok
+/// 日志出现后返回（该日志最后写入，出现即证明查询日志均已捕获）。
+/// 返回 false 时 failure 说明原因（调用方 ASSERT_TRUE）。
+bool runLoggedQueries(std::uint16_t port, const std::vector<std::string>& commands,
+                      std::vector<Frame>& responses, std::string& failure)
+{
+    RawSocket socket;
+    if (!openRawSession(socket, port, failure)) {
+        return false;
+    }
+    for (const std::string& command : commands) {
+        Frame response;
+        if (!exchangeCommand(socket, command, response, failure)) {
+            return false;
+        }
+        responses.push_back(std::move(response));
+    }
+    if (!closeWithBye(socket, failure)) {
+        return false;
+    }
+    if (!waitUntil(
+            [] {
+                return findServerLogLine(capturedLogOut(), "disconnect", "ok").has_value();
+            },
+            kWaitLimit)) {
+        failure = "disconnect/ok log was not observed within the wait limit; server stdout=[" +
+                  capturedLogOut() + "]";
         return false;
     }
     return true;
@@ -1150,12 +1385,15 @@ TEST(RemoteLogEvents, DisconnectErrorOnInvalidPayloadIsLoggedOnceWithoutDisconne
 // 查询日志：失败保留 PID、help/未知命令不记录、无原因文本
 // ---------------------------------------------------------------------------
 
-/// `--search-process <不存在 PID>` 失败 → 1 条查询日志且保留 PID；
-/// 日志行仅含 5 个字段，不回显响应原因文本（契约 §2/§3/§4）。
+/// `--search-process <不存在 PID>` → 精确 1 条 `pid=999999 result=not-found`
+/// （T043 收紧原宽松断言）；日志行仅含 5 个字段，不回显响应原因文本
+/// （契约 §2/§3/§4）。进程表由注入快照固定，不依赖宿主真实 PID。
 TEST(RemoteLogEvents, SearchProcessFailureKeepsPidAndOmitsReasonText)
 {
     ScopedLogStreams streams;
-    LocalLogServer server(kLogSearchFailurePort);
+    auto os = std::make_unique<LogSnapshotPlatformOS>();
+    os->addProcess(4321, "alpha.exe"); // 快照中只有 4321：999999 必然不存在
+    LocalLogServer server(kLogSearchFailurePort, std::move(os));
     const ServerStart started = startLogServer(server, kLogSearchFailurePort);
     if (started == ServerStart::PortUnavailable) {
         GTEST_SKIP() << "TCP port " << kLogSearchFailurePort
@@ -1185,37 +1423,27 @@ TEST(RemoteLogEvents, SearchProcessFailureKeepsPidAndOmitsReasonText)
 
     ASSERT_TRUE(closeWithBye(socket, failure)) << failure;
 
-    // T041 前查询日志尚未接入：本断言预期 RED。
-    const bool logged = waitUntil(
+    ASSERT_TRUE(waitUntil(
         [] {
             return findServerLogLine(capturedLogOut(), "--search-process", "not-found")
-                       .has_value() ||
-                   findServerLogLine(capturedLogOut(), "--search-process", "error")
-                       .has_value();
+                .has_value();
         },
-        kWaitLimit);
-    EXPECT_TRUE(logged) << "--search-process 失败必须产生 1 条查询日志；server stdout=["
-                        << capturedLogOut() << "]";
+        kWaitLimit))
+        << "--search-process 未命中必须记录 not-found；server stdout=[" << capturedLogOut()
+        << "]";
 
-    EXPECT_EQ(countServerLogLines(capturedLogOut(), "--search-process", "not-found") +
-                  countServerLogLines(capturedLogOut(), "--search-process", "error"),
-              std::size_t{1})
-        << "每个查询必须恰好 1 条日志；server stdout=[" << capturedLogOut() << "]";
+    EXPECT_TRUE(queryLogsMatch(capturedLogOut(), std::size_t{1}, "--search-process",
+                               kPidText, "not-found"))
+        << "server stdout=[" << capturedLogOut() << "]";
+    EXPECT_EQ(countServerLogLines(capturedLogOut(), "--search-process", "error"),
+              std::size_t{0})
+        << "未命中不得记为 error；server stdout=[" << capturedLogOut() << "]";
 
-    std::optional<std::string> line =
+    const std::optional<std::string> line =
         findServerLogLine(capturedLogOut(), "--search-process", "not-found");
-    if (!line.has_value()) {
-        line = findServerLogLine(capturedLogOut(), "--search-process", "error");
-    }
-    if (line.has_value()) {
-        EXPECT_NE(line->find("pid=999999"), std::string::npos)
-            << "失败查询必须保留 PID；line=[" << *line << "]";
-        // 5 个字段 = 4 个空格；任何附加原因文本都会使字段数变化。
-        EXPECT_EQ(std::count(line->begin(), line->end(), ' '), 4)
-            << "日志行不得包含原因文本；line=[" << *line << "]";
-        EXPECT_EQ(line->find("not found"), std::string::npos) << *line;
-        EXPECT_EQ(line->find("Process with PID"), std::string::npos) << *line;
-    }
+    ASSERT_TRUE(line.has_value());
+    EXPECT_EQ(line->find("not found"), std::string::npos) << *line;
+    EXPECT_EQ(line->find("Process with PID"), std::string::npos) << *line;
 }
 
 /// `help`、`--help` 与未知命令不产生查询日志（契约 §3）。
@@ -1310,4 +1538,318 @@ TEST(RemoteLogEvents, PreSendRejectedCommandProducesNoQueryLog)
         << "发送前拒绝的命令不得产生查询日志；server stdout=[" << capturedLogOut() << "]";
     EXPECT_EQ(countServerLogLines(capturedLogOut(), "accept", "ok"), std::size_t{1});
     EXPECT_EQ(countServerLogLines(capturedLogOut(), "disconnect", "ok"), std::size_t{1});
+}
+
+// ===========================================================================
+// T043（评审 I1）：查询错误日志覆盖
+//
+// contracts/logging.md §3 要求 --all-processes/--search-process 的所有失败路径
+// 各产生恰好 1 条查询日志，且 §4 要求日志行不含原因文本/进程名/完整命令行。
+// 本段用注入的固定进程快照覆盖：枚举失败、结果超限、非法 UTF-8 名称、PID 缺失
+// 或非法、名称不可读、名称不可编码；不读取宿主真实进程表（避免 PID 999999
+// 恰好存在的偶然依赖）。所有等待沿用 kWaitLimit（≤5 s）。
+// ===========================================================================
+
+namespace {
+
+/// 超限回退的固定响应文本（protocol.md §5；cli.md §6）。
+constexpr const char* kOversizeResponseLogText =
+    "Response exceeds the maximum message size.";
+
+/// `--all-processes` 列表含非法 UTF-8 名称时的固定响应文本（cli.md §6）。
+constexpr const char* kUnencodableListLogText =
+    "Process list contains a name that cannot be encoded as UTF-8.";
+
+/// `--search-process` 名称含非法 UTF-8 时的固定响应文本（cli.md §6）。
+constexpr const char* kUnencodableNameLogText =
+    "Process name cannot be encoded as UTF-8.";
+
+} // namespace
+
+/// `--all-processes` 枚举失败 → 恰好 1 条 `command=--all-processes pid=- result=error`，
+/// 日志不含平台原因文本（契约 §2/§3/§4）。
+TEST(RemoteLogEvents, AllProcessesEnumerationFailureIsLoggedAsError)
+{
+    ScopedLogStreams streams;
+    auto os = std::make_unique<LogSnapshotPlatformOS>();
+    os->setEnumerationFailure("enumeration unavailable in test");
+    LocalLogServer server(kLogAllProcessesEnumerationErrorPort, std::move(os));
+    const ServerStart started =
+        startLogServer(server, kLogAllProcessesEnumerationErrorPort);
+    if (started == ServerStart::PortUnavailable) {
+        GTEST_SKIP() << "TCP port " << kLogAllProcessesEnumerationErrorPort
+                     << " is unavailable (bound by another process or reserved by the system).";
+    }
+    ASSERT_TRUE(started == ServerStart::Ready)
+        << "RemoteServer::start() must succeed on a free port";
+
+    std::vector<Frame> responses;
+    std::string failure;
+    ASSERT_TRUE(runLoggedQueries(kLogAllProcessesEnumerationErrorPort, {"--all-processes"},
+                                 responses, failure))
+        << failure;
+    ASSERT_EQ(responses.size(), std::size_t{1});
+
+    const auto decoded = tpe::remote::decodeResponse(responses.front().payload);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(static_cast<int>(decoded.value().status),
+              static_cast<int>(ResponseStatus::CommandError));
+    EXPECT_NE(decoded.value().output.find("Failed to enumerate processes:"),
+              std::string::npos)
+        << "response output=[" << decoded.value().output << "]";
+
+    EXPECT_TRUE(queryLogsMatch(capturedLogOut(), std::size_t{1}, "--all-processes", "-",
+                               "error"))
+        << "server stdout=[" << capturedLogOut() << "]";
+    EXPECT_EQ(countServerLogLines(capturedLogOut(), "accept", "ok"), std::size_t{1});
+    EXPECT_EQ(countServerLogLines(capturedLogOut(), "disconnect", "ok"), std::size_t{1});
+    EXPECT_EQ(extractServerLogLines(capturedLogOut()).size(), std::size_t{3})
+        << "只允许 accept/ok、1 条查询 error 与 disconnect/ok；server stdout=["
+        << capturedLogOut() << "]";
+}
+
+/// `--all-processes` 结果超限（>1 MiB）→ 同 1 条 `pid=- result=error`，
+/// 响应为固定超限文本；日志不回显进程名（契约 §3/§4）。
+TEST(RemoteLogEvents, AllProcessesOversizeIsLoggedAsError)
+{
+    ScopedLogStreams streams;
+    auto os = std::make_unique<LogSnapshotPlatformOS>();
+    os->addProcess(5000, oversizeLogFixtureName()); // 单条名称即超过 1 MiB
+    LocalLogServer server(kLogAllProcessesOversizePort, std::move(os));
+    const ServerStart started = startLogServer(server, kLogAllProcessesOversizePort);
+    if (started == ServerStart::PortUnavailable) {
+        GTEST_SKIP() << "TCP port " << kLogAllProcessesOversizePort
+                     << " is unavailable (bound by another process or reserved by the system).";
+    }
+    ASSERT_TRUE(started == ServerStart::Ready)
+        << "RemoteServer::start() must succeed on a free port";
+
+    std::vector<Frame> responses;
+    std::string failure;
+    ASSERT_TRUE(runLoggedQueries(kLogAllProcessesOversizePort, {"--all-processes"},
+                                 responses, failure))
+        << failure;
+    ASSERT_EQ(responses.size(), std::size_t{1});
+
+    const auto decoded = tpe::remote::decodeResponse(responses.front().payload);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(static_cast<int>(decoded.value().status),
+              static_cast<int>(ResponseStatus::CommandError));
+    EXPECT_EQ(decoded.value().output, kOversizeResponseLogText)
+        << "超限必须回退为固定 status=2 文本";
+
+    EXPECT_TRUE(queryLogsMatch(capturedLogOut(), std::size_t{1}, "--all-processes", "-",
+                               "error"))
+        << "server stdout=[" << capturedLogOut() << "]";
+    EXPECT_EQ(extractServerLogLines(capturedLogOut()).size(), std::size_t{3})
+        << "只允许 accept/ok、1 条查询 error 与 disconnect/ok；server stdout=["
+        << capturedLogOut() << "]";
+}
+
+/// `--all-processes` 列表含非法 UTF-8 名称 → 同 1 条 `pid=- result=error`，
+/// 日志不含该名称（契约 §3/§4）。
+TEST(RemoteLogEvents, AllProcessesInvalidUtf8NameIsLoggedAsError)
+{
+    ScopedLogStreams streams;
+    auto os = std::make_unique<LogSnapshotPlatformOS>();
+    os->addProcess(5001, invalidUtf8LogFixtureName());
+    LocalLogServer server(kLogAllProcessesUnencodablePort, std::move(os));
+    const ServerStart started =
+        startLogServer(server, kLogAllProcessesUnencodablePort);
+    if (started == ServerStart::PortUnavailable) {
+        GTEST_SKIP() << "TCP port " << kLogAllProcessesUnencodablePort
+                     << " is unavailable (bound by another process or reserved by the system).";
+    }
+    ASSERT_TRUE(started == ServerStart::Ready)
+        << "RemoteServer::start() must succeed on a free port";
+
+    std::vector<Frame> responses;
+    std::string failure;
+    ASSERT_TRUE(runLoggedQueries(kLogAllProcessesUnencodablePort, {"--all-processes"},
+                                 responses, failure))
+        << failure;
+    ASSERT_EQ(responses.size(), std::size_t{1});
+
+    const auto decoded = tpe::remote::decodeResponse(responses.front().payload);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(static_cast<int>(decoded.value().status),
+              static_cast<int>(ResponseStatus::CommandError));
+    EXPECT_EQ(decoded.value().output, kUnencodableListLogText)
+        << "response output=[" << decoded.value().output << "]";
+
+    EXPECT_TRUE(queryLogsMatch(capturedLogOut(), std::size_t{1}, "--all-processes", "-",
+                               "error"))
+        << "server stdout=[" << capturedLogOut() << "]";
+    EXPECT_EQ(capturedLogOut().find("bad"), std::string::npos)
+        << "日志不得回显进程名；server stdout=[" << capturedLogOut() << "]";
+    EXPECT_EQ(extractServerLogLines(capturedLogOut()).size(), std::size_t{3})
+        << "只允许 accept/ok、1 条查询 error 与 disconnect/ok；server stdout=["
+        << capturedLogOut() << "]";
+}
+
+/// `--search-process` 参数缺失或非法 → 每次查询各 1 条
+/// `command=--search-process pid=- result=error`（契约 §2/§3）。
+TEST(RemoteLogEvents, SearchProcessMissingAndInvalidPidAreLoggedWithDashPid)
+{
+    ScopedLogStreams streams;
+    auto os = std::make_unique<LogSnapshotPlatformOS>();
+    os->addProcess(4321, "alpha.exe"); // 参数错误不得触碰进程表
+    LocalLogServer server(kLogSearchParameterErrorPort, std::move(os));
+    const ServerStart started = startLogServer(server, kLogSearchParameterErrorPort);
+    if (started == ServerStart::PortUnavailable) {
+        GTEST_SKIP() << "TCP port " << kLogSearchParameterErrorPort
+                     << " is unavailable (bound by another process or reserved by the system).";
+    }
+    ASSERT_TRUE(started == ServerStart::Ready)
+        << "RemoteServer::start() must succeed on a free port";
+
+    std::vector<Frame> responses;
+    std::string failure;
+    ASSERT_TRUE(runLoggedQueries(kLogSearchParameterErrorPort,
+                                 {"--search-process", "--search-process abc"}, responses,
+                                 failure))
+        << failure;
+    ASSERT_EQ(responses.size(), std::size_t{2});
+    for (const Frame& response : responses) {
+        const auto decoded = tpe::remote::decodeResponse(response.payload);
+        ASSERT_TRUE(decoded.has_value());
+        EXPECT_EQ(static_cast<int>(decoded.value().status),
+                  static_cast<int>(ResponseStatus::CommandError));
+        EXPECT_NE(decoded.value().output.find("Usage: --search-process <PID>."),
+                  std::string::npos)
+            << "response output=[" << decoded.value().output << "]";
+    }
+
+    EXPECT_TRUE(queryLogsMatch(capturedLogOut(), std::size_t{2}, "--search-process", "-",
+                               "error"))
+        << "每次查询各 1 条日志且 PID 缺失/非法用 `-`；server stdout=["
+        << capturedLogOut() << "]";
+    EXPECT_EQ(countServerLogLines(capturedLogOut(), "accept", "ok"), std::size_t{1});
+    EXPECT_EQ(countServerLogLines(capturedLogOut(), "disconnect", "ok"), std::size_t{1});
+    EXPECT_EQ(extractServerLogLines(capturedLogOut()).size(), std::size_t{4})
+        << "只允许 accept/ok、2 条查询 error 与 disconnect/ok；server stdout=["
+        << capturedLogOut() << "]";
+}
+
+/// `--search-process` 名称不可读（空名称）→ 恰好 1 条
+/// `pid=4328 result=error`（契约 §3）。
+TEST(RemoteLogEvents, SearchProcessUnreadableNameIsLoggedAsError)
+{
+    constexpr const char* kPidText = "4328";
+    ScopedLogStreams streams;
+    auto os = std::make_unique<LogSnapshotPlatformOS>();
+    os->addProcess(4328, std::string{}); // 空名称 = 名称不可读
+    LocalLogServer server(kLogSearchUnreadablePort, std::move(os));
+    const ServerStart started = startLogServer(server, kLogSearchUnreadablePort);
+    if (started == ServerStart::PortUnavailable) {
+        GTEST_SKIP() << "TCP port " << kLogSearchUnreadablePort
+                     << " is unavailable (bound by another process or reserved by the system).";
+    }
+    ASSERT_TRUE(started == ServerStart::Ready)
+        << "RemoteServer::start() must succeed on a free port";
+
+    std::vector<Frame> responses;
+    std::string failure;
+    ASSERT_TRUE(runLoggedQueries(kLogSearchUnreadablePort,
+                                 {std::string("--search-process ") + kPidText}, responses,
+                                 failure))
+        << failure;
+    ASSERT_EQ(responses.size(), std::size_t{1});
+
+    const auto decoded = tpe::remote::decodeResponse(responses.front().payload);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(static_cast<int>(decoded.value().status),
+              static_cast<int>(ResponseStatus::CommandError));
+    EXPECT_NE(decoded.value().output.find("Failed to read the process name for PID 4328."),
+              std::string::npos)
+        << "response output=[" << decoded.value().output << "]";
+
+    EXPECT_TRUE(queryLogsMatch(capturedLogOut(), std::size_t{1}, "--search-process",
+                               kPidText, "error"))
+        << "server stdout=[" << capturedLogOut() << "]";
+    EXPECT_EQ(extractServerLogLines(capturedLogOut()).size(), std::size_t{3})
+        << "只允许 accept/ok、1 条查询 error 与 disconnect/ok；server stdout=["
+        << capturedLogOut() << "]";
+}
+
+/// `--search-process` 结果超限（>1 MiB）→ 恰好 1 条
+/// `pid=4329 result=error`，响应为固定超限文本（契约 §3）。
+TEST(RemoteLogEvents, SearchProcessOversizeIsLoggedAsError)
+{
+    constexpr const char* kPidText = "4329";
+    ScopedLogStreams streams;
+    auto os = std::make_unique<LogSnapshotPlatformOS>();
+    os->addProcess(4329, oversizeLogFixtureName());
+    LocalLogServer server(kLogSearchOversizePort, std::move(os));
+    const ServerStart started = startLogServer(server, kLogSearchOversizePort);
+    if (started == ServerStart::PortUnavailable) {
+        GTEST_SKIP() << "TCP port " << kLogSearchOversizePort
+                     << " is unavailable (bound by another process or reserved by the system).";
+    }
+    ASSERT_TRUE(started == ServerStart::Ready)
+        << "RemoteServer::start() must succeed on a free port";
+
+    std::vector<Frame> responses;
+    std::string failure;
+    ASSERT_TRUE(runLoggedQueries(kLogSearchOversizePort,
+                                 {std::string("--search-process ") + kPidText}, responses,
+                                 failure))
+        << failure;
+    ASSERT_EQ(responses.size(), std::size_t{1});
+
+    const auto decoded = tpe::remote::decodeResponse(responses.front().payload);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(static_cast<int>(decoded.value().status),
+              static_cast<int>(ResponseStatus::CommandError));
+    EXPECT_EQ(decoded.value().output, kOversizeResponseLogText)
+        << "超限必须回退为固定 status=2 文本";
+
+    EXPECT_TRUE(queryLogsMatch(capturedLogOut(), std::size_t{1}, "--search-process",
+                               kPidText, "error"))
+        << "server stdout=[" << capturedLogOut() << "]";
+    EXPECT_EQ(extractServerLogLines(capturedLogOut()).size(), std::size_t{3})
+        << "只允许 accept/ok、1 条查询 error 与 disconnect/ok；server stdout=["
+        << capturedLogOut() << "]";
+}
+
+/// `--search-process` 名称不可编码（非法 UTF-8）→ 恰好 1 条
+/// `pid=4330 result=error`，日志不含名称（契约 §3/§4）。
+TEST(RemoteLogEvents, SearchProcessUnencodableNameIsLoggedAsError)
+{
+    constexpr const char* kPidText = "4330";
+    ScopedLogStreams streams;
+    auto os = std::make_unique<LogSnapshotPlatformOS>();
+    os->addProcess(4330, invalidUtf8LogFixtureName());
+    LocalLogServer server(kLogSearchUnencodablePort, std::move(os));
+    const ServerStart started = startLogServer(server, kLogSearchUnencodablePort);
+    if (started == ServerStart::PortUnavailable) {
+        GTEST_SKIP() << "TCP port " << kLogSearchUnencodablePort
+                     << " is unavailable (bound by another process or reserved by the system).";
+    }
+    ASSERT_TRUE(started == ServerStart::Ready)
+        << "RemoteServer::start() must succeed on a free port";
+
+    std::vector<Frame> responses;
+    std::string failure;
+    ASSERT_TRUE(runLoggedQueries(kLogSearchUnencodablePort,
+                                 {std::string("--search-process ") + kPidText}, responses,
+                                 failure))
+        << failure;
+    ASSERT_EQ(responses.size(), std::size_t{1});
+
+    const auto decoded = tpe::remote::decodeResponse(responses.front().payload);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(static_cast<int>(decoded.value().status),
+              static_cast<int>(ResponseStatus::CommandError));
+    EXPECT_EQ(decoded.value().output, kUnencodableNameLogText)
+        << "response output=[" << decoded.value().output << "]";
+
+    EXPECT_TRUE(queryLogsMatch(capturedLogOut(), std::size_t{1}, "--search-process",
+                               kPidText, "error"))
+        << "server stdout=[" << capturedLogOut() << "]";
+    EXPECT_EQ(capturedLogOut().find("bad"), std::string::npos)
+        << "日志不得回显进程名；server stdout=[" << capturedLogOut() << "]";
+    EXPECT_EQ(extractServerLogLines(capturedLogOut()).size(), std::size_t{3})
+        << "只允许 accept/ok、1 条查询 error 与 disconnect/ok；server stdout=["
+        << capturedLogOut() << "]";
 }
