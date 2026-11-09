@@ -34,8 +34,13 @@
  *     由脚本化 Server 断言被拒命令未以 COMMAND 发出，且不产生未知命令响应。
  *
  * 约束：仅 GoogleTest + 标准库 + 平台 socket API；不启动子进程；除 127.0.0.1
- * 回环外不访问网络。骨架期预期 RED：RemoteServer::start() 恒 false、
- * RemoteClient::run() 恒 1（不建立连接、无任何输出）。
+ * 回环外不访问网络。
+ *
+ * 当前阶段（US2）：T022/T023 的 Server/Client 握手已实现，T020/T021 的握手用例
+ * 为 GREEN；T026/T027 的成功查询、失败查询与发送前校验用例在 T028–T030 实现前
+ * 预期 RED（Client 尚未发送 COMMAND，查询结果与本地拒绝文本不会出现），但必须
+ * 在 5 秒上限内以断言失败结束，不得挂起。失败查询的 Client 退出码留到 US3
+ * （T038）实际退出时验证。
  */
 
 // 平台网络头必须最先包含：Windows 上 winsock2.h 必须先于任何 windows.h
@@ -88,6 +93,9 @@ constexpr std::chrono::milliseconds kWaitLimit{5000};
 
 /// 契约 §1：Server 省略端口时使用 8008。
 constexpr std::uint16_t kDefaultPort = 8008;
+
+/// Client 提示符（含其后的单个空格）：结果块分段断言依赖这一完整文本。
+constexpr const char* kPromptText = "TPE> ";
 
 /// 自定义端口用例各自使用独立端口：前一用例结束后同一端口上可能残留 TIME_WAIT，
 /// 复用端口会让后一用例的 bind/start 受到干扰，因此每例一个端口。
@@ -1026,6 +1034,8 @@ struct SnapshotProcessEntry {
 };
 
 /// 固定快照的 3 个受控进程（含有效非 ASCII 名称；FR-017）。
+/// 注入顺序刻意非 PID 单调（4323 → 4321 → 4322）：整块逐字比较时，
+/// 任何按 PID 排序的实现都会得到不同行序而被用例拒绝。
 constexpr tpe::platform::Pid_t kSnapshotAsciiPid = 4321;
 constexpr tpe::platform::Pid_t kSnapshotUtf8Pid = 4322;
 constexpr tpe::platform::Pid_t kSnapshotServicePid = 4323;
@@ -1034,18 +1044,19 @@ constexpr const char* kSnapshotAsciiName = "alpha.exe";
 constexpr const char* kSnapshotUtf8Name = "中文进程.exe";
 constexpr const char* kSnapshotServiceName = "gamma service.exe";
 
-/// 夹具自检用的固定期望文本：与 `processListText()` 的既有行格式逐字一致。
+/// 夹具自检用的固定期望文本：与 `processListText()` 的既有行格式逐字一致，
+/// 行序 = 注入顺序（4323 → 4321 → 4322），不是 PID 升序。
 constexpr const char* kSnapshotListText =
+    "PID: 4323 ProcessName: gamma service.exe\n"
     "PID: 4321 ProcessName: alpha.exe\n"
-    "PID: 4322 ProcessName: 中文进程.exe\n"
-    "PID: 4323 ProcessName: gamma service.exe\n";
+    "PID: 4322 ProcessName: 中文进程.exe\n";
 
 std::vector<SnapshotProcessEntry> snapshotEntries()
 {
     return {
+        {kSnapshotServicePid, kSnapshotServiceName},
         {kSnapshotAsciiPid, kSnapshotAsciiName},
         {kSnapshotUtf8Pid, kSnapshotUtf8Name},
-        {kSnapshotServicePid, kSnapshotServiceName},
     };
 }
 
@@ -1452,33 +1463,39 @@ void runSnapshotQuerySession(std::uint16_t port, const std::string& commands,
 }
 
 /// 断言 Client 标准输出中恰有一处与本地结果逐字一致的整块文本：
-/// 块前必须已有提示符（进入会话）；块后必须紧跟下一个提示符（回到 TPE>），
-/// 不能是换行（FR-017：不引入额外空行）；整块比较同时保证行序与字段。
+/// 定位结果块前最近的 `TPE> ` 提示符，要求「该提示符之后 → 下一个提示符之前」
+/// 的完整分段与本地整份文本完全相同：无额外空行、无前缀、不重复提示符；
+/// 同时断言整块只出现一次。不使用子串式判定（FR-017；FR-007“回到 TPE>”）。
 void expectVerbatimQueryBlock(const SnapshotSessionResult& result,
                               const std::string& localBlock)
 {
     ASSERT_FALSE(localBlock.empty())
         << "fixture sanity: the local query result must not be empty";
     const std::string clientOut = normalizedLineEndings(result.out);
+
     ASSERT_EQ(countOccurrences(clientOut, localBlock), std::size_t{1})
         << "client stdout must contain the whole multi-line result verbatim exactly once;\n"
         << "expected block=[" << localBlock << "]\nclient stdout=[" << clientOut
         << "]\nclient stderr=[" << result.err << "]";
 
+    const std::string prompt(kPromptText);
     const std::size_t blockPosition = clientOut.find(localBlock);
-    const std::size_t firstPrompt = clientOut.find("TPE>");
-    ASSERT_NE(firstPrompt, std::string::npos)
-        << "client stdout must show the 'TPE>' prompt; stdout=[" << clientOut << "]";
-    EXPECT_LT(firstPrompt, blockPosition)
-        << "query result must be rendered after the prompt; stdout=[" << clientOut << "]";
-
-    const std::size_t afterBlock = blockPosition + localBlock.size();
-    ASSERT_LT(afterBlock, clientOut.size())
-        << "client must return to the 'TPE>' prompt after the result; stdout=[" << clientOut
+    const std::size_t promptBefore = clientOut.rfind(prompt, blockPosition);
+    ASSERT_NE(promptBefore, std::string::npos)
+        << "the query result must be rendered after a 'TPE> ' prompt; stdout=[" << clientOut
         << "]";
-    EXPECT_EQ(clientOut.compare(afterBlock, 4, "TPE>"), 0)
-        << "the prompt must follow the result directly (no extra blank line and no merged "
-           "line; FR-017); stdout=["
+
+    const std::size_t segmentStart = promptBefore + prompt.size();
+    const std::size_t promptAfter = clientOut.find(prompt, segmentStart);
+    ASSERT_NE(promptAfter, std::string::npos)
+        << "the client must return to the 'TPE> ' prompt after the result; stdout=["
+        << clientOut << "]";
+
+    const std::string segment = clientOut.substr(segmentStart, promptAfter - segmentStart);
+    EXPECT_EQ(segment, localBlock)
+        << "the segment between the nearest prompt and the following prompt must equal the "
+           "local result verbatim (no extra blank line, prefix, or repeated prompt);\n"
+        << "segment=[" << segment << "]\nexpected=[" << localBlock << "]\nclient stdout=["
         << clientOut << "]";
 }
 
@@ -2413,6 +2430,13 @@ TEST(RemoteSessionQuerySuccess, AllProcessesMatchesLocalVerbatim)
     // 夹具自检：固定快照按注入顺序渲染成固定多行文本（≥3 个受控进程）。
     ASSERT_EQ(result.localListText, std::string(kSnapshotListText))
         << "fixture sanity: the injected snapshot must render in its fixed order";
+    // 注入顺序非 PID 单调：若实现按 PID 排序，整块比较必须失败（本自检固定该前提）。
+    const std::string pidSortedText =
+        "PID: 4321 ProcessName: alpha.exe\n"
+        "PID: 4322 ProcessName: 中文进程.exe\n"
+        "PID: 4323 ProcessName: gamma service.exe\n";
+    ASSERT_NE(result.localListText, pidSortedText)
+        << "fixture sanity: snapshot order must not coincide with PID order";
     ASSERT_EQ(countOccurrences(result.localListText, "\n"), std::size_t{3})
         << "fixture sanity: the local result must be a three-line block";
     ASSERT_NE(result.localListText.find(std::string(kSnapshotUtf8Name) + "\n"),
