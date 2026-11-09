@@ -16,8 +16,10 @@
  *     使首会话停留在 TPE>；释放后返回 exit\n，随后返回 EOF；
  *   - 所有等待均为有界轮询（单次上限 5 秒）；超时先 stop()/释放输入再 FAIL()，
  *     绝不对可能永不返回的线程做无界 join（析构 detach 兜底）；
- *   - 端口预检：8008/18080 已被其它进程占用时 GTEST_SKIP()，避免把真实端口冲突
- *     误报为骨架失败。
+ *   - 端口策略：先调用 start()；仅当其返回 false 时才探测端口是否真的不可用
+ *     （同时 bind 0.0.0.0 与 127.0.0.1；Windows 另把 WSAEACCES 视为不可用），
+ *     确实不可用才在用例体内 GTEST_SKIP()，否则以真实错误 FAIL；每个自定义端口
+ *     用例使用独立端口（18080–18083），避免前一用例的 TIME_WAIT 干扰后续用例。
  *
  * 约束：仅 GoogleTest + 标准库；不启动子进程；除 127.0.0.1 回环外不访问网络。
  * 骨架期预期 RED：RemoteServer::start() 恒 false、RemoteClient::run() 恒 1。
@@ -66,9 +68,15 @@ using namespace std::chrono_literals;
 /// 单次等待上限（brief：所有等待最多 5 秒）。
 constexpr std::chrono::milliseconds kWaitLimit{5000};
 
-/// 契约 §1：Server 省略端口时使用 8008；自定义端口用例固定 18080。
+/// 契约 §1：Server 省略端口时使用 8008。
 constexpr std::uint16_t kDefaultPort = 8008;
-constexpr std::uint16_t kCustomPort = 18080;
+
+/// 自定义端口用例各自使用独立端口：前一用例结束后同一端口上可能残留 TIME_WAIT，
+/// 复用端口会让后一用例的 bind/start 受到干扰，因此每例一个端口。
+constexpr std::uint16_t kLifecyclePort = 18080;
+constexpr std::uint16_t kCustomPort = 18081;
+constexpr std::uint16_t kBusyRejectionPort = 18082;
+constexpr std::uint16_t kWelcomePort = 18083;
 
 /// 有界轮询：predicate 就绪返回 true；超时返回最后一次判定结果。
 bool waitUntil(const std::function<bool()>& predicate, std::chrono::milliseconds timeout)
@@ -347,7 +355,7 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// 端口预检（区分“真实端口冲突”与“骨架 start() 失败”）
+// 端口不可用性诊断（仅在 start() 失败后调用）
 // ---------------------------------------------------------------------------
 
 enum class PortState { Free, Busy, Unknown };
@@ -382,9 +390,10 @@ bool winsockReady()
 }
 #endif
 
-/// 尝试在 INADDR_ANY:port 上 bind 一个临时 TCP socket（不设置 SO_REUSEADDR）：
-/// bind 成功 = 端口空闲；WSAEADDRINUSE/EADDRINUSE = 被占用；其它错误 = 无法判定。
-PortState probeTcpPort(std::uint16_t port)
+/// 在指定 IPv4 地址（主机字节序）上 bind 一个临时 TCP socket（不设置 SO_REUSEADDR）：
+/// bind 成功 = 该地址可用；EADDRINUSE（Windows 另含 WSAEACCES）= 不可用；
+/// 其它错误（或 Winsock 初始化失败）= 无法判定。
+PortState probeTcpPortOn(std::uint32_t addressHostOrder, std::uint16_t port)
 {
 #ifdef _WIN32
     if (!winsockReady()) {
@@ -397,14 +406,15 @@ PortState probeTcpPort(std::uint16_t port)
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(static_cast<u_short>(port));
-    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    address.sin_addr.s_addr = htonl(addressHostOrder);
     const int result = ::bind(handle, reinterpret_cast<const sockaddr*>(&address), sizeof(address));
     const int error = (result == 0) ? 0 : ::WSAGetLastError();
     ::closesocket(handle);
     if (result == 0) {
         return PortState::Free;
     }
-    return (error == WSAEADDRINUSE) ? PortState::Busy : PortState::Unknown;
+    // WSAEACCES：端口被系统保留（如 Hyper-V 动态端口排除区间），对绑定方同样不可用。
+    return (error == WSAEADDRINUSE || error == WSAEACCES) ? PortState::Busy : PortState::Unknown;
 #else
     const int handle = ::socket(AF_INET, SOCK_STREAM, 0);
     if (handle < 0) {
@@ -413,7 +423,7 @@ PortState probeTcpPort(std::uint16_t port)
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
-    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    address.sin_addr.s_addr = htonl(addressHostOrder);
     const int result = ::bind(handle, reinterpret_cast<const sockaddr*>(&address), sizeof(address));
     const int error = errno;
     ::close(handle);
@@ -424,14 +434,28 @@ PortState probeTcpPort(std::uint16_t port)
 #endif
 }
 
-/// brief 第 4 条：端口被其它进程占用时跳过并输出原因（仅限真实冲突）。
-void skipIfPortBusy(std::uint16_t port)
+/// 同时探测通配地址 0.0.0.0 与回环地址 127.0.0.1：
+/// 任一地址不可用（占用/保留）即视为端口实际不可用；两者均可用才算空闲；
+/// 其余情形（探测本身失败）为无法判定。
+PortState probeTcpPort(std::uint16_t port)
 {
-    if (probeTcpPort(port) == PortState::Busy) {
-        GTEST_SKIP() << "TCP port " << port
-                     << " is already in use by another process; skipping instead of "
-                        "misreporting a genuine port conflict as a skeleton failure.";
+    const PortState wildcard = probeTcpPortOn(INADDR_ANY, port);
+    const PortState loopback = probeTcpPortOn(INADDR_LOOPBACK, port);
+    if (wildcard == PortState::Busy || loopback == PortState::Busy) {
+        return PortState::Busy;
     }
+    if (wildcard == PortState::Free && loopback == PortState::Free) {
+        return PortState::Free;
+    }
+    return PortState::Unknown;
+}
+
+/// brief 第 4 条：仅在 start() 失败后调用。返回 true = 端口确实不可用，调用方必须
+/// 在用例体内 GTEST_SKIP()（GTEST_SKIP 只返回到当前函数，不能放在返回非 void 的
+/// 辅助函数里）；返回 false = 端口空闲或无法判定，调用方应以真实错误 FAIL。
+bool isPortUnavailable(std::uint16_t port)
+{
+    return probeTcpPort(port) == PortState::Busy;
 }
 
 // ---------------------------------------------------------------------------
@@ -552,14 +576,20 @@ private:
 
 void expectSuccessfulHandshake(std::uint16_t port)
 {
-    skipIfPortBusy(port);
-
     ScopedRemoteStreams streams;
     LocalServer server(port);
 
-    ASSERT_TRUE(server.start())
-        << "RemoteServer::start() must succeed on free port " << port
-        << " (skeleton currently returns false: expected RED)";
+    // 先启动；仅当启动失败时才诊断端口，避免把 TIME_WAIT 误判为“被占用”而跳过。
+    if (!server.start()) {
+        if (isPortUnavailable(port)) {
+            GTEST_SKIP() << "TCP port " << port
+                         << " is unavailable (bound by another process or reserved by the "
+                            "system); skipping instead of misreporting a genuine port "
+                            "conflict as a skeleton failure.";
+        }
+        FAIL() << "RemoteServer::start() must succeed on free port " << port
+               << " (skeleton currently returns false: expected RED)";
+    }
     ASSERT_TRUE(waitUntil([&server] { return server.instance().isRunning(); }, kWaitLimit))
         << "isRunning() must become true within 5 s after start() returned true";
     ASSERT_TRUE(waitUntil(
@@ -617,14 +647,20 @@ void expectSuccessfulHandshake(std::uint16_t port)
 /// stop() 后为 false；可重复 stop()。
 TEST(RemoteSession, ServerStartsAndStops)
 {
-    skipIfPortBusy(kCustomPort);
-
     ScopedRemoteStreams streams;
-    LocalServer server(kCustomPort);
+    LocalServer server(kLifecyclePort);
 
-    ASSERT_TRUE(server.start())
-        << "RemoteServer::start() must succeed on free port " << kCustomPort
-        << " (skeleton currently returns false: expected RED)";
+    // 先启动；仅当启动失败时才诊断端口，避免把 TIME_WAIT 误判为“被占用”而跳过。
+    if (!server.start()) {
+        if (isPortUnavailable(kLifecyclePort)) {
+            GTEST_SKIP() << "TCP port " << kLifecyclePort
+                         << " is unavailable (bound by another process or reserved by the "
+                            "system); skipping instead of misreporting a genuine port "
+                            "conflict as a skeleton failure.";
+        }
+        FAIL() << "RemoteServer::start() must succeed on free port " << kLifecyclePort
+               << " (skeleton currently returns false: expected RED)";
+    }
     ASSERT_TRUE(waitUntil([&server] { return server.instance().isRunning(); }, kWaitLimit))
         << "isRunning() must become true within 5 s after start() returned true";
     EXPECT_TRUE(server.instance().isRunning());
@@ -645,7 +681,7 @@ TEST(RemoteSession, DefaultPortHandshake)
     expectSuccessfulHandshake(kDefaultPort);
 }
 
-/// brief 用例 3：自定义端口 18080 的回环握手（quickstart 场景 2）。
+/// brief 用例 3：自定义端口 18081 的回环握手（quickstart 场景 2）。
 TEST(RemoteSession, CustomPortHandshake)
 {
     expectSuccessfulHandshake(kCustomPort);
@@ -655,18 +691,24 @@ TEST(RemoteSession, CustomPortHandshake)
 /// 首 Client 之后仍能正常退出（quickstart 场景 4；protocol §3）。
 TEST(RemoteSession, SecondClientDuringHandshakeGetsBusy)
 {
-    skipIfPortBusy(kCustomPort);
-
     ScopedRemoteStreams streams;
-    LocalServer server(kCustomPort);
+    LocalServer server(kBusyRejectionPort);
 
-    ASSERT_TRUE(server.start())
-        << "RemoteServer::start() must succeed on free port " << kCustomPort
-        << " (skeleton currently returns false: expected RED)";
+    // 先启动；仅当启动失败时才诊断端口，避免把 TIME_WAIT 误判为“被占用”而跳过。
+    if (!server.start()) {
+        if (isPortUnavailable(kBusyRejectionPort)) {
+            GTEST_SKIP() << "TCP port " << kBusyRejectionPort
+                         << " is unavailable (bound by another process or reserved by the "
+                            "system); skipping instead of misreporting a genuine port "
+                            "conflict as a skeleton failure.";
+        }
+        FAIL() << "RemoteServer::start() must succeed on free port " << kBusyRejectionPort
+               << " (skeleton currently returns false: expected RED)";
+    }
     ASSERT_TRUE(waitUntil([&server] { return server.instance().isRunning(); }, kWaitLimit))
         << "isRunning() must become true within 5 s after start() returned true";
 
-    ClientRun first("127.0.0.1", kCustomPort);
+    ClientRun first("127.0.0.1", kBusyRejectionPort);
     first.start();
     if (!waitUntil([&first] { return first.out().find("TPE>") != std::string::npos; },
                    kWaitLimit)) {
@@ -678,7 +720,7 @@ TEST(RemoteSession, SecondClientDuringHandshakeGetsBusy)
     }
 
     // 首会话处于 Active：第二连接必须立即收到 BUSY 并退出 1。
-    ClientRun second("127.0.0.1", kCustomPort);
+    ClientRun second("127.0.0.1", kBusyRejectionPort);
     second.start();
     if (!second.waitDone(kWaitLimit)) {
         server.stop();
@@ -714,18 +756,24 @@ TEST(RemoteSession, SecondClientDuringHandshakeGetsBusy)
 /// 即 WELCOME 完成握手前不输出提示符（cli.md §2）。
 TEST(RemoteSession, WelcomeCompletesHandshake)
 {
-    skipIfPortBusy(kCustomPort);
-
     ScopedRemoteStreams streams;
-    LocalServer server(kCustomPort);
+    LocalServer server(kWelcomePort);
 
-    ASSERT_TRUE(server.start())
-        << "RemoteServer::start() must succeed on free port " << kCustomPort
-        << " (skeleton currently returns false: expected RED)";
+    // 先启动；仅当启动失败时才诊断端口，避免把 TIME_WAIT 误判为“被占用”而跳过。
+    if (!server.start()) {
+        if (isPortUnavailable(kWelcomePort)) {
+            GTEST_SKIP() << "TCP port " << kWelcomePort
+                         << " is unavailable (bound by another process or reserved by the "
+                            "system); skipping instead of misreporting a genuine port "
+                            "conflict as a skeleton failure.";
+        }
+        FAIL() << "RemoteServer::start() must succeed on free port " << kWelcomePort
+               << " (skeleton currently returns false: expected RED)";
+    }
     ASSERT_TRUE(waitUntil([&server] { return server.instance().isRunning(); }, kWaitLimit))
         << "isRunning() must become true within 5 s after start() returned true";
 
-    ClientRun client("127.0.0.1", kCustomPort);
+    ClientRun client("127.0.0.1", kWelcomePort);
     client.start();
 
     if (!waitUntil([&client] { return client.out().find("TPE>") != std::string::npos; },
