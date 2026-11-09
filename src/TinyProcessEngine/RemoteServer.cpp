@@ -29,6 +29,12 @@ namespace {
 /// BUSY 的固定载荷文本：`Server is busy.`。
 constexpr std::string_view kBusyText = "Server is busy.";
 
+/// BUSY 写回后的有界关闭延迟（毫秒）。
+/// 契约要求“发送 BUSY 并关闭”，但同步 close 会在对端尚未完成连接建立/读取时
+/// 以 FIN/RST 结束连接，导致对端丢失 BUSY（T023 集成复现）。延迟关闭使对端
+/// 先收到 BUSY；对端读到 BUSY 后通常会主动关闭，此定时器仅作有界兜底。
+constexpr int kBusyCloseDelayMs = 1000;
+
 /// Server 开始监听时写入标准输出的固定文本。
 constexpr std::string_view kWaitingText = "Waiting for connection ...";
 
@@ -202,10 +208,10 @@ struct RemoteServer::Impl {
         }
 
         if (session) {
-            // 已占用（Handshaking / Active）：立即发送 BUSY 并关闭，记 1 条 reject/busy。
+            // 已占用（Handshaking / Active）：发送 BUSY 并关闭，记 1 条 reject/busy。
             writeFrame(channel, MessageType::Busy, toPayload(kBusyText));
             logSessionEvent(channel, SessionEvent::Reject, LogResult::Busy);
-            channel->close();
+            scheduleBusyClose(channel);
             return;
         }
 
@@ -215,6 +221,23 @@ struct RemoteServer::Impl {
         // 契约 logging.md §3：失败握手属于“接纳前握手失败”，只记 reject/error；
         // 因此 accept/ok 与 `Connection successful.` 推迟到 HELLO 校验通过后记录。
         startHandshakeTimer(accepted);
+    }
+
+    /// BUSY 写回后的有界延迟关闭（见 `kBusyCloseDelayMs`）。
+    /// 对端读到 BUSY 后会主动关闭，此定时器只处理“对端不关闭”的兜底场景；
+    /// 服务器停止时事件循环销毁，未触发的定时器随之丢弃。
+    void scheduleBusyClose(const hv::SocketChannelPtr& channel)
+    {
+        const hv::EventLoopPtr loop = server ? server->loop() : hv::EventLoopPtr{};
+        if (!loop) {
+            channel->close();
+            return;
+        }
+        loop->setTimeout(kBusyCloseDelayMs, [channel](hv::TimerID) {
+            if (channel && channel->isConnected()) {
+                channel->close();
+            }
+        });
     }
 
     /// 连接关闭（对端关闭或事件循环收尾）：释放占用并按状态记录日志。
