@@ -36,6 +36,18 @@ constexpr std::string_view kBusyText = "Server is busy.";
 /// 先收到 BUSY；对端读到 BUSY 后通常会主动关闭，此定时器仅作有界兜底。
 constexpr int kBusyCloseDelayMs = 1000;
 
+/// Draining 清理延迟（毫秒，contracts/protocol.md §3/§6）。
+/// 会话结束（BYE、断线或非法帧关闭）后不在此次事件内回到 `Listening`：
+/// 释放占用推迟到下一轮事件循环，让已排队的连接事件先按 `Draining` 判定为
+/// BUSY。定时器与事件循环同线程，不引入额外线程。
+constexpr int kDrainingCleanupDelayMs = 10;
+
+/// 同一接收缓冲中后续帧的续行延迟（毫秒，contracts/protocol.md §6）。
+/// 一条 COMMAND 执行完毕后不在同一回调内继续执行缓冲中的下一条命令：
+/// 先把控制权交回事件循环，使已排队的断开事件先被处理，仍留在接收缓冲区、
+/// 未进入执行函数的命令据此丢弃（FR-012）。
+constexpr int kInputResumeDelayMs = 1;
+
 /// Server 开始监听时写入标准输出的固定文本。
 constexpr std::string_view kWaitingText = "Waiting for connection ...";
 
@@ -94,19 +106,24 @@ void silenceLibhvFileLogger()
 // ============================================================
 
 struct RemoteServer::Impl {
-    /// 会话状态（contracts/protocol.md §3/§4；data-model.md §3）。
+    /// 会话状态（contracts/protocol.md §3/§4/§6/§7；data-model.md §3）。
     /// 无会话即为 `Listening`；只有 `Listening` 才能进入 `Handshaking`。
+    /// `Draining`：会话已结束但清理尚未完成，`session` 仍非空，
+    /// 期间被处理的连接事件一律按占用返回 BUSY。
     enum class State {
         Handshaking, // 已接纳连接，等待完整 HELLO
         Active,      // 已发送 WELCOME，进入会话
+        Draining,    // 会话已结束，清理完成前保持占用
     };
 
     /// 当前会话（同一时刻至多一个）。
     struct Session {
         hv::SocketChannelPtr channel;
         State state = State::Handshaking;
-        std::vector<std::uint8_t> input;      // 未消费的帧字节
-        hv::TimerID timer = INVALID_TIMER_ID; // 握手期限定时器
+        std::vector<std::uint8_t> input;         // 未消费的帧字节
+        hv::TimerID timer = INVALID_TIMER_ID;    // 握手期限定时器
+        hv::TimerID cleanupTimer = INVALID_TIMER_ID; // Draining 清理定时器
+        hv::TimerID resumeTimer = INVALID_TIMER_ID;  // 缓冲后续帧续行定时器
     };
 
     Impl(std::uint16_t listenPort, tpe::ProcessEngine& processEngine)
@@ -216,7 +233,8 @@ struct RemoteServer::Impl {
         }
 
         if (session) {
-            // 已占用（Handshaking / Active）：发送 BUSY 并关闭，记 1 条 reject/busy。
+            // 已占用（Handshaking / Active / Draining）：发送 BUSY 并关闭，记 1 条
+            // reject/busy；清理完成后 `session` 为空，连接才被接纳。
             writeFrame(channel, MessageType::Busy, toPayload(kBusyText));
             logSessionEvent(channel, SessionEvent::Reject, LogResult::Busy);
             scheduleBusyClose(channel);
@@ -255,16 +273,21 @@ struct RemoteServer::Impl {
             return; // 非当前会话（已被 BUSY 拒绝的连接或已结束的会话）
         }
         const auto closed = session;
-        session.reset();
-        cancelHandshakeTimer(closed);
-
+        if (closed->state == State::Draining) {
+            // 清理期间自身连接的关闭事件（BYE/ERROR 后主动关闭、或对端先关）：
+            // 不计入其它事件，保证每次会话结束恰好 1 条 disconnect 记录（logging.md §4）。
+            return;
+        }
         if (closed->state == State::Handshaking) {
             // 握手期对端关闭：记 1 条 reject/error 并回到 Listening（契约 §3）。
+            session.reset();
+            cancelHandshakeTimer(closed);
             logSessionEvent(channel, SessionEvent::Reject, LogResult::Error);
-        } else {
-            // 已接纳会话未收到 BYE 即断开：记 1 条 disconnect/disconnected（契约 §7）。
-            logSessionEvent(channel, SessionEvent::Disconnect, LogResult::Disconnected);
+            return;
         }
+        // 已接纳会话未收到 BYE 即断开：记 1 条 disconnect/disconnected（契约 §7）。
+        logSessionEvent(channel, SessionEvent::Disconnect, LogResult::Disconnected);
+        beginDraining(closed);
     }
 
     // --------------------------------------------------------
@@ -279,6 +302,9 @@ struct RemoteServer::Impl {
         if (!session || session->channel != channel) {
             return;
         }
+        if (session->state == State::Draining) {
+            return; // 会话已结束：清理完成前不再处理任何输入（§6 未开始的命令丢弃）
+        }
         if (stopping.load(std::memory_order_acquire)) {
             return;
         }
@@ -290,9 +316,14 @@ struct RemoteServer::Impl {
     }
 
     /// 从接收缓冲中反复解出完整帧；任一步结束会话即停止。
+    /// 一条 COMMAND 返回后先让出事件循环（见 `scheduleInputResume`）：
+    /// 已排队的断开事件先被处理，缓冲中尚未开始的命令据此丢弃（§6）。
     void processInput(const std::shared_ptr<Session>& current)
     {
         for (;;) {
+            if (session != current || current->state == State::Draining) {
+                return; // 会话已结束：未开始的命令一律丢弃
+            }
             const DecodeResult decoded = tryDecodeFrame(current->input);
             if (decoded.status == DecodeStatus::NeedMoreData) {
                 return;
@@ -306,9 +337,15 @@ struct RemoteServer::Impl {
             current->input.erase(
                 current->input.begin(),
                 current->input.begin() + static_cast<std::ptrdiff_t>(decoded.consumed));
+            const bool commandFrame = decoded.frame.header.type == MessageType::Command &&
+                                      current->state == State::Active;
             dispatchFrame(current, decoded.frame);
             if (session != current) {
                 return; // 帧处理已结束会话
+            }
+            if (commandFrame) {
+                scheduleInputResume(current);
+                return;
             }
         }
     }
@@ -440,46 +477,145 @@ struct RemoteServer::Impl {
     }
 
     // --------------------------------------------------------
-    // 会话收尾
+    // 会话收尾：Draining（contracts/protocol.md §3/§6/§7）
     // --------------------------------------------------------
 
-    /// 释放占用并取消握手定时器（不写日志、不关闭连接）。
-    void releaseSession(const std::shared_ptr<Session>& current)
+    /// 进入 Draining：会话对象保留到清理完成，期间连接事件一律按占用处理。
+    /// 握手失败不经过本函数（contracts/protocol.md §7）。
+    void beginDraining(const std::shared_ptr<Session>& current)
     {
-        if (session == current) {
-            session.reset();
+        if (session != current || current->state == State::Draining) {
+            return;
         }
         cancelHandshakeTimer(current);
+        cancelTimer(current->resumeTimer);
+        // 会话已结束：接收缓冲区中未构成完整帧 / 未进入执行函数的命令全部丢弃（§6）。
+        current->input.clear();
+        current->state = State::Draining;
+        if (stopping.load(std::memory_order_acquire)) {
+            session.reset(); // 停止收尾期间不再回到监听态
+            return;
+        }
+        scheduleDrainingCleanup(current);
+    }
+
+    /// 推迟清理：已排队的连接事件先按 Draining 判定为 BUSY，清理完成后才可接纳。
+    void scheduleDrainingCleanup(const std::shared_ptr<Session>& current)
+    {
+        const hv::EventLoopPtr loop = server ? server->loop() : hv::EventLoopPtr{};
+        if (!loop) {
+            finishDraining(current);
+            return;
+        }
+        const std::weak_ptr<Session> weak = current;
+        current->cleanupTimer = loop->setTimeout(
+            kDrainingCleanupDelayMs, [this, weak](hv::TimerID) { onDrainingCleanup(weak); });
+    }
+
+    void onDrainingCleanup(const std::weak_ptr<Session>& weak)
+    {
+        const auto current = weak.lock();
+        if (!current) {
+            return;
+        }
+        current->cleanupTimer = INVALID_TIMER_ID;
+        finishDraining(current);
+    }
+
+    /// 清理完成：释放占用，状态回到 `Listening`（此后被处理的连接被接纳）。
+    void finishDraining(const std::shared_ptr<Session>& current)
+    {
+        if (session != current || current->state != State::Draining) {
+            return;
+        }
+        session.reset();
     }
 
     /// 失败路径：记 1 条日志、发送 ERROR 并关闭连接。
+    /// 握手期失败立即回到 Listening（reject/error）；活动期失败进入 Draining（§7）。
     void abortSession(const std::shared_ptr<Session>& current, ErrorCode code,
                       std::string_view reason, SessionEvent event)
     {
         const bool wasStopping = stopping.load(std::memory_order_acquire);
-        releaseSession(current);
+        const bool handshake = current->state == State::Handshaking;
+        cancelHandshakeTimer(current);
+        if (handshake && session == current) {
+            session.reset(); // 握手失败不进入 Draining
+        }
         if (!wasStopping) {
             logSessionEvent(current->channel, event, LogResult::Error);
             writeFrame(current->channel, MessageType::Error, encodeErrorPayload(code, reason));
         }
         current->channel->close();
+        if (!handshake) {
+            beginDraining(current);
+        }
     }
 
-    /// 正常结束（契约 §7）：回 BYE 确认、记 1 条 disconnect/ok 并关闭连接。
+    /// 正常结束（契约 §7）：回 BYE 确认、记 1 条 disconnect/ok、关闭连接并进入 Draining。
     void completeBye(const std::shared_ptr<Session>& current)
     {
         const bool wasStopping = stopping.load(std::memory_order_acquire);
-        releaseSession(current);
+        cancelHandshakeTimer(current);
         if (!wasStopping) {
             writeFrame(current->channel, MessageType::Bye, {});
             logSessionEvent(current->channel, SessionEvent::Disconnect, LogResult::Ok);
         }
         current->channel->close();
+        beginDraining(current);
     }
 
     // --------------------------------------------------------
-    // 握手期限定时器（毫秒精度，可被测试注入覆盖）
+    // 接收缓冲续行（contracts/protocol.md §6）
     // --------------------------------------------------------
+
+    /// 缓冲中还有后续帧时推迟到下一轮事件循环：断开事件先被处理，
+    /// 尚未进入执行函数的命令随后随会话结束被丢弃。
+    void scheduleInputResume(const std::shared_ptr<Session>& current)
+    {
+        if (current->input.empty() || current->state != State::Active) {
+            return;
+        }
+        const hv::EventLoopPtr loop = server ? server->loop() : hv::EventLoopPtr{};
+        if (!loop) {
+            return;
+        }
+        cancelTimer(current->resumeTimer);
+        const std::weak_ptr<Session> weak = current;
+        current->resumeTimer = loop->setTimeout(
+            kInputResumeDelayMs, [this, weak](hv::TimerID) { onInputResume(weak); });
+    }
+
+    void onInputResume(const std::weak_ptr<Session>& weak)
+    {
+        const auto current = weak.lock();
+        if (!current) {
+            return;
+        }
+        current->resumeTimer = INVALID_TIMER_ID;
+        if (stopping.load(std::memory_order_acquire) || session != current ||
+            current->state != State::Active) {
+            return; // 停止收尾或会话已结束（断开事件已处理）：缓冲中的命令不得执行
+        }
+        processInput(current);
+    }
+
+    // --------------------------------------------------------
+    // 定时器辅助（毫秒精度，可被测试注入覆盖）
+    // --------------------------------------------------------
+
+    /// 取消定时器并清除句柄；重复调用无副作用。
+    void cancelTimer(hv::TimerID& timer)
+    {
+        if (timer == INVALID_TIMER_ID) {
+            return;
+        }
+        const hv::EventLoopPtr loop = server ? server->loop() : hv::EventLoopPtr{};
+        if (loop) {
+            loop->killTimer(timer);
+        }
+        timer = INVALID_TIMER_ID;
+    }
 
     void startHandshakeTimer(const std::shared_ptr<Session>& current)
     {
@@ -498,14 +634,7 @@ struct RemoteServer::Impl {
 
     void cancelHandshakeTimer(const std::shared_ptr<Session>& current)
     {
-        if (current->timer == INVALID_TIMER_ID) {
-            return;
-        }
-        const hv::EventLoopPtr loop = server ? server->loop() : hv::EventLoopPtr{};
-        if (loop) {
-            loop->killTimer(current->timer);
-        }
-        current->timer = INVALID_TIMER_ID;
+        cancelTimer(current->timer);
     }
 
     void onHandshakeTimeout(const std::weak_ptr<Session>& weak)
