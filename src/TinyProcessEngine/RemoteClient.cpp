@@ -314,14 +314,7 @@ struct RemoteClient::Impl {
         // 循环内不再重复输出，避免同一输入前出现两个提示符。
         showInputPrompt();
         for (;;) {
-            std::string failure;
-            {
-                const std::lock_guard<std::mutex> guard(mutex);
-                failure = currentSessionFailure();
-            }
-            if (!failure.empty()) {
-                stopClient();
-                std::cerr << failure << std::endl;
+            if (reportSessionFailureIfAny()) {
                 return 1;
             }
 
@@ -334,6 +327,14 @@ struct RemoteClient::Impl {
             if (!line.empty() && line.back() == '\r') {
                 line.pop_back();
             }
+
+            // 等待输入期间到达的 ERROR/断线：下一次输入返回后、处理任何
+            // 命令（含 exit）之前优先报告（cli.md §7）。若等到发送失败再
+            // 报告，只能回落到通用断线文本，丢失 Server 的 ERROR reason。
+            if (reportSessionFailureIfAny()) {
+                return 1;
+            }
+
             if (line == "exit") {
                 break; // exit 不发送 COMMAND（T023 路径）
             }
@@ -370,6 +371,26 @@ struct RemoteClient::Impl {
         return {};
     }
 
+    /// 已记录会话失败（活动期 ERROR/断线）时立即报告到标准错误并停止事件循环。
+    /// EOF 与断线同时出现时由本检查与 finishSession() 共同保证断线优先
+    /// （cli.md §7）。
+    /// @retval true 已报告原因，调用方必须以退出码 1 结束；
+    ///         false 尚无已记录的失败。
+    bool reportSessionFailureIfAny()
+    {
+        std::string failure;
+        {
+            const std::lock_guard<std::mutex> guard(mutex);
+            failure = currentSessionFailure();
+        }
+        if (failure.empty()) {
+            return false;
+        }
+        stopClient();
+        std::cerr << failure << std::endl;
+        return true;
+    }
+
     /// 渲染本地提示符（线上 prompt 不含尾随空格，渲染层添加；cli.md §5）。
     void showInputPrompt() const
     {
@@ -402,12 +423,17 @@ struct RemoteClient::Impl {
             pendingResponse.reset();
         }
         if (client->send(frame.data(), static_cast<int>(frame.size())) < 0) {
+            // 发送失败的同一时点可能已记录会话失败（例如 ERROR 与关闭事件
+            // 先于此检查到达）：优先透传具体原因，不回落通用断线文本。
+            std::string failure;
             {
                 const std::lock_guard<std::mutex> guard(mutex);
                 awaitingResponse = false;
+                failure = currentSessionFailure();
             }
             stopClient();
-            std::cerr << kClosedByServerText << std::endl;
+            std::cerr << (failure.empty() ? std::string(kClosedByServerText) : failure)
+                      << std::endl;
             return false;
         }
 
