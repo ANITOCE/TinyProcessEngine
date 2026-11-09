@@ -43,15 +43,18 @@
  *   - T034 增加退出/BYE/断线用例：exit/EOF 经 BYE 确认退出 0；确认前断线与确认超时
  *     退出 1；等待响应/输入时断线的报告时机；活动期 ERROR 原因；非空 BYE 双向处理；
  *     断线与 EOF 竞态；以及 RawSocket 活动会话发送非空 BYE 的 Server 侧应答。
+ *   - T036 评审修复（I1/I2/I3/I5/M1/M4/M5/M10）：BYE 确认期限增加 1.5 s 上界；
+ *     断线优先于 EOF 由 Server 半关闭后检测任何后续数据证明（收到即失败）；失败查询
+ *     与本地拒绝会话断言退出 0；非空 BYE 路径断言恰好 1 条 disconnect/error 且无
+ *     disconnect/disconnected；BUSY 反应与断线报告上界收紧；等待输入断线断言固定
+ *     文本；活动期 ERROR 后 Client 不得再发送 COMMAND。
  *
  * 约束：仅 GoogleTest + 标准库 + 平台 socket API；不启动子进程；除 127.0.0.1
  * 回环外不访问网络。
  *
- * 当前阶段（US2）：T022/T023 的 Server/Client 握手已实现，T020/T021 的握手用例
- * 为 GREEN；T026/T027 的成功查询、失败查询与发送前校验用例在 T028–T030 实现前
- * 预期 RED（Client 尚未发送 COMMAND，查询结果与本地拒绝文本不会出现），但必须
- * 在 5 秒上限内以断言失败结束，不得挂起。失败查询的 Client 退出码留到 US3
- * （T038）实际退出时验证。
+ * 当前阶段（US3）：T022/T023 握手、T028–T030 查询、T035 Draining、T037 断线
+ * 唤醒均已实现；失败查询与本地拒绝会话经 EOF → BYE 确认正常结束，退出码由断言
+ * 校验为 0（T036 评审修复 I3）。
  */
 
 // 平台网络头必须最先包含：Windows 上 winsock2.h 必须先于任何 windows.h
@@ -573,6 +576,17 @@ void closeSocketHandle(SocketHandle handle)
     ::closesocket(handle);
 #else
     ::close(handle);
+#endif
+}
+
+/// 半关闭发送方向：对端立即看到断线（FIN），本端仍可读取对端后续数据。
+/// T036 评审修复 I2 用它区分“断线优先”与“EOF 正常结束后的 BYE”。
+bool shutdownSendSide(SocketHandle handle)
+{
+#ifdef _WIN32
+    return ::shutdown(handle, SD_SEND) == 0;
+#else
+    return ::shutdown(handle, SHUT_WR) == 0;
 #endif
 }
 
@@ -1828,11 +1842,15 @@ SessionRunReport runQueryFailureSession(
 }
 
 /// 断言：失败文本恰出现 1 次 → 回到 TPE> → help 的 4 行帮助逐字出现 1 次 → 再次出现
-/// 提示符（会话仍可用）。cli.md §6：查询失败保留 TPE>；Client 退出码留到 US3（T038）
-/// 实际退出时验证——本辅助函数只记录 exitCode，不校验。
+/// 提示符（会话仍可用）。cli.md §6：查询失败保留 TPE>；US3 已实现 EOF → BYE
+/// 确认收尾，会话退出码必须为 0（T036 评审修复 I3）。
 void expectFailureThenHelp(const QueryFailureSessionResult& result,
                            const std::string& expectedFailure)
 {
+    // 失败查询不改变会话终态：标准输入 EOF → BYE → 确认后以 0 结束。
+    EXPECT_EQ(result.exitCode, 0)
+        << "a failed query must not change the exit code; stderr=[" << result.err << "]";
+
     const std::string clientOut = normalizedLineEndings(result.out);
 
     ASSERT_EQ(countOccurrences(clientOut, expectedFailure), std::size_t{1})
@@ -1927,6 +1945,7 @@ bool receiveByeOrPeerClose(SocketHandle handle, std::chrono::milliseconds timeou
 /// 若本地拒绝的命令被错误发送，脚本会看到不同的首帧并以明确原因失败；这同时证明
 /// 被拒命令未发送、也不会产生任何 Server 响应（不依赖 T041 的查询日志）。
 /// 随后回 help 的 RESPONSE，并以 BYE 或对端关闭接受会话结束（EOF 不得判失败）。
+/// US3 已实现 EOF → BYE 收尾：会话退出码必须为 0（T036 评审修复 I3）。
 void runPreSendRejectionSession(const std::string& rejectedLine,
                                 PreSendSessionResult& result)
 {
@@ -2008,6 +2027,10 @@ void runPreSendRejectionSession(const std::string& rejectedLine,
     result.exitCode = client.exitCode();
     result.out = client.out();
     result.err = client.err();
+    // 本地拒绝不改变会话终态：EOF → BYE 确认后以 0 结束（T036 评审修复 I3）。
+    EXPECT_EQ(result.exitCode, 0)
+        << "a locally rejected command must not change the exit code; stderr=["
+        << result.err << "]";
 
     EXPECT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
     result.scriptSucceeded = server.scriptSucceeded();
@@ -2017,7 +2040,8 @@ void runPreSendRejectionSession(const std::string& rejectedLine,
 /// 断言：本地拒绝文本恰出现 1 次且写标准输出 → 不出现未知命令响应 → 回到 TPE> →
 /// help 的 4 行帮助逐字出现 1 次 → 再次出现提示符。
 /// 「未发送」由 runPreSendRejectionSession 的脚本化 Server 单独证明：
-/// 握手后第一条 COMMAND 必须是 help。Client 退出码留到 US3 验证。
+/// 握手后第一条 COMMAND 必须是 help。会话退出码为 0 的断言在
+/// runPreSendRejectionSession 内完成（T036 评审修复 I3）。
 void expectLocalRejectionThenHelp(const PreSendSessionResult& result,
                                   const std::string& expectedError)
 {
@@ -3162,7 +3186,9 @@ TEST(RemoteSessionSingleConnection, ActiveSessionSecondClientGetsBusyImmediately
         << "second client stderr=[" << second.err() << "]";
     EXPECT_NE(second.err().find("Server is busy."), std::string::npos)
         << "second client stderr=[" << second.err() << "]";
-    EXPECT_LT(reactedAfter, std::chrono::milliseconds{3000})
+    // T036 评审修复 M1：BUSY 必须在处理连接事件时立即写回；1 s 上界（远高于
+    // 实测数十毫秒）仍足以在实现退化为延迟拒绝时失败。
+    EXPECT_LT(reactedAfter, std::chrono::milliseconds{1000})
         << "the server must send BUSY when it processes the connection event (not after an "
            "idle delay); reaction took "
         << reactedAfter.count() << " ms";
@@ -3858,6 +3884,9 @@ bool expectClientBye(SocketHandle socket, std::string& failure)
     return true;
 }
 
+/// 断线固定文本（cli.md §7；与实现逐字一致，tests 不跨 TU 引用内部常量）。
+constexpr const char* kServerClosedText = "The server closed the connection.";
+
 /// 在脚本化 Server 上运行一个 Client 到 TPE>；失败时由调用方清理。
 bool waitForClientPrompt(ClientRun& client)
 {
@@ -4010,7 +4039,9 @@ TEST(RemoteSessionExitBye, DisconnectWhileWaitingForResponseIsReportedImmediatel
     const auto sentAt = std::chrono::steady_clock::now();
     stdinBuffer().pushInput("help\n");
 
-    ASSERT_TRUE(client.waitDone(std::chrono::milliseconds{3000}))
+    // T036 评审修复 M4：断线在等待 RESPONSE 期间到达时必须立即唤醒 run()，
+    // 不得等到下一次输入。上界收紧到 800 ms（实测数十毫秒，保留负载容差）。
+    ASSERT_TRUE(client.waitDone(std::chrono::milliseconds{800}))
         << "a disconnect while waiting for RESPONSE must be reported immediately; "
            "stdout=["
         << client.out() << "] stderr=[" << client.err() << "]";
@@ -4019,7 +4050,7 @@ TEST(RemoteSessionExitBye, DisconnectWhileWaitingForResponseIsReportedImmediatel
         std::chrono::steady_clock::now() - sentAt);
     EXPECT_EQ(client.exitCode(), 1);
     EXPECT_FALSE(client.err().empty()) << "the disconnect must be reported";
-    EXPECT_LT(elapsed, std::chrono::milliseconds{3000})
+    EXPECT_LT(elapsed, std::chrono::milliseconds{800})
         << "the report must not wait for another input; elapsed=" << elapsed.count()
         << " ms";
 
@@ -4028,7 +4059,8 @@ TEST(RemoteSessionExitBye, DisconnectWhileWaitingForResponseIsReportedImmediatel
 }
 
 /// 等待输入时断线 → 下一次普通命令后报告并以 1 结束（cli.md §7）。
-/// T037 前预期 RED：当前循环在发送下一条命令后才检查失败，可能报告通用断线文本。
+/// T037 已实现“输入返回后先报告已记录失败”；T036 评审修复 M5 进一步断言报告
+/// 为固定断线文本（而非仅非空）。
 TEST(RemoteSessionExitBye, DisconnectWhileWaitingForInputIsReportedAfterNextCommand)
 {
     ScopedRemoteStreams streams;
@@ -4060,6 +4092,10 @@ TEST(RemoteSessionExitBye, DisconnectWhileWaitingForInputIsReportedAfterNextComm
     ASSERT_TRUE(client.join());
     EXPECT_EQ(client.exitCode(), 1);
     EXPECT_FALSE(client.err().empty()) << "the disconnect must be reported";
+    // 固定文本：等待输入期间断线不得被当作正常结束或通用错误。
+    EXPECT_NE(client.err().find(kServerClosedText), std::string::npos)
+        << "the disconnect must be reported with the fixed text; stderr=["
+        << client.err() << "]";
 
     ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
     EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
@@ -4094,8 +4130,10 @@ TEST(RemoteSessionExitBye, ByeConfirmationTimeoutReturnsOneWhileConnectionStaysO
     const auto exitAt = std::chrono::steady_clock::now();
     stdinBuffer().pushInput("exit\n");
 
-    ASSERT_TRUE(client.waitDone(std::chrono::milliseconds{4000}))
-        << "the client must return after the 1 s confirmation deadline; stdout=["
+    // T036 评审修复 I1：确认期限固定 1 s；上界 1.5 s 确保实现退化为 3 s 时失败。
+    ASSERT_TRUE(client.waitDone(std::chrono::milliseconds{1500}))
+        << "the client must return after the 1 s confirmation deadline (a longer fallback "
+           "must fail); stdout=["
         << client.out() << "] stderr=[" << client.err() << "]";
     ASSERT_TRUE(client.join());
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -4106,6 +4144,9 @@ TEST(RemoteSessionExitBye, ByeConfirmationTimeoutReturnsOneWhileConnectionStaysO
         << "client stderr=[" << client.err() << "]";
     EXPECT_GE(elapsed, std::chrono::milliseconds{800})
         << "the client must wait for the 1 s deadline; elapsed=" << elapsed.count() << " ms";
+    EXPECT_LT(elapsed, std::chrono::milliseconds{1500})
+        << "the client must not linger beyond the 1 s deadline plus tolerance; elapsed="
+        << elapsed.count() << " ms";
 
     ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
     EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
@@ -4129,7 +4170,21 @@ TEST(RemoteSessionExitBye, ActiveSessionErrorIsReportedWithReasonAndOne)
             failure = "failed to send ERROR";
             return false;
         }
-        waitForPeerEvent(socket, std::chrono::milliseconds{3000});
+        // T036 评审修复 M10：发送 ERROR 后等待对端关闭；任何后续 COMMAND/DATA
+        // 都说明 Client 在已报告会话失败后仍发送了命令。
+        std::string extra;
+        const PeerEvent event =
+            waitForPeerEvent(socket, std::chrono::milliseconds{3000}, &extra);
+        if (event == PeerEvent::Data) {
+            failure = "the client must not send COMMAND after an active-session ERROR; "
+                      "received " +
+                      std::to_string(extra.size()) + " byte(s)";
+            return false;
+        }
+        if (event != PeerEvent::Closed) {
+            failure = "the client must close the connection after reporting the ERROR";
+            return false;
+        }
         return true;
     });
     ASSERT_TRUE(server.start()) << "scripted server must bind 127.0.0.1";
@@ -4252,10 +4307,30 @@ TEST(RemoteSessionExitBye, RawActiveClientSendingNonEmptyByeGetsErrorSixAndClose
     EXPECT_EQ(client.waitForPeer(kWaitLimit), PeerEvent::Closed)
         << "the server must close the connection after ERROR(6)";
 
+    // T036 评审修复 I5（logging.md §1/§4）：活动期非空 BYE 恰好记 1 条
+    // disconnect/error，且不得再记 disconnect/disconnected（Draining 期间自身
+    // 关闭事件必须被忽略）。
+    const std::string serverOut = capturedServerOut();
+    const std::size_t errorLine = findServerLogLine(serverOut, "disconnect", "error");
+    ASSERT_NE(errorLine, std::string::npos)
+        << "the server must log a disconnect/error line; server stdout=[" << serverOut
+        << "]";
+    EXPECT_EQ(findServerLogLine(serverOut, "disconnect", "error", errorLine + 1),
+              std::string::npos)
+        << "exactly one disconnect/error line is allowed; server stdout=[" << serverOut
+        << "]";
+    EXPECT_EQ(findServerLogLine(serverOut, "disconnect", "disconnected"), std::string::npos)
+        << "a non-empty BYE must not be logged as an unexpected disconnect; server "
+           "stdout=["
+        << serverOut << "]";
+
     server.stop();
 }
 
 /// 断线与 EOF 竞态 → 断线优先，退出码 1（cli.md §7；quickstart 场景 13）。
+/// T036 评审修复 I2：Server 先半关闭发送方向（对端看到断线）并保持接收方向；
+/// 若 Client 误按 EOF 正常结束路径发送 BYE（任何数据），脚本立即判失败。这证明
+/// 1 与非空 stderr 来自断线报告，而不是“EOF → BYE → 确认前断线”的普通收尾。
 TEST(RemoteSessionExitBye, DisconnectWinsOverEofRace)
 {
     ScopedRemoteStreams streams;
@@ -4263,8 +4338,25 @@ TEST(RemoteSessionExitBye, DisconnectWinsOverEofRace)
         if (!completeScriptedHandshake(socket, failure)) {
             return false;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds{50});
-        return true; // 关闭连接，与 EOF 竞争
+        // 半关闭：对端立即可见断线；本端仍能读取 Client 的后续字节（若有）。
+        if (!shutdownSendSide(socket)) {
+            failure = "failed to shut down the send direction";
+            return false;
+        }
+        std::string extra;
+        const PeerEvent event =
+            waitForPeerEvent(socket, std::chrono::milliseconds{3000}, &extra);
+        if (event == PeerEvent::Data) {
+            failure = "the client must not send BYE when the disconnect wins over EOF; "
+                      "received " +
+                      std::to_string(extra.size()) + " byte(s)";
+            return false;
+        }
+        if (event != PeerEvent::Closed) {
+            failure = "the client must close the connection after reporting the disconnect";
+            return false;
+        }
+        return true;
     });
     ASSERT_TRUE(server.start()) << "scripted server must bind 127.0.0.1";
 
@@ -4276,16 +4368,20 @@ TEST(RemoteSessionExitBye, DisconnectWinsOverEofRace)
                << "] stderr=[" << client.err() << "]";
     }
 
-    // 同时触发断线（Server 在 50 ms 后关闭）与 EOF。
+    // 先让 Client 的事件循环处理 FIN，再释放 EOF：只有“断线已先被观察”时，
+    // 才允许断言断线优先（无输出可观测，用有界等待固定竞态方向）。
+    std::this_thread::sleep_for(std::chrono::milliseconds{500});
     stdinBuffer().releaseWith(std::string{});
 
     ASSERT_TRUE(client.waitDone(kWaitLimit)) << "client did not return within 5 s";
     ASSERT_TRUE(client.join());
     EXPECT_EQ(client.exitCode(), 1)
-        << "a simultaneous disconnect and EOF must exit 1 (disconnect wins); stdout=["
+        << "a disconnect observed before EOF must exit 1 (disconnect wins); stdout=["
         << client.out() << "] stderr=[" << client.err() << "]";
-    EXPECT_FALSE(client.err().empty())
-        << "the disconnect must be reported instead of a normal exit";
+    EXPECT_NE(client.err().find(kServerClosedText), std::string::npos)
+        << "the disconnect must be reported with the fixed text instead of a normal "
+           "exit; stderr=["
+        << client.err() << "]";
 
     ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
     EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
