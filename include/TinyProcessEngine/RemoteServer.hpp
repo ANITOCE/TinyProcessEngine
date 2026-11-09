@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 
@@ -43,6 +44,10 @@ public:
 
     /// 是否处于监听状态。
     bool isRunning() const;
+
+    /// 测试接缝：覆盖握手期限（仅存储，不改变握手语义）。
+    /// 默认值保持契约（5000 ms，contracts/protocol.md §4）；T022 从 Impl 读取。
+    void setHandshakeTimeoutForTesting(std::chrono::milliseconds timeout);
 
 private:
     struct Impl; // 定义在 .cpp：libhv 事件循环与会话状态
