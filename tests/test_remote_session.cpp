@@ -25,6 +25,9 @@
  *     RawSocket（原始 socket Client），用于构造坏 Server / 坏 Client 握手场景；
  *     时限通过 RemoteClient::setTimeoutsForTesting 与
  *     RemoteServer::setHandshakeTimeoutForTesting 注入缩短值。
+ *   - T026 增加固定进程快照注入（SnapshotPlatformOS；LocalServer 增加引擎重载
+ *     构造函数）与 US2 成功查询用例：远程 `--all-processes`/`--search-process`
+ *     的输出（统一 CRLF/LF 后）与同一引擎的本地结果逐字一致。
  *
  * 约束：仅 GoogleTest + 标准库 + 平台 socket API；不启动子进程；除 127.0.0.1
  * 回环外不访问网络。骨架期预期 RED：RemoteServer::start() 恒 false、
@@ -49,6 +52,7 @@
 
 #include <gtest/gtest.h>
 
+#include "Platform.hpp"
 #include "ProcessEngine.hpp"
 #include "RemoteClient.hpp"
 #include "RemoteProtocol.hpp"
@@ -64,6 +68,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <streambuf>
 #include <string>
 #include <thread>
@@ -91,6 +96,11 @@ constexpr std::uint16_t kWelcomePort = 18083;
 constexpr std::uint16_t kVersionRejectPort = 18084;
 constexpr std::uint16_t kHandshakeTimeoutPort = 18085;
 constexpr std::uint16_t kPeerClosePort = 18086;
+
+/// T026 成功查询用例的独立端口（18087–18089，与既有用例互不重叠）。
+constexpr std::uint16_t kQueryAllProcessesPort = 18087;
+constexpr std::uint16_t kQuerySearchProcessPort = 18088;
+constexpr std::uint16_t kQueryUtf8NamePort = 18089;
 
 /// 有界轮询：predicate 就绪返回 true；超时返回最后一次判定结果。
 bool waitUntil(const std::function<bool()>& predicate, std::chrono::milliseconds timeout)
@@ -988,6 +998,108 @@ private:
 };
 
 // ---------------------------------------------------------------------------
+// T026 固定进程快照（通过 ProcessEngine 注入构造控制）
+//
+// 夹具前提（brief 第 5 条）：进程快照在构造时固定，不读取宿主机真实进程列表；
+// “无关进程行的整行增减不影响判定”由快照的不变性保证。断言保持受控行的原始
+// 行序，不重排、不过滤。
+// ---------------------------------------------------------------------------
+
+/// 快照条目：PID 与展示名（UTF-8）。顺序即 `--all-processes` 的行序。
+struct SnapshotProcessEntry {
+    tpe::platform::Pid_t pid;
+    const char* name;
+};
+
+/// 固定快照的 3 个受控进程（含有效非 ASCII 名称；FR-017）。
+constexpr tpe::platform::Pid_t kSnapshotAsciiPid = 4321;
+constexpr tpe::platform::Pid_t kSnapshotUtf8Pid = 4322;
+constexpr tpe::platform::Pid_t kSnapshotServicePid = 4323;
+
+constexpr const char* kSnapshotAsciiName = "alpha.exe";
+constexpr const char* kSnapshotUtf8Name = "中文进程.exe";
+constexpr const char* kSnapshotServiceName = "gamma service.exe";
+
+/// 夹具自检用的固定期望文本：与 `processListText()` 的既有行格式逐字一致。
+constexpr const char* kSnapshotListText =
+    "PID: 4321 ProcessName: alpha.exe\n"
+    "PID: 4322 ProcessName: 中文进程.exe\n"
+    "PID: 4323 ProcessName: gamma service.exe\n";
+
+std::vector<SnapshotProcessEntry> snapshotEntries()
+{
+    return {
+        {kSnapshotAsciiPid, kSnapshotAsciiName},
+        {kSnapshotUtf8Pid, kSnapshotUtf8Name},
+        {kSnapshotServicePid, kSnapshotServiceName},
+    };
+}
+
+/// 快照进程：只承载 PID 与名称（查询路径所需的全部数据）。
+/// 本测试不扫描内存，可扫描页与读写均为“不支持”。
+class SnapshotProcess : public tpe::platform::PlatformProcess {
+public:
+    SnapshotProcess(tpe::platform::Pid_t pid, std::string name)
+        : PlatformProcess(pid, std::move(name))
+    {
+    }
+
+    std::vector<tpe::MemoryPage> getCheatablePages() const override { return {}; }
+
+    tpe::Result<tpe::Memory, tpe::PlatformError> read(tpe::MemoryPage) const override
+    {
+        return tpe::Result<tpe::Memory, tpe::PlatformError>::error(notSupported());
+    }
+
+    tpe::Result<void, tpe::PlatformError> write(tpe::Address, const tpe::Memory&) override
+    {
+        return tpe::Result<void, tpe::PlatformError>::error(notSupported());
+    }
+
+private:
+    tpe::PlatformError notSupported() const
+    {
+        return tpe::PlatformError{"SnapshotProcess", static_cast<unsigned long>(getPid()), 0,
+                                  "not supported"};
+    }
+};
+
+/// 固定快照平台实现：枚举成功且 Always 返回同一组受控进程。
+class SnapshotPlatformOS : public tpe::platform::PlatformOS {
+public:
+    SnapshotPlatformOS()
+    {
+        for (const SnapshotProcessEntry& entry : snapshotEntries()) {
+            ProcessList.push_back(std::make_shared<SnapshotProcess>(entry.pid, entry.name));
+        }
+    }
+
+    std::shared_ptr<tpe::platform::PlatformProcess> open(tpe::platform::Pid_t pid) override
+    {
+        for (const std::shared_ptr<tpe::platform::PlatformProcess>& process : ProcessList) {
+            if (process->getPid() == pid) {
+                return process;
+            }
+        }
+        return nullptr;
+    }
+
+    tpe::Result<std::vector<tpe::platform::Pid_t>, tpe::PlatformError> getAllProcessesPid()
+        override
+    {
+        std::vector<tpe::platform::Pid_t> pids;
+        pids.reserve(ProcessList.size());
+        for (const std::shared_ptr<tpe::platform::PlatformProcess>& process : ProcessList) {
+            pids.push_back(process->getPid());
+        }
+        return tpe::Result<std::vector<tpe::platform::Pid_t>, tpe::PlatformError>::success(
+            std::move(pids));
+    }
+
+    void getAllProcesses(std::vector<tpe::platform::Pid_t>) override {}
+};
+
+// ---------------------------------------------------------------------------
 // Server / Client 封装
 // ---------------------------------------------------------------------------
 
@@ -1000,6 +1112,14 @@ public:
     {
     }
 
+    /// T026：用调用方提供的平台实现构造引擎（固定进程快照）。
+    /// 同一引擎既供 Server 执行远程查询，也供测试取得本地期望文本。
+    LocalServer(std::uint16_t port, std::unique_ptr<tpe::platform::PlatformOS> os)
+        : m_engine(std::move(os))
+        , m_server(port, m_engine)
+    {
+    }
+
     ~LocalServer() { m_server.stop(); }
 
     LocalServer(const LocalServer&) = delete;
@@ -1008,6 +1128,7 @@ public:
     bool start() { return m_server.start(); }
     void stop() { m_server.stop(); }
     tpe::remote::RemoteServer& instance() { return m_server; }
+    tpe::ProcessEngine& engine() { return m_engine; }
 
 private:
     tpe::ProcessEngine m_engine;
@@ -1170,6 +1291,133 @@ void expectSuccessfulHandshake(std::uint16_t port)
     server.stop();
     EXPECT_TRUE(waitUntil([&server] { return !server.instance().isRunning(); }, kWaitLimit))
         << "isRunning() must become false after stop()";
+}
+
+// ---------------------------------------------------------------------------
+// T026 成功查询场景共用辅助
+// ---------------------------------------------------------------------------
+
+/// 一次快照会话的结果：Client 捕获、退出码与同一引擎的本地期望文本。
+struct SnapshotSessionResult {
+    int exitCode = -1;
+    std::string out;
+    std::string err;
+    std::string localListText;   // 同一引擎 processListText()（本地 --all-processes 文本）
+    std::string localSearchName; // 传入 searchPid 时为同一引擎 searchProcess() 的结果
+};
+
+/// 统一行分隔符（cli.md §5：比较前把 CRLF 统一为 LF；孤立 CR 原样保留）。
+std::string normalizedLineEndings(const std::string& text)
+{
+    std::string normalized;
+    normalized.reserve(text.size());
+    for (std::size_t index = 0; index < text.size(); ++index) {
+        if (text[index] == '\r' && index + 1 < text.size() && text[index + 1] == '\n') {
+            continue;
+        }
+        normalized.push_back(text[index]);
+    }
+    return normalized;
+}
+
+/// 在固定快照 Server 上完成一次有界远程会话：
+/// 先等待 Client 进入 TPE>，再送入 commands（LF 分隔），随后标准输入返回 EOF
+/// （US2 不实现 exit；EOF 由 T023 已有路径结束会话），最后采集 Client 输出、
+/// 退出码与同一引擎的本地期望文本。所有等待 ≤5 秒，不做无界 join。
+void runSnapshotQuerySession(std::uint16_t port, const std::string& commands,
+                             SnapshotSessionResult& result,
+                             std::optional<tpe::platform::Pid_t> searchPid = std::nullopt)
+{
+    ScopedRemoteStreams streams;
+    LocalServer server(port, std::make_unique<SnapshotPlatformOS>());
+
+    // 先启动；仅当启动失败时才诊断端口（与既有用例同一策略）。
+    if (!server.start()) {
+        if (isPortUnavailable(port)) {
+            GTEST_SKIP() << "TCP port " << port
+                         << " is unavailable (bound by another process or reserved by the "
+                            "system); skipping instead of misreporting a genuine port "
+                            "conflict as a failure.";
+        }
+        FAIL() << "RemoteServer::start() must succeed on free port " << port;
+    }
+    ASSERT_TRUE(waitUntil([&server] { return server.instance().isRunning(); }, kWaitLimit))
+        << "isRunning() must become true within 5 s after start() returned true";
+
+    // 本地期望文本：与 Server 执行远程查询使用的是同一个引擎实例。
+    const tpe::Result<std::string, tpe::PlatformError> localText =
+        server.engine().processListText();
+    ASSERT_TRUE(localText.has_value()) << "the fixed snapshot must enumerate successfully";
+    result.localListText = localText.value();
+
+    if (searchPid.has_value()) {
+        const std::optional<std::string> name = server.engine().searchProcess(*searchPid);
+        ASSERT_TRUE(name.has_value()) << "fixture sanity: PID " << *searchPid
+                                      << " must exist in the fixed snapshot";
+        ASSERT_FALSE(name->empty()) << "fixture sanity: the snapshot name must not be empty";
+        result.localSearchName = *name;
+    }
+
+    ClientRun client("127.0.0.1", port);
+    client.start();
+
+    if (!waitUntil([&client] { return client.out().find("TPE>") != std::string::npos; },
+                   kWaitLimit)) {
+        stdinBuffer().interrupt();
+        server.stop();
+        client.waitDone(std::chrono::milliseconds{1000});
+        FAIL() << "client did not display 'TPE>' within 5 s; client stdout=[" << client.out()
+               << "] client stderr=[" << client.err() << "] server stdout=["
+               << capturedServerOut() << "]";
+    }
+
+    stdinBuffer().releaseWith(commands);
+
+    if (!client.waitDone(kWaitLimit)) {
+        server.stop();
+        stdinBuffer().interrupt();
+        client.waitDone(std::chrono::milliseconds{1000});
+        FAIL() << "client did not finish within 5 s after the query commands; client stdout=["
+               << client.out() << "] client stderr=[" << client.err() << "]";
+    }
+    ASSERT_TRUE(client.join());
+
+    result.exitCode = client.exitCode();
+    result.out = client.out();
+    result.err = client.err();
+
+    server.stop();
+}
+
+/// 断言 Client 标准输出中恰有一处与本地结果逐字一致的整块文本：
+/// 块前必须已有提示符（进入会话）；块后必须紧跟下一个提示符（回到 TPE>），
+/// 不能是换行（FR-017：不引入额外空行）；整块比较同时保证行序与字段。
+void expectVerbatimQueryBlock(const SnapshotSessionResult& result,
+                              const std::string& localBlock)
+{
+    ASSERT_FALSE(localBlock.empty())
+        << "fixture sanity: the local query result must not be empty";
+    const std::string clientOut = normalizedLineEndings(result.out);
+    ASSERT_EQ(countOccurrences(clientOut, localBlock), std::size_t{1})
+        << "client stdout must contain the whole multi-line result verbatim exactly once;\n"
+        << "expected block=[" << localBlock << "]\nclient stdout=[" << clientOut
+        << "]\nclient stderr=[" << result.err << "]";
+
+    const std::size_t blockPosition = clientOut.find(localBlock);
+    const std::size_t firstPrompt = clientOut.find("TPE>");
+    ASSERT_NE(firstPrompt, std::string::npos)
+        << "client stdout must show the 'TPE>' prompt; stdout=[" << clientOut << "]";
+    EXPECT_LT(firstPrompt, blockPosition)
+        << "query result must be rendered after the prompt; stdout=[" << clientOut << "]";
+
+    const std::size_t afterBlock = blockPosition + localBlock.size();
+    ASSERT_LT(afterBlock, clientOut.size())
+        << "client must return to the 'TPE>' prompt after the result; stdout=[" << clientOut
+        << "]";
+    EXPECT_EQ(clientOut.compare(afterBlock, 4, "TPE>"), 0)
+        << "the prompt must follow the result directly (no extra blank line and no merged "
+           "line; FR-017); stdout=["
+        << clientOut << "]";
 }
 
 } // namespace
@@ -1783,4 +2031,77 @@ TEST(RemoteSession, ClientReportsInvalidWelcomePayload)
 
     ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
     EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
+}
+
+// ---------------------------------------------------------------------------
+// 套件 RemoteSessionQuerySuccess — US2 成功查询（T026）
+//
+// 夹具前提（brief 第 5 条）：上面固定的 3 个受控进程构成快照，不读取宿主机真实
+// 进程列表，因此“无关进程行的整行增减”不在快照内发生、不影响判定；断言对受控
+// 行保留原始行序，不重排、不过滤，也不使用单行对照。
+// 远程 Server 与本地期望文本共用同一个 ProcessEngine（注入构造）。
+//
+// RED（T026 阶段）：T028/T029/T030 未实现——Client 不发送 COMMAND，查询无输出；
+// 用例在 5 秒上限内以断言失败结束，不挂起。
+// ---------------------------------------------------------------------------
+
+/// `--all-processes`：Client 标准输出中的整份多行结果与同一引擎的
+/// processListText() 逐字一致（统一 CRLF/LF 后整块比较文本、行序与字段）。
+TEST(RemoteSessionQuerySuccess, AllProcessesMatchesLocalVerbatim)
+{
+    SnapshotSessionResult result;
+    runSnapshotQuerySession(kQueryAllProcessesPort, "--all-processes\n", result);
+
+    // 夹具自检：固定快照按注入顺序渲染成固定多行文本（≥3 个受控进程）。
+    ASSERT_EQ(result.localListText, std::string(kSnapshotListText))
+        << "fixture sanity: the injected snapshot must render in its fixed order";
+    ASSERT_EQ(countOccurrences(result.localListText, "\n"), std::size_t{3})
+        << "fixture sanity: the local result must be a three-line block";
+    ASSERT_NE(result.localListText.find(std::string(kSnapshotUtf8Name) + "\n"),
+              std::string::npos)
+        << "fixture sanity: the fixed snapshot must carry a valid non-ASCII name";
+
+    EXPECT_EQ(result.exitCode, 0)
+        << "a successful query must not end the session with an error; client stderr=["
+        << result.err << "]";
+
+    // 整块逐字比较：不重排、不过滤、不用单行对照。
+    expectVerbatimQueryBlock(result, result.localListText);
+}
+
+/// `--search-process <PID>`：成功结果与本地 `searchProcess()` 的既有输出格式一致
+/// （单行进程名 + 行尾换行）。
+TEST(RemoteSessionQuerySuccess, SearchProcessMatchesLocalFormat)
+{
+    SnapshotSessionResult result;
+    runSnapshotQuerySession(kQuerySearchProcessPort,
+                            "--search-process " + std::to_string(kSnapshotAsciiPid) + "\n",
+                            result, kSnapshotAsciiPid);
+
+    EXPECT_EQ(result.localSearchName, std::string(kSnapshotAsciiName))
+        << "fixture sanity: searchProcess() must return the fixed snapshot name";
+    EXPECT_EQ(result.exitCode, 0)
+        << "a successful query must not end the session with an error; client stderr=["
+        << result.err << "]";
+
+    // 本地既有格式：`std::cout << *name << std::endl` → 名称单独一行。
+    expectVerbatimQueryBlock(result, result.localSearchName + "\n");
+}
+
+/// 有效非 ASCII（UTF-8）进程名：远程显示与本地 searchProcess() 逐字一致，
+/// 名称独立成行（FR-017：不合并行、不引入额外空行）。
+TEST(RemoteSessionQuerySuccess, NonAsciiProcessNameIsDisplayedVerbatim)
+{
+    SnapshotSessionResult result;
+    runSnapshotQuerySession(kQueryUtf8NamePort,
+                            "--search-process " + std::to_string(kSnapshotUtf8Pid) + "\n",
+                            result, kSnapshotUtf8Pid);
+
+    EXPECT_EQ(result.localSearchName, std::string(kSnapshotUtf8Name))
+        << "fixture sanity: the injected snapshot must carry a valid UTF-8 name";
+    EXPECT_EQ(result.exitCode, 0)
+        << "a successful query must not end the session with an error; client stderr=["
+        << result.err << "]";
+
+    expectVerbatimQueryBlock(result, result.localSearchName + "\n");
 }
