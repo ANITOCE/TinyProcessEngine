@@ -507,3 +507,110 @@ TEST(RemoteProtocol, FrameRoundTripPreservesUtf8AndLfBytes)
     EXPECT_EQ(result.frame.payload, payload);
     EXPECT_EQ(toText(result.frame.payload), line);
 }
+
+// ---------------------------------------------------------------------------
+// T045 边界回归：帧上限、COMMAND 64 KiB 与载荷非空 BYE（契约 §1/§2）
+//
+// 既有覆盖（此处不重复）：
+//   - TryDecodeFrameWaitsForMaximumLengthFrameInsteadOfFailing：最大 length 只等待；
+//   - TryDecodeFrameRejectsLengthAboveMaximumImmediately：length 超限立即失败；
+//   - ValidatePayloadEnforcesCommandSizeLimit：64 KiB 合法 / +1 非法；
+//   - EncodeResponseEnforcesPayloadSizeLimit：RESPONSE payload 恰好/超过上限。
+// 本节补充：整帧在最大 payload 上可往返；超限帧即使字节齐全也被拒绝；
+// 超限错误码必须是 FrameTooLarge（Server 据此改发固定 status=2 响应）；
+// 恰好 64 KiB 的 COMMAND 仍执行内容校验；载荷非空 BYE 的边界尺寸。
+// 这些断言在当前实现上直接通过，记录为回归基线。
+// ---------------------------------------------------------------------------
+
+TEST(RemoteProtocol, FrameAtMaximumPayloadRoundTrips)
+{
+    // length = kMaxFrameLength 是契约上界：payload = kMaxFrameLength - 2 可编码/解码。
+    const std::vector<std::uint8_t> payload(tpe::remote::kMaxPayloadBytes, 'x');
+    const std::vector<std::uint8_t> frame =
+        tpe::remote::encodeFrame(MessageType::Command, payload);
+
+    ASSERT_EQ(frame.size(), std::size_t{tpe::remote::kFrameLengthBytes} +
+                                tpe::remote::kMaxFrameLength);
+    // length 字段 = 1 MiB = 0x00100000（大端）。
+    EXPECT_EQ(frame[0], std::uint8_t{0x00});
+    EXPECT_EQ(frame[1], std::uint8_t{0x10});
+    EXPECT_EQ(frame[2], std::uint8_t{0x00});
+    EXPECT_EQ(frame[3], std::uint8_t{0x00});
+
+    const DecodeResult result = tpe::remote::tryDecodeFrame(frame);
+    ASSERT_EQ(result.status, DecodeStatus::Complete);
+    EXPECT_EQ(result.consumed, frame.size());
+    EXPECT_EQ(result.frame.header.length, tpe::remote::kMaxFrameLength);
+    EXPECT_EQ(result.frame.header.type, MessageType::Command);
+    EXPECT_EQ(result.frame.payload.size(), std::size_t{tpe::remote::kMaxPayloadBytes});
+    EXPECT_EQ(result.frame.payload, payload);
+}
+
+TEST(RemoteProtocol, FrameAboveMaximumPayloadIsRejectedEvenWhenComplete)
+{
+    // payload = kMaxPayloadBytes + 1 → length = kMaxFrameLength + 1。
+    // encodeFrame 的契约是调用方保证 size() ≤ kMaxPayloadBytes；这里按相同布局
+    // 产生超限帧，验证解码端在 length 字段到齐时即拒绝，不因字节齐全而接受。
+    const std::vector<std::uint8_t> payload(
+        static_cast<std::size_t>(tpe::remote::kMaxPayloadBytes) + 1, 'x');
+    const std::vector<std::uint8_t> frame =
+        tpe::remote::encodeFrame(MessageType::Command, payload);
+    ASSERT_EQ(frame.size(), std::size_t{tpe::remote::kFrameLengthBytes} +
+                                tpe::remote::kMaxFrameLength + 1);
+
+    const DecodeResult result = tpe::remote::tryDecodeFrame(frame);
+    ASSERT_EQ(result.status, DecodeStatus::Failed);
+    EXPECT_EQ(result.error.code, ErrorCode::FrameTooLarge);
+    EXPECT_EQ(result.consumed, std::size_t{0});
+}
+
+TEST(RemoteProtocol, EncodeResponseAbovePayloadLimitReportsFrameTooLarge)
+{
+    // 与既有 EncodeResponseEnforcesPayloadSizeLimit 互补：契约要求超限以
+    // FrameTooLarge 报告（RemoteServer 据此改发固定 status=2 响应）。
+    const std::size_t overhead = 1 + 2 + 4 + 4; // status + promptLen + "TPE>" + outputLen
+    const std::string prompt = "TPE>";
+
+    const auto atLimit = tpe::remote::encodeResponse(
+        ResponseStatus::Continue, prompt,
+        std::string(static_cast<std::size_t>(tpe::remote::kMaxPayloadBytes) - overhead, 'o'));
+    ASSERT_TRUE(atLimit.has_value()) << atLimit.error().reason;
+    EXPECT_EQ(atLimit.value().size(), std::size_t{tpe::remote::kMaxPayloadBytes});
+
+    const auto aboveLimit = tpe::remote::encodeResponse(
+        ResponseStatus::Continue, prompt,
+        std::string(static_cast<std::size_t>(tpe::remote::kMaxPayloadBytes) - overhead + 1, 'o'));
+    ASSERT_FALSE(aboveLimit.has_value());
+    EXPECT_EQ(aboveLimit.error().code, ErrorCode::FrameTooLarge);
+}
+
+TEST(RemoteProtocol, ValidatePayloadAppliesContentRulesAtCommandSizeLimit)
+{
+    // 恰好 kMaxCommandBytes 仍不是“内容合法”的豁免：换行与非法 UTF-8 都拒绝。
+    std::vector<std::uint8_t> payload(tpe::remote::kMaxCommandBytes, 'a');
+    EXPECT_FALSE(tpe::remote::validatePayload(MessageType::Command, payload).has_value());
+
+    payload.back() = static_cast<std::uint8_t>('\r');
+    const auto lineBreak = tpe::remote::validatePayload(MessageType::Command, payload);
+    ASSERT_TRUE(lineBreak.has_value());
+    EXPECT_EQ(lineBreak->code, ErrorCode::InvalidPayload);
+
+    payload.back() = static_cast<std::uint8_t>(0xFF); // 永不出现于合法 UTF-8
+    const auto utf8 = tpe::remote::validatePayload(MessageType::Command, payload);
+    ASSERT_TRUE(utf8.has_value());
+    EXPECT_EQ(utf8->code, ErrorCode::InvalidPayload);
+}
+
+TEST(RemoteProtocol, ValidatePayloadRejectsNonEmptyByeAtBoundarySizes)
+{
+    // 契约 §2：BYE 载荷必须为空；尺寸不改变判定（1、2、64 字节均 InvalidPayload）。
+    EXPECT_FALSE(tpe::remote::validatePayload(MessageType::Bye, {}).has_value());
+
+    for (const std::size_t size : {std::size_t{1}, std::size_t{2}, std::size_t{64}}) {
+        SCOPED_TRACE(size);
+        const auto error = tpe::remote::validatePayload(
+            MessageType::Bye, std::vector<std::uint8_t>(size, 0x00));
+        ASSERT_TRUE(error.has_value());
+        EXPECT_EQ(error->code, ErrorCode::InvalidPayload);
+    }
+}

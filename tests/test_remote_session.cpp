@@ -153,6 +153,9 @@ constexpr std::uint16_t kQueryFailureEnumerationUnencodablePort = 18096;
 constexpr std::uint16_t kQueryFailureDoubleFailurePort = 18097;
 constexpr std::uint16_t kQueryFailureListDoubleFailurePort = 18098;
 
+/// T045 命令 64 KiB 边界用例的独立端口（18126，与既有用例及 RemoteLogEvents 不重叠）。
+constexpr std::uint16_t kBoundaryCommandLimitPort = 18126;
+
 /// 有界轮询：predicate 就绪返回 true；超时返回最后一次判定结果。
 bool waitUntil(const std::function<bool()>& predicate, std::chrono::milliseconds timeout)
 {
@@ -4382,6 +4385,310 @@ TEST(RemoteSessionExitBye, DisconnectWinsOverEofRace)
         << "the disconnect must be reported with the fixed text instead of a normal "
            "exit; stderr=["
         << client.err() << "]";
+
+    ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
+    EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
+}
+
+// ---------------------------------------------------------------------------
+// 套件 RemoteSessionBoundary — T045 边界回归（只补测试，不修改实现）
+//
+// 覆盖：
+//   - COMMAND payload 恰好 64 KiB：本地预检用“超过”而非“达到”，命令实际发送并由
+//     Server 按未知命令应答；+1 字节的本地拒绝已由 T027
+//     RemoteSessionPreSendValidation.OversizeCommandIsRejectedLocally 覆盖；
+//   - 发送前校验顺序（cli.md §3.1：UTF-8 → 行内 CR/LF → 64 KiB）：用同时触发两项
+//     的输入断言先发生者优先。US2 的双失败用例针对查询结果（不可编码优先于超限），
+//     这里针对命令行预检，路径不同、不重复；
+//   - 行尾 CR：仅剥离 1 个行尾 CR（“help\r”可发送）；双 CR 仍剩内嵌 CR → 本地拒绝；
+//   - BYE 确认 1 s 期限的两侧：0.7 s 内确认 → 退出 0；1.3 s 才确认 → 已按超时退出 1。
+//
+// 未新增“firstByte 恰好到期”的实时用例：既有
+// RemoteSession.ClientAcceptsBusyWhenFirstByteArrivesBeforeDeadline /
+// ClientReportsSilentTimeoutWhenFirstByteIsLate 与
+// RemoteSessionSingleConnection.TimingBoundaryA/B/C 已用注入期限覆盖期限两侧；
+// 实时“恰好等于期限”受 Windows 调度粒度（约 15.6 ms）影响不可稳定复现。
+// 实现按绝对时点 `now > deadline` 判定（等于期限算及时），此处以注释记录覆盖情况，
+// 不制造抖动型用例。
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// BYE 确认超时固定文本（cli.md §7；tests 不跨 TU 引用实现内部常量）。
+constexpr const char* kEndNotAcknowledgedText = "Server did not acknowledge the session end.";
+
+/// T045：脚本化 Server 要求握手后的第一条（也是唯一一条）COMMAND 恰好为 help，
+/// 随后回 help RESPONSE 并接受 BYE/对端关闭。用于断言“行尾 CR 已被剥离、命令已发送”：
+/// 若剥离或预检有误，首帧会是别的载荷或根本不到达，脚本以明确原因失败。
+void runScriptedHelpInputSession(const std::string& inputLine, PreSendSessionResult& result)
+{
+    ScopedRemoteStreams streams;
+    ScriptedServer server([](SocketHandle socket, std::string& failure) {
+        if (!completeScriptedHandshake(socket, failure)) {
+            return false;
+        }
+        tpe::remote::Frame frame;
+        if (!receiveFrameBefore(socket, kWaitLimit, frame, failure)) {
+            return false;
+        }
+        if (frame.header.type != tpe::remote::MessageType::Command) {
+            failure = "valid input must be sent as COMMAND; got type " +
+                      std::to_string(static_cast<int>(frame.header.type));
+            return false;
+        }
+        const std::string commandLine(frame.payload.begin(), frame.payload.end());
+        if (commandLine != "help") {
+            const std::string preview = commandLine.substr(0, 32);
+            failure = "a trailing CR must be stripped before sending; expected "
+                      "COMMAND(help), got [" +
+                      preview + "] (" + std::to_string(commandLine.size()) + " byte(s))";
+            return false;
+        }
+        const tpe::Result<std::vector<std::uint8_t>, tpe::remote::ProtocolError> payload =
+            tpe::remote::encodeResponse(tpe::remote::ResponseStatus::Continue, "TPE>",
+                                        kHelpText);
+        if (!payload.has_value()) {
+            failure = "failed to encode the help RESPONSE";
+            return false;
+        }
+        if (!sendFrameBytes(socket, tpe::remote::MessageType::Response, payload.value())) {
+            failure = "failed to send the help RESPONSE";
+            return false;
+        }
+        if (!receiveByeOrPeerClose(socket, kWaitLimit, failure)) {
+            return false;
+        }
+        sendFrameBytes(socket, tpe::remote::MessageType::Bye, {});
+        waitForPeerEvent(socket, std::chrono::milliseconds{1000});
+        return true;
+    });
+    ASSERT_TRUE(server.start()) << "scripted server must bind 127.0.0.1";
+
+    ClientRun client("127.0.0.1", server.port());
+    client.start();
+    if (!waitForClientPrompt(client)) {
+        stdinBuffer().interrupt();
+        client.waitDone(std::chrono::milliseconds{1000});
+        FAIL() << "client did not display 'TPE>' within 5 s; client stdout=[" << client.out()
+               << "] client stderr=[" << client.err() << "]";
+    }
+
+    stdinBuffer().releaseWith(inputLine + "\n");
+
+    if (!client.waitDone(kWaitLimit)) {
+        stdinBuffer().interrupt();
+        client.waitDone(std::chrono::milliseconds{1000});
+        FAIL() << "client did not finish within 5 s; client stdout=[" << client.out()
+               << "] client stderr=[" << client.err() << "]";
+    }
+    ASSERT_TRUE(client.join());
+
+    result.exitCode = client.exitCode();
+    result.out = client.out();
+    result.err = client.err();
+
+    EXPECT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
+    result.scriptSucceeded = server.scriptSucceeded();
+    result.scriptFailure = server.scriptFailure();
+}
+
+} // namespace
+
+/// COMMAND payload 恰好 64 KiB（kMaxCommandBytes）→ 通过本地预检并实际发送；
+/// Server 接收后按未知命令返回 status=2 响应，随后 help 仍可用。
+TEST(RemoteSessionBoundary, CommandAtSizeLimitIsAccepted)
+{
+    std::string command = "list ";
+    command.append(tpe::remote::kMaxCommandBytes - command.size(), 'u');
+    ASSERT_EQ(command.size(), tpe::remote::kMaxCommandBytes);
+
+    QueryFailureSessionResult result;
+    const SessionRunReport report = runQueryFailureSession(
+        kBoundaryCommandLimitPort, std::make_unique<SnapshotPlatformOS>(),
+        command + "\nhelp\n", result);
+    if (report.status == SessionRunStatus::PortUnavailable) {
+        GTEST_SKIP() << report.detail;
+    }
+    ASSERT_TRUE(report.status == SessionRunStatus::Completed) << report.detail;
+
+    expectFailureThenHelp(result, kUnknownCommandText);
+
+    // 若本地把“恰好 64 KiB”误判为超限，输出会是超限文本且命令不会发送。
+    const std::string clientOut = normalizedLineEndings(result.out);
+    EXPECT_EQ(clientOut.find(kOversizeCommandText), std::string::npos)
+        << "a command of exactly 64 KiB must pass the local length check; stdout=["
+        << clientOut << "]";
+}
+
+/// cli.md §3.1 顺序第 1 条优先于第 2 条：同一行同时含非法 UTF-8 与内嵌 CR → UTF-8 文本。
+TEST(RemoteSessionBoundary, PreSendUtf8CheckPrecedesLineBreakCheck)
+{
+    std::string rejectedLine = "--all-processes\rlist";
+    rejectedLine.push_back(static_cast<char>(0xFF));
+
+    PreSendSessionResult result;
+    runPreSendRejectionSession(rejectedLine + "\n", result);
+
+    expectLocalRejectionThenHelp(result, kUnencodableCommandText);
+}
+
+/// cli.md §3.1 顺序第 1 条优先于第 3 条：同一行同时超长且含非法 UTF-8 → UTF-8 文本。
+TEST(RemoteSessionBoundary, PreSendUtf8CheckPrecedesSizeCheck)
+{
+    std::string rejectedLine(tpe::remote::kMaxCommandBytes + 1, 'u');
+    rejectedLine[1000] = static_cast<char>(0xFF);
+    ASSERT_EQ(rejectedLine.size(), tpe::remote::kMaxCommandBytes + 1);
+
+    PreSendSessionResult result;
+    runPreSendRejectionSession(rejectedLine + "\n", result);
+
+    expectLocalRejectionThenHelp(result, kUnencodableCommandText);
+}
+
+/// cli.md §3.1 顺序第 2 条优先于第 3 条：同一行同时超长且含内嵌 CR → 换行文本。
+TEST(RemoteSessionBoundary, PreSendLineBreakCheckPrecedesSizeCheck)
+{
+    std::string rejectedLine(tpe::remote::kMaxCommandBytes + 1, 'u');
+    rejectedLine[1000] = '\r';
+    ASSERT_EQ(rejectedLine.size(), tpe::remote::kMaxCommandBytes + 1);
+
+    PreSendSessionResult result;
+    runPreSendRejectionSession(rejectedLine + "\n", result);
+
+    expectLocalRejectionThenHelp(result, kLineBreakCommandText);
+}
+
+/// 仅行尾 CR 允许：输入 "help\r\n" 去掉行尾 CR/LF 后按 COMMAND("help") 发送并正常收尾。
+TEST(RemoteSessionBoundary, TrailingCarriageReturnIsStrippedBeforeSend)
+{
+    PreSendSessionResult result;
+    runScriptedHelpInputSession("help\r", result);
+
+    ASSERT_TRUE(result.scriptSucceeded)
+        << "the trailing CR must be stripped and COMMAND(help) sent; "
+        << result.scriptFailure;
+    EXPECT_EQ(result.exitCode, 0) << "stderr=[" << result.err << "]";
+
+    const std::string clientOut = normalizedLineEndings(result.out);
+    ASSERT_EQ(countOccurrences(clientOut, kHelpText), std::size_t{1})
+        << "the help response must be rendered exactly once; stdout=[" << clientOut << "]";
+    for (const char* rejection :
+         {kOversizeCommandText, kUnencodableCommandText, kLineBreakCommandText}) {
+        EXPECT_EQ(clientOut.find(rejection), std::string::npos)
+            << "a single trailing CR must not trigger a local rejection; stdout=["
+            << clientOut << "]";
+    }
+    EXPECT_EQ(result.err.find(kLineBreakCommandText), std::string::npos)
+        << "stderr=[" << result.err << "]";
+}
+
+/// 边界：只剥离 1 个行尾 CR；"help\r\r\n" 仍剩内嵌 CR → 本地拒绝、不发送。
+TEST(RemoteSessionBoundary, DoubleTrailingCarriageReturnIsRejectedLocally)
+{
+    PreSendSessionResult result;
+    runPreSendRejectionSession("help\r\r\n", result);
+
+    expectLocalRejectionThenHelp(result, kLineBreakCommandText);
+}
+
+/// BYE 确认期限下侧：0.7 s 时收到确认（早于 1 s）→ 退出码 0。
+TEST(RemoteSessionBoundary, ByeAcknowledgedJustBeforeDeadlineReturnsZero)
+{
+    ScopedRemoteStreams streams;
+    ScriptedServer server([](SocketHandle socket, std::string& failure) {
+        if (!completeScriptedHandshake(socket, failure)) {
+            return false;
+        }
+        if (!expectClientBye(socket, failure)) {
+            return false;
+        }
+        // 1 s 确认期限内的确认：0.7 s 回 BYE，留 0.3 s 调度余量。
+        std::this_thread::sleep_for(std::chrono::milliseconds{700});
+        if (!sendFrameBytes(socket, tpe::remote::MessageType::Bye, {})) {
+            failure = "failed to send the BYE acknowledgement";
+            return false;
+        }
+        if (waitForPeerEvent(socket, std::chrono::milliseconds{2000}) != PeerEvent::Closed) {
+            failure = "the client must close the connection after the acknowledged end";
+            return false;
+        }
+        return true;
+    });
+    ASSERT_TRUE(server.start()) << "scripted server must bind 127.0.0.1";
+
+    ClientRun client("127.0.0.1", server.port());
+    client.start();
+    if (!waitForClientPrompt(client)) {
+        stdinBuffer().interrupt();
+        FAIL() << "client did not display 'TPE>' within 5 s; stdout=[" << client.out()
+               << "] stderr=[" << client.err() << "]";
+    }
+
+    stdinBuffer().pushInput("exit\n");
+
+    ASSERT_TRUE(client.waitDone(std::chrono::milliseconds{2000}))
+        << "an acknowledgement inside the 1 s deadline must end the client; stdout=["
+        << client.out() << "] stderr=[" << client.err() << "]";
+    ASSERT_TRUE(client.join());
+    EXPECT_EQ(client.exitCode(), 0)
+        << "an acknowledged session end must exit 0; stderr=[" << client.err() << "]";
+    EXPECT_EQ(client.err().find(kEndNotAcknowledgedText), std::string::npos)
+        << "an acknowledgement inside the deadline must not be reported as a timeout; "
+           "stderr=["
+        << client.err() << "]";
+
+    ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
+    EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
+}
+
+/// BYE 确认期限上侧：1.3 s 才收到确认（晚于 1 s）→ 已按超时主动关闭并退出 1。
+TEST(RemoteSessionBoundary, ByeAcknowledgedAfterDeadlineIsTooLate)
+{
+    ScopedRemoteStreams streams;
+    ScriptedServer server([](SocketHandle socket, std::string& failure) {
+        if (!completeScriptedHandshake(socket, failure)) {
+            return false;
+        }
+        if (!expectClientBye(socket, failure)) {
+            return false;
+        }
+        // 1 s 确认期限之后的确认：Client 应已按超时关闭；发送失败属预期。
+        std::this_thread::sleep_for(std::chrono::milliseconds{1300});
+        sendFrameBytes(socket, tpe::remote::MessageType::Bye, {});
+        waitForPeerEvent(socket, std::chrono::milliseconds{1000});
+        return true;
+    });
+    ASSERT_TRUE(server.start()) << "scripted server must bind 127.0.0.1";
+
+    ClientRun client("127.0.0.1", server.port());
+    client.start();
+    if (!waitForClientPrompt(client)) {
+        stdinBuffer().interrupt();
+        FAIL() << "client did not display 'TPE>' within 5 s; stdout=[" << client.out()
+               << "] stderr=[" << client.err() << "]";
+    }
+
+    const auto exitAt = std::chrono::steady_clock::now();
+    stdinBuffer().pushInput("exit\n");
+
+    ASSERT_TRUE(client.waitDone(std::chrono::milliseconds{2000}))
+        << "the client must return after the 1 s confirmation deadline; stdout=["
+        << client.out() << "] stderr=[" << client.err() << "]";
+    ASSERT_TRUE(client.join());
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - exitAt);
+
+    EXPECT_EQ(client.exitCode(), 1)
+        << "a BYE acknowledgement after the deadline must not turn the session into a "
+           "success; stderr=["
+        << client.err() << "]";
+    EXPECT_NE(client.err().find(kEndNotAcknowledgedText), std::string::npos)
+        << "client stderr=[" << client.err() << "]";
+    EXPECT_GE(elapsed, std::chrono::milliseconds{800})
+        << "the client must wait for the 1 s deadline; elapsed=" << elapsed.count() << " ms";
+    EXPECT_LT(elapsed, std::chrono::milliseconds{1500})
+        << "the client must exit before the late acknowledgement arrives (1.3 s); elapsed="
+        << elapsed.count() << " ms";
 
     ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
     EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
