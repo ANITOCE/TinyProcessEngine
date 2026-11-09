@@ -68,10 +68,94 @@ constexpr std::string_view kRejectedText = "The server rejected the connection."
 /// HELLO 写回失败（连接建立后立即断开）。
 constexpr std::string_view kSendHandshakeFailedText = "Failed to send the handshake.";
 
+/// 发送前校验失败文本（cli.md §3.1）；一律写标准输出、不发送、保留 TPE>。
+constexpr std::string_view kUnencodableCommandText = "Command cannot be encoded as UTF-8.";
+constexpr std::string_view kLineBreakCommandText = "Command must not contain line breaks.";
+constexpr std::string_view kOversizeCommandText =
+    "Command exceeds the maximum message size.";
+
 /// 文本 → 载荷字节序列。
 std::vector<std::uint8_t> toPayload(std::string_view text)
 {
     return std::vector<std::uint8_t>(text.begin(), text.end());
+}
+
+bool isContinuationByte(std::uint8_t byte)
+{
+    return (byte & 0xC0u) == 0x80u;
+}
+
+/// 严格 UTF-8 校验（与 RemoteProtocol 的载荷校验同一规则，不依赖 locale）：
+/// 拒绝过长编码、UTF-16 代理区码点、超出 U+10FFFF 的序列与截断序列。
+bool isValidUtf8(std::string_view text)
+{
+    std::size_t index = 0;
+    const std::size_t size = text.size();
+    while (index < size) {
+        const auto lead = static_cast<std::uint8_t>(text[index]);
+        if (lead <= 0x7Fu) { // ASCII
+            ++index;
+            continue;
+        }
+
+        std::size_t trailing = 0;      // 后续字节数
+        std::uint8_t secondMin = 0x80; // 第 2 字节允许范围
+        std::uint8_t secondMax = 0xBF;
+        if (lead >= 0xC2u && lead <= 0xDFu) {
+            trailing = 1;
+        } else if (lead == 0xE0u) {
+            trailing = 2;
+            secondMin = 0xA0; // 拒绝过长编码
+        } else if (lead >= 0xE1u && lead <= 0xECu) {
+            trailing = 2;
+        } else if (lead == 0xEDu) {
+            trailing = 2;
+            secondMax = 0x9F; // 拒绝 UTF-16 代理区 U+D800..U+DFFF
+        } else if (lead >= 0xEEu && lead <= 0xEFu) {
+            trailing = 2;
+        } else if (lead == 0xF0u) {
+            trailing = 3;
+            secondMin = 0x90; // 拒绝过长编码
+        } else if (lead >= 0xF1u && lead <= 0xF3u) {
+            trailing = 3;
+        } else if (lead == 0xF4u) {
+            trailing = 3;
+            secondMax = 0x8F; // 拒绝超过 U+10FFFF
+        } else {
+            return false; // 非法首字节（含 0x80..0xC1、0xF5..0xFF）
+        }
+
+        if (trailing > size - index - 1) {
+            return false; // 序列被截断
+        }
+        const auto second = static_cast<std::uint8_t>(text[index + 1]);
+        if (second < secondMin || second > secondMax) {
+            return false;
+        }
+        for (std::size_t offset = 2; offset <= trailing; ++offset) {
+            if (!isContinuationByte(static_cast<std::uint8_t>(text[index + offset]))) {
+                return false;
+            }
+        }
+        index += trailing + 1;
+    }
+    return true;
+}
+
+/// 发送前校验（cli.md §3.1）：顺序固定为 UTF-8 → 去除行尾后是否仍含 CR/LF
+/// → 编码后字节数 ≤ 64 KiB。通过返回空视图，失败返回应写标准输出的固定文本。
+std::string_view validateCommandLine(const std::string& line)
+{
+    if (!isValidUtf8(line)) {
+        return kUnencodableCommandText;
+    }
+    if (line.find('\r') != std::string::npos || line.find('\n') != std::string::npos) {
+        return kLineBreakCommandText;
+    }
+    if (line.size() > kMaxCommandBytes) {
+        return kOversizeCommandText;
+    }
+    return {};
 }
 
 /// BYE 确认期限（契约固定 1 秒）。
@@ -152,6 +236,8 @@ struct RemoteClient::Impl {
     bool peerClosed = false;
     bool sessionFailed = false; // 活动期协议错误
     std::string sessionFailureText;
+    bool awaitingResponse = false;                // run() 已发送 COMMAND，等待 RESPONSE
+    std::optional<RemoteResponse> pendingResponse; // 已送达、尚未被 run() 消费的 RESPONSE
 
     // ---- 事件循环线程私有状态 ----
     bool firstByteSeen = false;
@@ -181,6 +267,8 @@ struct RemoteClient::Impl {
             peerClosed = false;
             sessionFailed = false;
             sessionFailureText.clear();
+            awaitingResponse = false;
+            pendingResponse.reset();
         }
         firstByteSeen = false;
         input.clear();
@@ -221,16 +309,15 @@ struct RemoteClient::Impl {
 
         std::cout << kSuccessText << std::endl;
 
-        // ---- 最小 TPE> 循环：只处理 exit/EOF；命令执行由 T028 实现 ----
+        // ---- TPE> 循环（contracts/cli.md §3/§3.1/§5/§6；protocol.md §5） ----
+        // 提示符在握手完成、每个本地拒绝与每条 RESPONSE 渲染之后各输出一次；
+        // 循环内不再重复输出，避免同一输入前出现两个提示符。
+        showInputPrompt();
         for (;;) {
             std::string failure;
             {
                 const std::lock_guard<std::mutex> guard(mutex);
-                if (sessionFailed) {
-                    failure = sessionFailureText;
-                } else if (peerClosed) {
-                    failure = std::string(kClosedByServerText);
-                }
+                failure = currentSessionFailure();
             }
             if (!failure.empty()) {
                 stopClient();
@@ -238,21 +325,121 @@ struct RemoteClient::Impl {
                 return 1;
             }
 
-            std::cout << kPromptText << std::flush;
             std::string line;
             if (!std::getline(std::cin, line)) {
-                break; // 标准输入 EOF → 正常结束
+                break; // 标准输入 EOF → 正常结束（T023 路径）
             }
-            while (!line.empty() && line.back() == '\r') {
+            // std::getline 已剥离 LF；仅再去掉紧邻的 CR。内嵌 CR/LF 保留，
+            // 由发送前校验按 cli.md §3.1 拒绝。
+            if (!line.empty() && line.back() == '\r') {
                 line.pop_back();
             }
             if (line == "exit") {
-                break;
+                break; // exit 不发送 COMMAND（T023 路径）
             }
-            // 其它输入（含空行）由 T028 接入命令执行；T023 只重新给出提示符。
+
+            const std::string_view rejection = validateCommandLine(line);
+            if (!rejection.empty()) {
+                // 本地拒绝：写标准输出、不发送、保留 TPE>（cli.md §3.1）。
+                std::cout << rejection << std::endl;
+                showInputPrompt();
+                continue;
+            }
+
+            if (!exchangeCommand(line)) {
+                return 1; // 已输出原因并以退出码 1 结束
+            }
         }
 
         return finishSession();
+    }
+
+    // --------------------------------------------------------
+    // run() 线程：活动期命令交换与渲染（T028）
+    // --------------------------------------------------------
+
+    /// 会话失败/对端关闭的当前原因；无失败返回空串。调用方必须持有 mutex。
+    std::string currentSessionFailure() const
+    {
+        if (sessionFailed) {
+            return sessionFailureText;
+        }
+        if (peerClosed) {
+            return std::string(kClosedByServerText);
+        }
+        return {};
+    }
+
+    /// 渲染本地提示符（线上 prompt 不含尾随空格，渲染层添加；cli.md §5）。
+    void showInputPrompt() const
+    {
+        std::cout << kPromptText << std::flush;
+    }
+
+    /// 渲染 RESPONSE（cli.md §5；protocol.md §5/§8）：
+    /// 先原样输出 output；非空且不以 '\n' 结尾时补一个 '\n'；
+    /// 随后输出线上 prompt + 一个空格（尾随空格由渲染层添加）。
+    void renderResponse(const RemoteResponse& response) const
+    {
+        std::cout << response.output;
+        if (!response.output.empty() && response.output.back() != '\n') {
+            std::cout << '\n';
+        }
+        std::cout << response.prompt << ' ' << std::flush;
+    }
+
+    /// 发送一条已通过校验的命令并阻塞等待 RESPONSE，随后渲染。
+    /// @retval true 已收到并渲染 RESPONSE，继续会话；
+    ///         false 发送失败或等待期间对端关闭/会话失败，已输出原因、需退出 1。
+    bool exchangeCommand(const std::string& line)
+    {
+        const std::vector<std::uint8_t> frame =
+            encodeFrame(MessageType::Command, toPayload(line));
+
+        {
+            const std::lock_guard<std::mutex> guard(mutex);
+            awaitingResponse = true;
+            pendingResponse.reset();
+        }
+        if (client->send(frame.data(), static_cast<int>(frame.size())) < 0) {
+            {
+                const std::lock_guard<std::mutex> guard(mutex);
+                awaitingResponse = false;
+            }
+            stopClient();
+            std::cerr << kClosedByServerText << std::endl;
+            return false;
+        }
+
+        RemoteResponse response;
+        std::string failure;
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            // 基本阻塞等待：RESPONSE、会话失败、对端关闭或 BYE 都会唤醒。
+            // T037 再细化等待输入/响应的报告时机。
+            cv.wait(lock, [this] {
+                return pendingResponse.has_value() || sessionFailed || peerClosed ||
+                       byeAcknowledged;
+            });
+            if (pendingResponse.has_value()) {
+                response = std::move(*pendingResponse);
+                pendingResponse.reset();
+            } else {
+                failure = currentSessionFailure();
+                if (failure.empty()) {
+                    // 等待 RESPONSE 期间收到未预期的 BYE：按对端结束处理。
+                    failure = std::string(kClosedByServerText);
+                }
+            }
+        }
+        if (!failure.empty()) {
+            stopClient();
+            std::cerr << failure << std::endl;
+            return false;
+        }
+
+        renderResponse(response);
+        return true;
     }
 
     // --------------------------------------------------------
@@ -442,8 +629,38 @@ struct RemoteClient::Impl {
             return false;
         }
 
+        case MessageType::Response: {
+            Result<RemoteResponse, ProtocolError> decoded = decodeResponse(frame.payload);
+            if (!decoded.has_value()) {
+                // RESPONSE 结构非法（protocol.md §2/§5）。
+                failSession(std::string(kInvalidMessageText));
+                return false;
+            }
+            // Phase 01 不使用 status=1（protocol.md §2）：按非法消息处理并退出 1。
+            if (decoded.value().status == ResponseStatus::Exit) {
+                failSession(std::string(kInvalidMessageText));
+                return false;
+            }
+            bool expected = false;
+            {
+                const std::lock_guard<std::mutex> guard(mutex);
+                expected = awaitingResponse;
+                if (expected) {
+                    awaitingResponse = false;
+                    pendingResponse = std::move(decoded.value());
+                }
+            }
+            if (!expected) {
+                // 未发送 COMMAND 却收到 RESPONSE：视为意外消息。
+                failSession(std::string(kUnexpectedMessageText));
+                return false;
+            }
+            cv.notify_all();
+            return true;
+        }
+
         default:
-            // T028 之前不处理 RESPONSE；其余服务端消息属意外。
+            // 活动期收到其余服务端消息属意外（契约 §7）。
             failSession(std::string(kUnexpectedMessageText));
             return false;
         }
