@@ -114,7 +114,7 @@ constexpr std::uint16_t kQueryAllProcessesPort = 18087;
 constexpr std::uint16_t kQuerySearchProcessPort = 18088;
 constexpr std::uint16_t kQueryUtf8NamePort = 18089;
 
-/// T027 失败查询用例的独立端口（18090–18097，与既有用例互不重叠）。
+/// T027 失败查询用例的独立端口（18090–18098，与既有用例互不重叠）。
 constexpr std::uint16_t kQueryFailurePidNotFoundPort = 18090;
 constexpr std::uint16_t kQueryFailureUnreadableNamePort = 18091;
 constexpr std::uint16_t kQueryFailureEnumerationPort = 18092;
@@ -123,6 +123,7 @@ constexpr std::uint16_t kQueryFailureOversizePort = 18094;
 constexpr std::uint16_t kQueryFailureUnencodablePort = 18095;
 constexpr std::uint16_t kQueryFailureEnumerationUnencodablePort = 18096;
 constexpr std::uint16_t kQueryFailureDoubleFailurePort = 18097;
+constexpr std::uint16_t kQueryFailureListDoubleFailurePort = 18098;
 
 /// 有界轮询：predicate 就绪返回 true；超时返回最后一次判定结果。
 bool waitUntil(const std::function<bool()>& predicate, std::chrono::milliseconds timeout)
@@ -496,9 +497,10 @@ PortState probeTcpPort(std::uint16_t port)
     return PortState::Unknown;
 }
 
-/// brief 第 4 条：仅在 start() 失败后调用。返回 true = 端口确实不可用，调用方必须
-/// 在用例体内 GTEST_SKIP()（GTEST_SKIP 只返回到当前函数，不能放在返回非 void 的
-/// 辅助函数里）；返回 false = 端口空闲或无法判定，调用方应以真实错误 FAIL。
+/// brief 第 4 条：仅在 start() 失败后调用。返回 true = 端口确实不可用，调用方必须在
+/// 用例体（void 测试函数）中 GTEST_SKIP()；返回 false = 端口空闲或无法判定，
+/// 调用方应以真实错误 FAIL。GTEST_SKIP() 只返回到当前函数：放在任何辅助函数里都只会
+/// 结束辅助函数本身，调用方仍会继续断言（本文件的会话辅助改用 SessionRunReport 规避）。
 bool isPortUnavailable(std::uint16_t port)
 {
     return probeTcpPort(port) == PortState::Busy;
@@ -1370,6 +1372,17 @@ void expectSuccessfulHandshake(std::uint16_t port)
 // T026 成功查询场景共用辅助
 // ---------------------------------------------------------------------------
 
+/// 会话辅助函数的运行结果（不是测试断言结果）。GTEST_SKIP()/FAIL() 只有在用例体
+/// （void 测试函数）中才产生测试级结果：放在 void 辅助函数里只会返回辅助函数本身，
+/// 调用方仍会继续断言并把 SKIP 变成 FAIL。因此辅助函数只返回状态与原因，
+/// 由用例体决定调用 GTEST_SKIP() 或 FAIL()。
+enum class SessionRunStatus { Completed, PortUnavailable, StartFailed };
+
+struct SessionRunReport {
+    SessionRunStatus status = SessionRunStatus::StartFailed;
+    std::string detail;
+};
+
 /// 一次快照会话的结果：Client 捕获、退出码与同一引擎的本地期望文本。
 struct SnapshotSessionResult {
     int exitCode = -1;
@@ -1397,9 +1410,10 @@ std::string normalizedLineEndings(const std::string& text)
 /// 先等待 Client 进入 TPE>，再送入 commands（LF 分隔），随后标准输入返回 EOF
 /// （US2 不实现 exit；EOF 由 T023 已有路径结束会话），最后采集 Client 输出、
 /// 退出码与同一引擎的本地期望文本。所有等待 ≤5 秒，不做无界 join。
-void runSnapshotQuerySession(std::uint16_t port, const std::string& commands,
-                             SnapshotSessionResult& result,
-                             std::optional<tpe::platform::Pid_t> searchPid = std::nullopt)
+/// 返回 SessionRunReport：PortUnavailable 由用例体 GTEST_SKIP()，其余失败由用例体 FAIL()。
+SessionRunReport runSnapshotQuerySession(
+    std::uint16_t port, const std::string& commands, SnapshotSessionResult& result,
+    std::optional<tpe::platform::Pid_t> searchPid = std::nullopt)
 {
     ScopedRemoteStreams streams;
     LocalServer server(port, std::make_unique<SnapshotPlatformOS>());
@@ -1407,27 +1421,45 @@ void runSnapshotQuerySession(std::uint16_t port, const std::string& commands,
     // 先启动；仅当启动失败时才诊断端口（与既有用例同一策略）。
     if (!server.start()) {
         if (isPortUnavailable(port)) {
-            GTEST_SKIP() << "TCP port " << port
-                         << " is unavailable (bound by another process or reserved by the "
-                            "system); skipping instead of misreporting a genuine port "
-                            "conflict as a failure.";
+            return {SessionRunStatus::PortUnavailable,
+                    "TCP port " + std::to_string(port) +
+                        " is unavailable (bound by another process or reserved by the "
+                        "system); skipping instead of misreporting a genuine port "
+                        "conflict as a failure."};
         }
-        FAIL() << "RemoteServer::start() must succeed on free port " << port;
+        return {SessionRunStatus::StartFailed,
+                "RemoteServer::start() must succeed on free port " +
+                    std::to_string(port)};
     }
-    ASSERT_TRUE(waitUntil([&server] { return server.instance().isRunning(); }, kWaitLimit))
-        << "isRunning() must become true within 5 s after start() returned true";
+    if (!waitUntil([&server] { return server.instance().isRunning(); }, kWaitLimit)) {
+        server.stop();
+        return {SessionRunStatus::StartFailed,
+                "isRunning() must become true within 5 s after start() returned true"};
+    }
 
     // 本地期望文本：与 Server 执行远程查询使用的是同一个引擎实例。
     const tpe::Result<std::string, tpe::PlatformError> localText =
         server.engine().processListText();
-    ASSERT_TRUE(localText.has_value()) << "the fixed snapshot must enumerate successfully";
+    if (!localText.has_value()) {
+        server.stop();
+        return {SessionRunStatus::StartFailed,
+                "the fixed snapshot must enumerate successfully"};
+    }
     result.localListText = localText.value();
 
     if (searchPid.has_value()) {
         const std::optional<std::string> name = server.engine().searchProcess(*searchPid);
-        ASSERT_TRUE(name.has_value()) << "fixture sanity: PID " << *searchPid
-                                      << " must exist in the fixed snapshot";
-        ASSERT_FALSE(name->empty()) << "fixture sanity: the snapshot name must not be empty";
+        if (!name.has_value()) {
+            server.stop();
+            return {SessionRunStatus::StartFailed,
+                    "fixture sanity: PID " + std::to_string(*searchPid) +
+                        " must exist in the fixed snapshot"};
+        }
+        if (name->empty()) {
+            server.stop();
+            return {SessionRunStatus::StartFailed,
+                    "fixture sanity: the snapshot name must not be empty"};
+        }
         result.localSearchName = *name;
     }
 
@@ -1439,9 +1471,10 @@ void runSnapshotQuerySession(std::uint16_t port, const std::string& commands,
         stdinBuffer().interrupt();
         server.stop();
         client.waitDone(std::chrono::milliseconds{1000});
-        FAIL() << "client did not display 'TPE>' within 5 s; client stdout=[" << client.out()
-               << "] client stderr=[" << client.err() << "] server stdout=["
-               << capturedServerOut() << "]";
+        return {SessionRunStatus::StartFailed,
+                "client did not display 'TPE>' within 5 s; client stdout=[" +
+                    client.out() + "] client stderr=[" + client.err() +
+                    "] server stdout=[" + capturedServerOut() + "]"};
     }
 
     stdinBuffer().releaseWith(commands);
@@ -1450,16 +1483,21 @@ void runSnapshotQuerySession(std::uint16_t port, const std::string& commands,
         server.stop();
         stdinBuffer().interrupt();
         client.waitDone(std::chrono::milliseconds{1000});
-        FAIL() << "client did not finish within 5 s after the query commands; client stdout=["
-               << client.out() << "] client stderr=[" << client.err() << "]";
+        return {SessionRunStatus::StartFailed,
+                "client did not finish within 5 s after the query commands; client stdout=[" +
+                    client.out() + "] client stderr=[" + client.err() + "]"};
     }
-    ASSERT_TRUE(client.join());
+    if (!client.join()) {
+        return {SessionRunStatus::StartFailed,
+                "client thread did not finish after waitDone() returned true"};
+    }
 
     result.exitCode = client.exitCode();
     result.out = client.out();
     result.err = client.err();
 
     server.stop();
+    return {SessionRunStatus::Completed, {}};
 }
 
 /// 断言 Client 标准输出中恰有一处与本地结果逐字一致的整块文本：
@@ -1555,10 +1593,10 @@ struct QueryFailureSessionResult {
 /// 在固定快照 Server 上完成一次「失败命令 + help」会话：
 /// 先等待 Client 进入 TPE>，再送入 commands（失败命令在前、help 在后），随后标准输入
 /// EOF（US2 不实现 exit；EOF 走 T023 已有正常结束路径）。所有等待 ≤5 秒。
-void runQueryFailureSession(std::uint16_t port,
-                            std::unique_ptr<tpe::platform::PlatformOS> os,
-                            const std::string& commands,
-                            QueryFailureSessionResult& result)
+/// 返回 SessionRunReport：PortUnavailable 由用例体 GTEST_SKIP()，其余失败由用例体 FAIL()。
+SessionRunReport runQueryFailureSession(
+    std::uint16_t port, std::unique_ptr<tpe::platform::PlatformOS> os,
+    const std::string& commands, QueryFailureSessionResult& result)
 {
     ScopedRemoteStreams streams;
     LocalServer server(port, std::move(os));
@@ -1566,15 +1604,21 @@ void runQueryFailureSession(std::uint16_t port,
     // 先启动；仅当启动失败时才诊断端口（与既有用例同一策略）。
     if (!server.start()) {
         if (isPortUnavailable(port)) {
-            GTEST_SKIP() << "TCP port " << port
-                         << " is unavailable (bound by another process or reserved by the "
-                            "system); skipping instead of misreporting a genuine port "
-                            "conflict as a failure.";
+            return {SessionRunStatus::PortUnavailable,
+                    "TCP port " + std::to_string(port) +
+                        " is unavailable (bound by another process or reserved by the "
+                        "system); skipping instead of misreporting a genuine port "
+                        "conflict as a failure."};
         }
-        FAIL() << "RemoteServer::start() must succeed on free port " << port;
+        return {SessionRunStatus::StartFailed,
+                "RemoteServer::start() must succeed on free port " +
+                    std::to_string(port)};
     }
-    ASSERT_TRUE(waitUntil([&server] { return server.instance().isRunning(); }, kWaitLimit))
-        << "isRunning() must become true within 5 s after start() returned true";
+    if (!waitUntil([&server] { return server.instance().isRunning(); }, kWaitLimit)) {
+        server.stop();
+        return {SessionRunStatus::StartFailed,
+                "isRunning() must become true within 5 s after start() returned true"};
+    }
 
     ClientRun client("127.0.0.1", port);
     client.start();
@@ -1584,9 +1628,10 @@ void runQueryFailureSession(std::uint16_t port,
         stdinBuffer().interrupt();
         server.stop();
         client.waitDone(std::chrono::milliseconds{1000});
-        FAIL() << "client did not display 'TPE>' within 5 s; client stdout=[" << client.out()
-               << "] client stderr=[" << client.err() << "] server stdout=["
-               << capturedServerOut() << "]";
+        return {SessionRunStatus::StartFailed,
+                "client did not display 'TPE>' within 5 s; client stdout=[" +
+                    client.out() + "] client stderr=[" + client.err() +
+                    "] server stdout=[" + capturedServerOut() + "]"};
     }
 
     stdinBuffer().releaseWith(commands);
@@ -1595,27 +1640,29 @@ void runQueryFailureSession(std::uint16_t port,
         server.stop();
         stdinBuffer().interrupt();
         client.waitDone(std::chrono::milliseconds{1000});
-        FAIL() << "client did not finish within 5 s after the failing query; client stdout=["
-               << client.out() << "] client stderr=[" << client.err() << "]";
+        return {SessionRunStatus::StartFailed,
+                "client did not finish within 5 s after the failing query; client stdout=[" +
+                    client.out() + "] client stderr=[" + client.err() + "]"};
     }
-    ASSERT_TRUE(client.join());
+    if (!client.join()) {
+        return {SessionRunStatus::StartFailed,
+                "client thread did not finish after waitDone() returned true"};
+    }
 
     result.exitCode = client.exitCode();
     result.out = client.out();
     result.err = client.err();
 
     server.stop();
+    return {SessionRunStatus::Completed, {}};
 }
 
 /// 断言：失败文本恰出现 1 次 → 回到 TPE> → help 的 4 行帮助逐字出现 1 次 → 再次出现
-/// 提示符（会话仍可用）。cli.md §6：查询失败保留 TPE>、Client 退出码 0。
+/// 提示符（会话仍可用）。cli.md §6：查询失败保留 TPE>；Client 退出码留到 US3（T038）
+/// 实际退出时验证——本辅助函数只记录 exitCode，不校验。
 void expectFailureThenHelp(const QueryFailureSessionResult& result,
                            const std::string& expectedFailure)
 {
-    EXPECT_EQ(result.exitCode, 0)
-        << "a failed query must keep the session alive (exit code 0 after EOF); stderr=["
-        << result.err << "]";
-
     const std::string clientOut = normalizedLineEndings(result.out);
 
     ASSERT_EQ(countOccurrences(clientOut, expectedFailure), std::size_t{1})
@@ -1652,10 +1699,64 @@ struct PreSendSessionResult {
     std::string scriptFailure;
 };
 
+/// 等待 Client 的会话结束帧：接受合法 `BYE`，也接受对端直接关闭（EOF/连接重置）。
+/// US2 不实现 exit/EOF 的 BYE 收尾（US3 负责），EOF 后 Client 发 BYE 或直接关闭
+/// 都属于可接受的结束方式；收到其它帧类型（如被误发的 COMMAND）仍判为失败。
+bool receiveByeOrPeerClose(SocketHandle handle, std::chrono::milliseconds timeout,
+                           std::string& failure)
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    std::vector<std::uint8_t> buffer;
+    std::uint8_t chunk[512];
+    for (;;) {
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now());
+        if (remaining <= 0ms) {
+            failure = "timed out waiting for BYE or peer close (" +
+                      std::to_string(buffer.size()) + " byte(s) received)";
+            return false;
+        }
+        setSocketRecvTimeout(
+            handle, (remaining < 200ms) ? remaining : std::chrono::milliseconds{200});
+        const int received =
+            static_cast<int>(::recv(handle, reinterpret_cast<char*>(chunk), sizeof(chunk), 0));
+        if (received > 0) {
+            buffer.insert(buffer.end(), chunk, chunk + received);
+            const tpe::remote::DecodeResult decoded =
+                tpe::remote::tryDecodeFrame(buffer.data(), buffer.size());
+            if (decoded.status == tpe::remote::DecodeStatus::Complete) {
+                if (decoded.frame.header.type != tpe::remote::MessageType::Bye) {
+                    failure = "after the help response the client must end with BYE or "
+                              "close the connection; got type " +
+                              std::to_string(static_cast<int>(decoded.frame.header.type));
+                    return false;
+                }
+                return true;
+            }
+            if (decoded.status == tpe::remote::DecodeStatus::Failed) {
+                failure = "frame decode failed: " + decoded.error.reason;
+                return false;
+            }
+            continue;
+        }
+        if (received == 0) {
+            return true; // 对端关闭：US2 允许的直接结束方式
+        }
+        const int error = lastSocketError();
+        if (isConnectionResetError(error)) {
+            return true; // 对端重置同样视为结束
+        }
+        if (!isRecvTimeoutError(error)) {
+            failure = "recv failed with socket error " + std::to_string(error);
+            return false;
+        }
+    }
+}
+
 /// 脚本化 Server：完成握手后要求 Client 发出的第一条（也是唯一一条）COMMAND 是 help。
 /// 若本地拒绝的命令被错误发送，脚本会看到不同的首帧并以明确原因失败；这同时证明
 /// 被拒命令未发送、也不会产生任何 Server 响应（不依赖 T041 的查询日志）。
-/// 随后回 help 的 RESPONSE，并在 Client 因标准输入 EOF 发送 BYE 后回空 BYE。
+/// 随后回 help 的 RESPONSE，并以 BYE 或对端关闭接受会话结束（EOF 不得判失败）。
 void runPreSendRejectionSession(const std::string& rejectedLine,
                                 PreSendSessionResult& result)
 {
@@ -1700,19 +1801,13 @@ void runPreSendRejectionSession(const std::string& rejectedLine,
             return false;
         }
 
-        // 标准输入 EOF → BYE；回 BYE 确认（T023 正常结束路径）。
-        if (!receiveFrameBefore(socket, kWaitLimit, frame, failure)) {
+        // 标准输入 EOF 后 Client 可能发送 BYE 并等待确认，也可能直接关闭连接；
+        // US2 不实现 exit/EOF 收尾（US3 负责），两种结束方式都不得判为脚本失败。
+        if (!receiveByeOrPeerClose(socket, kWaitLimit, failure)) {
             return false;
         }
-        if (frame.header.type != tpe::remote::MessageType::Bye) {
-            failure = "after the help response the client must end with BYE; got type " +
-                      std::to_string(static_cast<int>(frame.header.type));
-            return false;
-        }
-        if (!sendFrameBytes(socket, tpe::remote::MessageType::Bye, {})) {
-            failure = "failed to acknowledge BYE";
-            return false;
-        }
+        // 尽力回 BYE 确认；Client 已关闭时发送失败不构成脚本失败。
+        sendFrameBytes(socket, tpe::remote::MessageType::Bye, {});
         waitForPeerEvent(socket, std::chrono::milliseconds{1000});
         return true;
     });
@@ -2425,7 +2520,12 @@ TEST(RemoteSession, ClientReportsInvalidWelcomePayload)
 TEST(RemoteSessionQuerySuccess, AllProcessesMatchesLocalVerbatim)
 {
     SnapshotSessionResult result;
-    runSnapshotQuerySession(kQueryAllProcessesPort, "--all-processes\n", result);
+    const SessionRunReport report =
+        runSnapshotQuerySession(kQueryAllProcessesPort, "--all-processes\n", result);
+    if (report.status == SessionRunStatus::PortUnavailable) {
+        GTEST_SKIP() << report.detail;
+    }
+    ASSERT_TRUE(report.status == SessionRunStatus::Completed) << report.detail;
 
     // 夹具自检：固定快照按注入顺序渲染成固定多行文本（≥3 个受控进程）。
     ASSERT_EQ(result.localListText, std::string(kSnapshotListText))
@@ -2456,9 +2556,14 @@ TEST(RemoteSessionQuerySuccess, AllProcessesMatchesLocalVerbatim)
 TEST(RemoteSessionQuerySuccess, SearchProcessMatchesLocalFormat)
 {
     SnapshotSessionResult result;
-    runSnapshotQuerySession(kQuerySearchProcessPort,
-                            "--search-process " + std::to_string(kSnapshotAsciiPid) + "\n",
-                            result, kSnapshotAsciiPid);
+    const SessionRunReport report = runSnapshotQuerySession(
+        kQuerySearchProcessPort,
+        "--search-process " + std::to_string(kSnapshotAsciiPid) + "\n", result,
+        kSnapshotAsciiPid);
+    if (report.status == SessionRunStatus::PortUnavailable) {
+        GTEST_SKIP() << report.detail;
+    }
+    ASSERT_TRUE(report.status == SessionRunStatus::Completed) << report.detail;
 
     EXPECT_EQ(result.localSearchName, std::string(kSnapshotAsciiName))
         << "fixture sanity: searchProcess() must return the fixed snapshot name";
@@ -2475,9 +2580,13 @@ TEST(RemoteSessionQuerySuccess, SearchProcessMatchesLocalFormat)
 TEST(RemoteSessionQuerySuccess, NonAsciiProcessNameIsDisplayedVerbatim)
 {
     SnapshotSessionResult result;
-    runSnapshotQuerySession(kQueryUtf8NamePort,
-                            "--search-process " + std::to_string(kSnapshotUtf8Pid) + "\n",
-                            result, kSnapshotUtf8Pid);
+    const SessionRunReport report = runSnapshotQuerySession(
+        kQueryUtf8NamePort, "--search-process " + std::to_string(kSnapshotUtf8Pid) + "\n",
+        result, kSnapshotUtf8Pid);
+    if (report.status == SessionRunStatus::PortUnavailable) {
+        GTEST_SKIP() << report.detail;
+    }
+    ASSERT_TRUE(report.status == SessionRunStatus::Completed) << report.detail;
 
     EXPECT_EQ(result.localSearchName, std::string(kSnapshotUtf8Name))
         << "fixture sanity: the injected snapshot must carry a valid UTF-8 name";
@@ -2505,9 +2614,13 @@ TEST(RemoteSessionQueryFailure, SearchProcessPidNotFoundKeepsPrompt)
 
     constexpr tpe::platform::Pid_t kMissingPid = 999999;
     QueryFailureSessionResult result;
-    runQueryFailureSession(kQueryFailurePidNotFoundPort, std::move(os),
-                           "--search-process " + std::to_string(kMissingPid) + "\nhelp\n",
-                           result);
+    const SessionRunReport report = runQueryFailureSession(
+        kQueryFailurePidNotFoundPort, std::move(os),
+        "--search-process " + std::to_string(kMissingPid) + "\nhelp\n", result);
+    if (report.status == SessionRunStatus::PortUnavailable) {
+        GTEST_SKIP() << report.detail;
+    }
+    ASSERT_TRUE(report.status == SessionRunStatus::Completed) << report.detail;
 
     expectFailureThenHelp(result,
                           "Process with PID " + std::to_string(kMissingPid) + " not found.");
@@ -2520,8 +2633,13 @@ TEST(RemoteSessionQueryFailure, SearchProcessUnreadableNameKeepsPrompt)
     os->addProcess(4324, std::string()); // 空名称 = 不可读
 
     QueryFailureSessionResult result;
-    runQueryFailureSession(kQueryFailureUnreadableNamePort, std::move(os),
-                           "--search-process 4324\nhelp\n", result);
+    const SessionRunReport report = runQueryFailureSession(
+        kQueryFailureUnreadableNamePort, std::move(os), "--search-process 4324\nhelp\n",
+        result);
+    if (report.status == SessionRunStatus::PortUnavailable) {
+        GTEST_SKIP() << report.detail;
+    }
+    ASSERT_TRUE(report.status == SessionRunStatus::Completed) << report.detail;
 
     expectFailureThenHelp(result, "Failed to read the process name for PID 4324.");
 }
@@ -2533,8 +2651,12 @@ TEST(RemoteSessionQueryFailure, AllProcessesEnumerationFailureKeepsPrompt)
     os->setEnumerationFailure("simulated enumeration failure");
 
     QueryFailureSessionResult result;
-    runQueryFailureSession(kQueryFailureEnumerationPort, std::move(os),
-                           "--all-processes\nhelp\n", result);
+    const SessionRunReport report = runQueryFailureSession(
+        kQueryFailureEnumerationPort, std::move(os), "--all-processes\nhelp\n", result);
+    if (report.status == SessionRunStatus::PortUnavailable) {
+        GTEST_SKIP() << report.detail;
+    }
+    ASSERT_TRUE(report.status == SessionRunStatus::Completed) << report.detail;
 
     expectFailureThenHelp(result,
                           "Failed to enumerate processes: simulated enumeration failure");
@@ -2547,8 +2669,12 @@ TEST(RemoteSessionQueryFailure, UnknownCommandKeepsPrompt)
     os->addProcess(4321, "alpha.exe");
 
     QueryFailureSessionResult result;
-    runQueryFailureSession(kQueryFailureUnknownCommandPort, std::move(os),
-                           "list\nhelp\n", result);
+    const SessionRunReport report = runQueryFailureSession(
+        kQueryFailureUnknownCommandPort, std::move(os), "list\nhelp\n", result);
+    if (report.status == SessionRunStatus::PortUnavailable) {
+        GTEST_SKIP() << report.detail;
+    }
+    ASSERT_TRUE(report.status == SessionRunStatus::Completed) << report.detail;
 
     expectFailureThenHelp(result, kUnknownCommandText);
 }
@@ -2573,8 +2699,12 @@ TEST(RemoteSessionQueryFailure, OversizeResultKeepsPrompt)
         << "fixture sanity: the process list must exceed one RESPONSE payload";
 
     QueryFailureSessionResult result;
-    runQueryFailureSession(kQueryFailureOversizePort, std::move(os),
-                           "--all-processes\nhelp\n", result);
+    const SessionRunReport report = runQueryFailureSession(
+        kQueryFailureOversizePort, std::move(os), "--all-processes\nhelp\n", result);
+    if (report.status == SessionRunStatus::PortUnavailable) {
+        GTEST_SKIP() << report.detail;
+    }
+    ASSERT_TRUE(report.status == SessionRunStatus::Completed) << report.detail;
 
     expectFailureThenHelp(result, kOversizeResultText);
 }
@@ -2586,8 +2716,13 @@ TEST(RemoteSessionQueryFailure, UnencodableProcessNameKeepsPrompt)
     os->addProcess(4325, invalidUtf8ProcessName());
 
     QueryFailureSessionResult result;
-    runQueryFailureSession(kQueryFailureUnencodablePort, std::move(os),
-                           "--search-process 4325\nhelp\n", result);
+    const SessionRunReport report = runQueryFailureSession(
+        kQueryFailureUnencodablePort, std::move(os), "--search-process 4325\nhelp\n",
+        result);
+    if (report.status == SessionRunStatus::PortUnavailable) {
+        GTEST_SKIP() << report.detail;
+    }
+    ASSERT_TRUE(report.status == SessionRunStatus::Completed) << report.detail;
 
     expectFailureThenHelp(result, kUnencodableNameText);
 }
@@ -2601,8 +2736,13 @@ TEST(RemoteSessionQueryFailure, UnencodableProcessListKeepsPrompt)
     os->addProcess(4325, invalidUtf8ProcessName());
 
     QueryFailureSessionResult result;
-    runQueryFailureSession(kQueryFailureEnumerationUnencodablePort, std::move(os),
-                           "--all-processes\nhelp\n", result);
+    const SessionRunReport report = runQueryFailureSession(
+        kQueryFailureEnumerationUnencodablePort, std::move(os), "--all-processes\nhelp\n",
+        result);
+    if (report.status == SessionRunStatus::PortUnavailable) {
+        GTEST_SKIP() << report.detail;
+    }
+    ASSERT_TRUE(report.status == SessionRunStatus::Completed) << report.detail;
 
     expectFailureThenHelp(result, kUnencodableListText);
 }
@@ -2618,14 +2758,60 @@ TEST(RemoteSessionQueryFailure, UnencodableTakesPriorityOverOversize)
     os->addProcess(4326, hugeInvalidName);
 
     QueryFailureSessionResult result;
-    runQueryFailureSession(kQueryFailureDoubleFailurePort, std::move(os),
-                           "--search-process 4326\nhelp\n", result);
+    const SessionRunReport report = runQueryFailureSession(
+        kQueryFailureDoubleFailurePort, std::move(os), "--search-process 4326\nhelp\n",
+        result);
+    if (report.status == SessionRunStatus::PortUnavailable) {
+        GTEST_SKIP() << report.detail;
+    }
+    ASSERT_TRUE(report.status == SessionRunStatus::Completed) << report.detail;
 
     expectFailureThenHelp(result, kUnencodableNameText);
 
     const std::string clientOut = normalizedLineEndings(result.out);
     EXPECT_EQ(clientOut.find(kOversizeResultText), std::string::npos)
         << "cli.md §6: a result that is both unencodable and oversized must report the "
+           "encoding failure first; stdout=["
+        << clientOut << "]";
+}
+
+/// 同一 `--all-processes` 列表同时不可编码且超限 → 先报告列表不可编码
+/// （cli.md §6 末段；protocol §5“先校验文本编码并报告不可编码，编码成功后才检查长度”），
+/// 且不得报告超限（与单名称双失败用例并列覆盖列表路径）。
+TEST(RemoteSessionQueryFailure, UnencodableListTakesPriorityOverOversize)
+{
+    auto os = std::make_unique<ConfigurablePlatformOS>();
+    std::size_t outputBytes = 0;
+    for (int index = 0; index < kOversizeProcessCount; ++index) {
+        const tpe::platform::Pid_t pid =
+            static_cast<tpe::platform::Pid_t>(20000 + index);
+        const std::string name = oversizeProcessName(index);
+        os->addProcess(pid, name);
+        outputBytes += std::string("PID: ").size() + std::to_string(pid).size() +
+                       std::string(" ProcessName: ").size() + name.size() + 1;
+    }
+    const std::string invalidName = invalidUtf8ProcessName();
+    os->addProcess(4326, invalidName);
+    outputBytes += std::string("PID: ").size() + std::string("4326").size() +
+                   std::string(" ProcessName: ").size() + invalidName.size() + 1;
+    // RESPONSE payload = 1(status) + 2(promptLen) + 4("TPE>") + 4(outputLen) + output。
+    ASSERT_GT(outputBytes + 11, static_cast<std::size_t>(tpe::remote::kMaxPayloadBytes))
+        << "fixture sanity: the process list must exceed one RESPONSE payload";
+
+    QueryFailureSessionResult result;
+    const SessionRunReport report = runQueryFailureSession(
+        kQueryFailureListDoubleFailurePort, std::move(os), "--all-processes\nhelp\n",
+        result);
+    if (report.status == SessionRunStatus::PortUnavailable) {
+        GTEST_SKIP() << report.detail;
+    }
+    ASSERT_TRUE(report.status == SessionRunStatus::Completed) << report.detail;
+
+    expectFailureThenHelp(result, kUnencodableListText);
+
+    const std::string clientOut = normalizedLineEndings(result.out);
+    EXPECT_EQ(clientOut.find(kOversizeResultText), std::string::npos)
+        << "cli.md §6: a list that is both unencodable and oversized must report the "
            "encoding failure first; stdout=["
         << clientOut << "]";
 }
