@@ -7,16 +7,23 @@
 #include <hv/TcpServer.h>
 #include <hv/hlog.h>
 
+// ProcessEngine.hpp 间接包含 Platform.hpp（Windows.h）；必须放在 libhv 的
+// winsock2.h 之后，否则 winsock.h 与 winsock2.h 会重定义（C2375）。
+#include "ProcessEngine.hpp"
+
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -53,6 +60,58 @@ constexpr std::string_view kPromptText = "TPE>";
 
 /// 结果超过单条 RESPONSE 上限时的固定错误文本（protocol.md §5；cli.md §6）。
 constexpr std::string_view kOversizeResponseText = "Response exceeds the maximum message size.";
+
+// ============================================================
+// 查询日志元数据（contracts/logging.md §2–§4）
+// ============================================================
+
+/// 查询日志的 command 字段（仅这两条命令产生查询日志）。
+constexpr std::string_view kAllProcessesCommand = "--all-processes";
+constexpr std::string_view kSearchProcessCommand = "--search-process";
+constexpr std::string_view kSearchProcessPrefix = "--search-process ";
+
+/// `--search-process` 未命中时的固定失败文本片段（RemoteCommandExecutor.cpp 的稳定
+/// 输出）。仅用于判定日志摘要，不复制到日志行、不回显原因。
+constexpr std::string_view kSearchNotFoundPrefix = "Process with PID ";
+constexpr std::string_view kSearchNotFoundSuffix = " not found.";
+
+/// 未命中固定文本：`Process with PID <pid> not found.`。
+std::string searchNotFoundText(std::uint32_t pid)
+{
+    return std::string{kSearchNotFoundPrefix} + std::to_string(pid) +
+           std::string{kSearchNotFoundSuffix};
+}
+
+/// 解析 `--search-process` 携带的 PID；规则与 RemoteCommandExecutor 一致：
+/// 十进制、无符号、完整匹配、可落入平台 Pid_t 宽度。
+/// 参数缺失或非法时返回 std::nullopt（日志 pid 字段渲染为 `-`）。
+std::optional<std::uint32_t> parseSearchProcessPid(std::string_view line)
+{
+    if (line.size() <= kSearchProcessPrefix.size() ||
+        line.compare(0, kSearchProcessPrefix.size(), kSearchProcessPrefix) != 0) {
+        return std::nullopt; // 无参数（仅命令名）或不是该命令
+    }
+    const std::string_view argument = line.substr(kSearchProcessPrefix.size());
+    if (argument.empty()) {
+        return std::nullopt;
+    }
+
+    unsigned long long raw = 0;
+    const char* const first = argument.data();
+    const char* const last = first + argument.size();
+    const std::from_chars_result converted = std::from_chars(first, last, raw, 10);
+    if (converted.ec != std::errc{} || converted.ptr != last) {
+        return std::nullopt; // 前导符号、空白、非十进制或尾随多余字符
+    }
+
+    // 与执行层相同的平台上限（Windows Pid_t = DWORD、Linux Pid_t = int）。
+    constexpr unsigned long long kMaxPid = static_cast<unsigned long long>(
+        (std::numeric_limits<tpe::platform::Pid_t>::max)());
+    if (raw > kMaxPid) {
+        return std::nullopt;
+    }
+    return static_cast<std::uint32_t>(raw);
+}
 
 /// 文本 → 载荷字节序列。
 std::vector<std::uint8_t> toPayload(std::string_view text)
@@ -426,39 +485,49 @@ struct RemoteServer::Impl {
         }
 
         const std::string line(frame.payload.begin(), frame.payload.end());
+        const RemoteCommandKind kind = classifyRemoteCommand(line);
         const RemoteCommandResult result = executeRemoteCommand(line, engine);
-        sendResponse(current, result.status, result.output);
+        const ResponseDelivery delivery = sendResponse(current, result.status, result.output);
+        logQueryCommand(current->channel, kind, line, result, delivery);
     }
+
+    /// RESPONSE 发送结果；查询日志据此判定 result 字段（contracts/logging.md §3）。
+    enum class ResponseDelivery {
+        Sent,     // 按执行结果原样发送
+        Oversize, // 结果超限：已改发固定 status=2 响应
+        Failed,   // 编码内部错误：会话已按 ERROR(5) 关闭
+    };
 
     /// 编码并发送 RESPONSE（contracts/protocol.md §5）：
     /// 结果超过单条响应上限时改发固定的 status=2 响应；不截断、不分片，会话保留。
-    void sendResponse(const std::shared_ptr<Session>& current, ResponseStatus status,
-                      const std::string& output)
+    ResponseDelivery sendResponse(const std::shared_ptr<Session>& current, ResponseStatus status,
+                                  const std::string& output)
     {
         const Result<std::vector<std::uint8_t>, ProtocolError> encoded =
             encodeResponse(status, std::string(kPromptText), output);
         if (encoded.has_value()) {
             writeFrame(current->channel, MessageType::Response, encoded.value());
-            return;
+            return ResponseDelivery::Sent;
         }
         if (encoded.error().code == ErrorCode::FrameTooLarge) {
-            sendOversizeFallback(current);
-            return;
+            return sendOversizeFallback(current);
         }
         failResponseEncoding(current, encoded.error());
+        return ResponseDelivery::Failed;
     }
 
     /// 超限回退（protocol.md §5；cli.md §6）：status=2 + 固定文本，结果不截断、不分片。
-    void sendOversizeFallback(const std::shared_ptr<Session>& current)
+    ResponseDelivery sendOversizeFallback(const std::shared_ptr<Session>& current)
     {
         const Result<std::vector<std::uint8_t>, ProtocolError> encoded =
             encodeResponse(ResponseStatus::CommandError, std::string(kPromptText),
                            std::string(kOversizeResponseText));
         if (encoded.has_value()) {
             writeFrame(current->channel, MessageType::Response, encoded.value());
-            return;
+            return ResponseDelivery::Oversize;
         }
         failResponseEncoding(current, encoded.error());
+        return ResponseDelivery::Failed;
     }
 
     /// 其余编码错误（如 prompt 超限）理论上不会发生：写一条标准错误诊断并按内部错误
@@ -620,6 +689,65 @@ struct RemoteServer::Impl {
     // --------------------------------------------------------
     // 日志（contracts/logging.md §1–§4）：写入 Server 的标准控制台输出
     // --------------------------------------------------------
+
+    /// 查询日志（contracts/logging.md §2/§3）：COMMAND 执行并发送响应后记录；
+    /// `help`、未知命令与 `exit` 不记录。日志只含元数据，不含原因文本、完整命令行
+    /// 或进程名（§4）。
+    void logQueryCommand(const hv::SocketChannelPtr& channel, RemoteCommandKind kind,
+                         std::string_view line, const RemoteCommandResult& result,
+                         ResponseDelivery delivery)
+    {
+        if (kind != RemoteCommandKind::AllProcesses &&
+            kind != RemoteCommandKind::SearchProcess) {
+            return; // help / 未知命令 / exit：不记录查询日志
+        }
+        if (delivery == ResponseDelivery::Failed) {
+            // 响应编码内部错误已按 ERROR(5) + disconnect/error 关闭会话（不可达路径），
+            // 不再追加查询日志，避免同一关闭产生第二条终止类记录。
+            return;
+        }
+        if (stopping.load(std::memory_order_acquire)) {
+            return; // stop() 之后不写全局流
+        }
+
+        const bool search = kind == RemoteCommandKind::SearchProcess;
+        LogRecord record;
+        record.utcTime = formatUtcTimestamp(std::chrono::system_clock::now());
+        record.peer = channel ? channel->peeraddr() : std::string{};
+        record.command = search ? std::string{kSearchProcessCommand}
+                                : std::string{kAllProcessesCommand};
+        // 仅 `--search-process` 携带有效 PID 时记录该 PID；参数缺失/非法用 `-`。
+        record.pid = search ? parseSearchProcessPid(line) : std::nullopt;
+        record.result = queryLogResult(kind, line, result, delivery);
+        std::cout << formatLogLine(record) << std::endl;
+    }
+
+    /// 查询摘要（contracts/logging.md §3）：
+    /// - `--all-processes`：正常响应 → ok；枚举失败/不可编码/超限 → error；
+    /// - `--search-process`：参数缺失/非法 → error（pid=-）；命中 → ok；
+    ///   固定未命中文本 → not-found；名称不可读/不可编码/超限 → error。
+    static LogResult queryLogResult(RemoteCommandKind kind, std::string_view line,
+                                    const RemoteCommandResult& result,
+                                    ResponseDelivery delivery)
+    {
+        if (delivery == ResponseDelivery::Oversize) {
+            return LogResult::Error; // 结果超限（§3：--all-processes 与 --search-process 均为 error）
+        }
+        if (kind == RemoteCommandKind::SearchProcess) {
+            const std::optional<std::uint32_t> pid = parseSearchProcessPid(line);
+            if (!pid.has_value()) {
+                return LogResult::Error; // 参数缺失或非法：pid=-、error
+            }
+            if (result.status == ResponseStatus::Continue) {
+                return LogResult::Ok;
+            }
+            if (result.output == searchNotFoundText(*pid)) {
+                return LogResult::NotFound;
+            }
+            return LogResult::Error; // 进程名不可读/不可编码等
+        }
+        return result.status == ResponseStatus::Continue ? LogResult::Ok : LogResult::Error;
+    }
 
     void logSessionEvent(const hv::SocketChannelPtr& channel, SessionEvent event, LogResult result)
     {
