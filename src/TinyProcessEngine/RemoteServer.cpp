@@ -212,8 +212,8 @@ struct RemoteServer::Impl {
         auto accepted = std::make_shared<Session>();
         accepted->channel = channel;
         session = accepted;
-        logSessionEvent(channel, SessionEvent::Accept, LogResult::Ok);
-        std::cout << kAcceptedText << std::endl;
+        // 契约 logging.md §3：失败握手属于“接纳前握手失败”，只记 reject/error；
+        // 因此 accept/ok 与 `Connection successful.` 推迟到 HELLO 校验通过后记录。
         startHandshakeTimer(accepted);
     }
 
@@ -315,6 +315,11 @@ struct RemoteServer::Impl {
         cancelHandshakeTimer(current);
         current->state = State::Active;
         writeFrame(current->channel, MessageType::Welcome, {});
+        // 握手成功即“接纳”：此时才记 accept/ok 并输出固定接纳提示（contracts/logging.md §3）。
+        logSessionEvent(current->channel, SessionEvent::Accept, LogResult::Ok);
+        if (!stopping.load(std::memory_order_acquire)) {
+            std::cout << kAcceptedText << std::endl;
+        }
     }
 
     /// 活动期帧（contracts/protocol.md §7）：BYE 正常结束；COMMAND 留待 T029。
