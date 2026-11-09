@@ -38,6 +38,9 @@
  *   - T033 增加 Draining 与 FR-012 命令处置用例：长查询后处理 BYE，已排队的新连接
  *     在 Draining 被处理时收到 BUSY，清理完成后被接纳；未开始命令（已在接收缓冲区
  *     的完整帧/不完整帧）在断开后不执行；已开始命令自然结束且写回失败被忽略。
+ *   - T034 增加退出/BYE/断线用例：exit/EOF 经 BYE 确认退出 0；确认前断线与确认超时
+ *     退出 1；等待响应/输入时断线的报告时机；活动期 ERROR 原因；非空 BYE 双向处理；
+ *     断线与 EOF 竞态；以及 RawSocket 活动会话发送非空 BYE 的 Server 侧应答。
  *
  * 约束：仅 GoogleTest + 标准库 + 平台 socket API；不启动子进程；除 127.0.0.1
  * 回环外不访问网络。
@@ -130,6 +133,9 @@ constexpr std::uint16_t kDrainingBusyPort = 18102;
 constexpr std::uint16_t kBufferedCommandPort = 18103;
 constexpr std::uint16_t kIncompleteCommandPort = 18104;
 constexpr std::uint16_t kStartedCommandPort = 18105;
+
+/// T034 RawSocket 活动会话发送非空 BYE 的独立端口（18106）。
+constexpr std::uint16_t kRawNonEmptyByePort = 18106;
 
 /// T027 失败查询用例的独立端口（18090–18098，与既有用例互不重叠）。
 constexpr std::uint16_t kQueryFailurePidNotFoundPort = 18090;
@@ -3716,4 +3722,477 @@ TEST(RemoteSessionDraining, StartedCommandFinishesAfterDisconnect)
     EXPECT_EQ(accepted.client->exitCode(), 0);
 
     server.stop();
+}
+
+// ---------------------------------------------------------------------------
+// 套件 RemoteSessionExitBye — US3 退出、断线与 BYE（T034）
+//
+// 固定文本按契约逐字复制（tests 不跨 TU 引用实现内部常量）：
+//   - cli.md §7 / protocol.md §7：确认超时、非空 BYE、断线原因文本。
+// 脚本化 Server 精确控制 Server 侧行为；所有等待有界（≤5 s）。
+// ---------------------------------------------------------------------------
+
+/// 脚本片段：消费 HELLO 并回 WELCOME。
+bool completeScriptedHandshake(SocketHandle socket, std::string& failure)
+{
+    if (!consumeClientHello(socket, failure)) {
+        return false;
+    }
+    if (!sendFrameBytes(socket, tpe::remote::MessageType::Welcome, {})) {
+        failure = "failed to send WELCOME";
+        return false;
+    }
+    return true;
+}
+
+/// 脚本片段：读取 Client 的 BYE，要求载荷为空。
+bool expectClientBye(SocketHandle socket, std::string& failure)
+{
+    tpe::remote::Frame bye;
+    if (!receiveFrameBefore(socket, kWaitLimit, bye, failure)) {
+        return false;
+    }
+    if (bye.header.type != tpe::remote::MessageType::Bye) {
+        failure = "expected BYE from the client, got type " +
+                  std::to_string(static_cast<int>(bye.header.type));
+        return false;
+    }
+    if (!bye.payload.empty()) {
+        failure = "BYE payload must be empty";
+        return false;
+    }
+    return true;
+}
+
+/// 在脚本化 Server 上运行一个 Client 到 TPE>；失败时由调用方清理。
+bool waitForClientPrompt(ClientRun& client)
+{
+    return waitUntil([&client] { return client.out().find("TPE>") != std::string::npos; },
+                     kWaitLimit);
+}
+
+/// `exit` → Client 发送 BYE、Server 回 BYE 确认 → 退出码 0（cli.md §7）。
+/// T023 已实现该路径；本用例显式断言 BYE 帧，作为回归基线。
+TEST(RemoteSessionExitBye, ExitSendsByeAndReturnsZero)
+{
+    ScopedRemoteStreams streams;
+    ScriptedServer server([](SocketHandle socket, std::string& failure) {
+        if (!completeScriptedHandshake(socket, failure)) {
+            return false;
+        }
+        if (!expectClientBye(socket, failure)) {
+            return false;
+        }
+        if (!sendFrameBytes(socket, tpe::remote::MessageType::Bye, {})) {
+            failure = "failed to send BYE confirmation";
+            return false;
+        }
+        waitForPeerEvent(socket, std::chrono::milliseconds{2000});
+        return true;
+    });
+    ASSERT_TRUE(server.start()) << "scripted server must bind 127.0.0.1";
+
+    ClientRun client("127.0.0.1", server.port());
+    client.start();
+    if (!waitForClientPrompt(client)) {
+        stdinBuffer().interrupt();
+        FAIL() << "client did not display 'TPE>' within 5 s; stdout=[" << client.out()
+               << "] stderr=[" << client.err() << "]";
+    }
+    stdinBuffer().pushInput("exit\n");
+
+    ASSERT_TRUE(client.waitDone(kWaitLimit)) << "client did not return within 5 s";
+    ASSERT_TRUE(client.join());
+    EXPECT_EQ(client.exitCode(), 0) << "a confirmed BYE must exit 0; stderr=["
+                                    << client.err() << "]";
+
+    ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
+    EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
+}
+
+/// 标准输入 EOF → 与 exit 相同的 BYE 确认 → 退出码 0（cli.md §7；quickstart 场景 11）。
+TEST(RemoteSessionExitBye, EofSendsByeAndReturnsZero)
+{
+    ScopedRemoteStreams streams;
+    ScriptedServer server([](SocketHandle socket, std::string& failure) {
+        if (!completeScriptedHandshake(socket, failure)) {
+            return false;
+        }
+        if (!expectClientBye(socket, failure)) {
+            return false;
+        }
+        if (!sendFrameBytes(socket, tpe::remote::MessageType::Bye, {})) {
+            failure = "failed to send BYE confirmation";
+            return false;
+        }
+        waitForPeerEvent(socket, std::chrono::milliseconds{2000});
+        return true;
+    });
+    ASSERT_TRUE(server.start()) << "scripted server must bind 127.0.0.1";
+
+    ClientRun client("127.0.0.1", server.port());
+    client.start();
+    if (!waitForClientPrompt(client)) {
+        stdinBuffer().interrupt();
+        FAIL() << "client did not display 'TPE>' within 5 s; stdout=[" << client.out()
+               << "] stderr=[" << client.err() << "]";
+    }
+    stdinBuffer().releaseWith(std::string{}); // EOF
+
+    ASSERT_TRUE(client.waitDone(kWaitLimit)) << "client did not return within 5 s";
+    ASSERT_TRUE(client.join());
+    EXPECT_EQ(client.exitCode(), 0) << "EOF with a confirmed BYE must exit 0; stderr=["
+                                    << client.err() << "]";
+
+    ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
+    EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
+}
+
+/// 已发送 BYE 但确认前连接断开 → 退出码 1（cli.md §7：未收到确认即断开）。
+TEST(RemoteSessionExitBye, DisconnectBeforeByeConfirmationReturnsOne)
+{
+    ScopedRemoteStreams streams;
+    ScriptedServer server([](SocketHandle socket, std::string& failure) {
+        if (!completeScriptedHandshake(socket, failure)) {
+            return false;
+        }
+        if (!expectClientBye(socket, failure)) {
+            return false;
+        }
+        return true; // 不回 BYE，直接关闭
+    });
+    ASSERT_TRUE(server.start()) << "scripted server must bind 127.0.0.1";
+
+    ClientRun client("127.0.0.1", server.port());
+    client.start();
+    if (!waitForClientPrompt(client)) {
+        stdinBuffer().interrupt();
+        FAIL() << "client did not display 'TPE>' within 5 s; stdout=[" << client.out()
+               << "] stderr=[" << client.err() << "]";
+    }
+    stdinBuffer().pushInput("exit\n");
+
+    ASSERT_TRUE(client.waitDone(kWaitLimit)) << "client did not return within 5 s";
+    ASSERT_TRUE(client.join());
+    EXPECT_EQ(client.exitCode(), 1)
+        << "a disconnect before BYE confirmation must exit 1; stdout=[" << client.out()
+        << "] stderr=[" << client.err() << "]";
+    EXPECT_FALSE(client.err().empty())
+        << "the disconnect must be reported on standard error";
+
+    ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
+    EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
+}
+
+/// 等待响应时断线 → 立即显示原因并以 1 结束（cli.md §7；quickstart 场景 6）。
+TEST(RemoteSessionExitBye, DisconnectWhileWaitingForResponseIsReportedImmediately)
+{
+    ScopedRemoteStreams streams;
+    ScriptedServer server([](SocketHandle socket, std::string& failure) {
+        if (!completeScriptedHandshake(socket, failure)) {
+            return false;
+        }
+        tpe::remote::Frame command;
+        if (!receiveFrameBefore(socket, kWaitLimit, command, failure)) {
+            return false;
+        }
+        if (command.header.type != tpe::remote::MessageType::Command) {
+            failure = "expected COMMAND before closing, got type " +
+                      std::to_string(static_cast<int>(command.header.type));
+            return false;
+        }
+        return true; // 不回 RESPONSE，直接关闭
+    });
+    ASSERT_TRUE(server.start()) << "scripted server must bind 127.0.0.1";
+
+    ClientRun client("127.0.0.1", server.port());
+    client.start();
+    if (!waitForClientPrompt(client)) {
+        stdinBuffer().interrupt();
+        FAIL() << "client did not display 'TPE>' within 5 s; stdout=[" << client.out()
+               << "] stderr=[" << client.err() << "]";
+    }
+
+    const auto sentAt = std::chrono::steady_clock::now();
+    stdinBuffer().pushInput("help\n");
+
+    ASSERT_TRUE(client.waitDone(std::chrono::milliseconds{3000}))
+        << "a disconnect while waiting for RESPONSE must be reported immediately; "
+           "stdout=["
+        << client.out() << "] stderr=[" << client.err() << "]";
+    ASSERT_TRUE(client.join());
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - sentAt);
+    EXPECT_EQ(client.exitCode(), 1);
+    EXPECT_FALSE(client.err().empty()) << "the disconnect must be reported";
+    EXPECT_LT(elapsed, std::chrono::milliseconds{3000})
+        << "the report must not wait for another input; elapsed=" << elapsed.count()
+        << " ms";
+
+    ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
+    EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
+}
+
+/// 等待输入时断线 → 下一次普通命令后报告并以 1 结束（cli.md §7）。
+/// T037 前预期 RED：当前循环在发送下一条命令后才检查失败，可能报告通用断线文本。
+TEST(RemoteSessionExitBye, DisconnectWhileWaitingForInputIsReportedAfterNextCommand)
+{
+    ScopedRemoteStreams streams;
+    ScriptedServer server([](SocketHandle socket, std::string& failure) {
+        if (!completeScriptedHandshake(socket, failure)) {
+            return false;
+        }
+        // 让 Client 先进入 TPE> 等待输入，再关闭连接。
+        std::this_thread::sleep_for(std::chrono::milliseconds{500});
+        return true;
+    });
+    ASSERT_TRUE(server.start()) << "scripted server must bind 127.0.0.1";
+
+    ClientRun client("127.0.0.1", server.port());
+    client.start();
+    if (!waitForClientPrompt(client)) {
+        stdinBuffer().interrupt();
+        FAIL() << "client did not display 'TPE>' within 5 s; stdout=[" << client.out()
+               << "] stderr=[" << client.err() << "]";
+    }
+
+    // 等待 Server 关闭连接（等待输入期间断线），再送入下一条普通命令。
+    std::this_thread::sleep_for(std::chrono::milliseconds{800});
+    stdinBuffer().pushInput("help\n");
+
+    ASSERT_TRUE(client.waitDone(kWaitLimit))
+        << "the next command after a disconnect must end the client; stdout=[" << client.out()
+        << "] stderr=[" << client.err() << "]";
+    ASSERT_TRUE(client.join());
+    EXPECT_EQ(client.exitCode(), 1);
+    EXPECT_FALSE(client.err().empty()) << "the disconnect must be reported";
+
+    ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
+    EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
+}
+
+/// BYE 确认超时且连接仍在 → 显示固定文本、主动关闭、退出 1（cli.md §7；场景 18）。
+TEST(RemoteSessionExitBye, ByeConfirmationTimeoutReturnsOneWhileConnectionStaysOpen)
+{
+    ScopedRemoteStreams streams;
+    ScriptedServer server([](SocketHandle socket, std::string& failure) {
+        if (!completeScriptedHandshake(socket, failure)) {
+            return false;
+        }
+        if (!expectClientBye(socket, failure)) {
+            return false;
+        }
+        // 不回 BYE，保持连接打开超过 1 秒确认期限。
+        std::this_thread::sleep_for(std::chrono::milliseconds{2500});
+        waitForPeerEvent(socket, std::chrono::milliseconds{1000});
+        return true;
+    });
+    ASSERT_TRUE(server.start()) << "scripted server must bind 127.0.0.1";
+
+    ClientRun client("127.0.0.1", server.port());
+    client.start();
+    if (!waitForClientPrompt(client)) {
+        stdinBuffer().interrupt();
+        FAIL() << "client did not display 'TPE>' within 5 s; stdout=[" << client.out()
+               << "] stderr=[" << client.err() << "]";
+    }
+
+    const auto exitAt = std::chrono::steady_clock::now();
+    stdinBuffer().pushInput("exit\n");
+
+    ASSERT_TRUE(client.waitDone(std::chrono::milliseconds{4000}))
+        << "the client must return after the 1 s confirmation deadline; stdout=["
+        << client.out() << "] stderr=[" << client.err() << "]";
+    ASSERT_TRUE(client.join());
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - exitAt);
+    EXPECT_EQ(client.exitCode(), 1);
+    EXPECT_NE(client.err().find("Server did not acknowledge the session end."),
+              std::string::npos)
+        << "client stderr=[" << client.err() << "]";
+    EXPECT_GE(elapsed, std::chrono::milliseconds{800})
+        << "the client must wait for the 1 s deadline; elapsed=" << elapsed.count() << " ms";
+
+    ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
+    EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
+}
+
+/// 活动期收到 ERROR → 显示 Server 原因并退出 1（protocol.md §7）。
+/// 断线/错误可能在等待输入时到达；下一次输入后必须报告原因（T037 前可能 RED）。
+TEST(RemoteSessionExitBye, ActiveSessionErrorIsReportedWithReasonAndOne)
+{
+    ScopedRemoteStreams streams;
+    ScriptedServer server([](SocketHandle socket, std::string& failure) {
+        if (!completeScriptedHandshake(socket, failure)) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{300});
+        std::vector<std::uint8_t> payload{
+            static_cast<std::uint8_t>(tpe::remote::ErrorCode::Internal)};
+        const std::string reason = "simulated server failure";
+        payload.insert(payload.end(), reason.begin(), reason.end());
+        if (!sendFrameBytes(socket, tpe::remote::MessageType::Error, payload)) {
+            failure = "failed to send ERROR";
+            return false;
+        }
+        waitForPeerEvent(socket, std::chrono::milliseconds{3000});
+        return true;
+    });
+    ASSERT_TRUE(server.start()) << "scripted server must bind 127.0.0.1";
+
+    ClientRun client("127.0.0.1", server.port());
+    client.start();
+    if (!waitForClientPrompt(client)) {
+        stdinBuffer().interrupt();
+        FAIL() << "client did not display 'TPE>' within 5 s; stdout=[" << client.out()
+               << "] stderr=[" << client.err() << "]";
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds{700});
+    stdinBuffer().pushInput("help\n");
+
+    ASSERT_TRUE(client.waitDone(kWaitLimit)) << "client did not return within 5 s";
+    ASSERT_TRUE(client.join());
+    EXPECT_EQ(client.exitCode(), 1) << "an active-session ERROR must exit 1";
+    EXPECT_NE(client.err().find("simulated server failure"), std::string::npos)
+        << "the server-provided reason must be shown; stderr=[" << client.err() << "]";
+
+    ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
+    EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
+}
+
+/// Server 发送载荷非空的 BYE → Client 显示固定文本、关闭、退出 1，且不回 ERROR
+/// （protocol.md §2/§7；quickstart 场景 20 反向路径）。
+TEST(RemoteSessionExitBye, NonEmptyByeFromServerIsInvalidSessionEnd)
+{
+    ScopedRemoteStreams streams;
+    ScriptedServer server([](SocketHandle socket, std::string& failure) {
+        if (!completeScriptedHandshake(socket, failure)) {
+            return false;
+        }
+        tpe::remote::Frame command;
+        if (!receiveFrameBefore(socket, kWaitLimit, command, failure)) {
+            return false;
+        }
+        if (command.header.type != tpe::remote::MessageType::Command) {
+            failure = "expected COMMAND before the invalid BYE, got type " +
+                      std::to_string(static_cast<int>(command.header.type));
+            return false;
+        }
+        if (!sendFrameBytes(socket, tpe::remote::MessageType::Bye, toBytes("x"))) {
+            failure = "failed to send the non-empty BYE";
+            return false;
+        }
+        std::string extra;
+        const PeerEvent event =
+            waitForPeerEvent(socket, std::chrono::milliseconds{3000}, &extra);
+        if (event == PeerEvent::Data) {
+            failure = "Client must not send any frame after an invalid session end; "
+                      "received " +
+                      std::to_string(extra.size()) + " byte(s)";
+            return false;
+        }
+        if (event != PeerEvent::Closed) {
+            failure = "Client must close the connection after an invalid session end";
+            return false;
+        }
+        return true;
+    });
+    ASSERT_TRUE(server.start()) << "scripted server must bind 127.0.0.1";
+
+    ClientRun client("127.0.0.1", server.port());
+    client.start();
+    if (!waitForClientPrompt(client)) {
+        stdinBuffer().interrupt();
+        FAIL() << "client did not display 'TPE>' within 5 s; stdout=[" << client.out()
+               << "] stderr=[" << client.err() << "]";
+    }
+    stdinBuffer().pushInput("help\n"); // 让 Client 进入“等待响应”，接收非空 BYE
+
+    ASSERT_TRUE(client.waitDone(kWaitLimit)) << "client did not return within 5 s";
+    ASSERT_TRUE(client.join());
+    EXPECT_EQ(client.exitCode(), 1);
+    EXPECT_NE(client.err().find("Server sent an invalid session end."), std::string::npos)
+        << "client stderr=[" << client.err() << "]";
+
+    ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
+    EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
+}
+
+/// 原始 RawSocket 活动会话发送非空 BYE → Server 实际发送 ERROR(6) 并关闭。
+/// 契约声明该应答由 US3（T036）实现；当前实现已在 T029 的处理路径中覆盖，
+/// 实测若直接通过则记录为回归基线，不为制造 RED 修改实现。
+TEST(RemoteSessionExitBye, RawActiveClientSendingNonEmptyByeGetsErrorSixAndClose)
+{
+    ScopedRemoteStreams streams;
+    LocalServer server(kRawNonEmptyByePort, std::make_unique<SnapshotPlatformOS>());
+    if (!server.start()) {
+        if (isPortUnavailable(kRawNonEmptyByePort)) {
+            GTEST_SKIP() << "TCP port " << kRawNonEmptyByePort
+                         << " is unavailable (bound by another process or reserved by the "
+                            "system); skipping instead of misreporting a genuine port "
+                            "conflict as a failure.";
+        }
+        FAIL() << "RemoteServer::start() must succeed on free port " << kRawNonEmptyByePort;
+    }
+    ASSERT_TRUE(waitUntil([&server] { return server.instance().isRunning(); }, kWaitLimit))
+        << "isRunning() must become true within 5 s after start() returned true";
+
+    std::string failure;
+    RawSocket client;
+    ASSERT_TRUE(openRawSession(client, kRawNonEmptyByePort, failure)) << failure;
+
+    ASSERT_TRUE(client.sendFrame(tpe::remote::MessageType::Bye, toBytes("x")))
+        << "failed to send the non-empty BYE";
+
+    tpe::remote::Frame reply;
+    ASSERT_TRUE(client.receiveFrame(kWaitLimit, reply, failure))
+        << "the server must answer a non-empty BYE with ERROR; " << failure;
+    ASSERT_EQ(static_cast<int>(reply.header.type),
+              static_cast<int>(tpe::remote::MessageType::Error))
+        << "a non-empty BYE from an active client must produce ERROR";
+    ASSERT_FALSE(reply.payload.empty());
+    EXPECT_EQ(reply.payload.at(0),
+              static_cast<std::uint8_t>(tpe::remote::ErrorCode::InvalidPayload))
+        << "the ERROR code must be 6 (invalid payload)";
+    EXPECT_EQ(client.waitForPeer(kWaitLimit), PeerEvent::Closed)
+        << "the server must close the connection after ERROR(6)";
+
+    server.stop();
+}
+
+/// 断线与 EOF 竞态 → 断线优先，退出码 1（cli.md §7；quickstart 场景 13）。
+TEST(RemoteSessionExitBye, DisconnectWinsOverEofRace)
+{
+    ScopedRemoteStreams streams;
+    ScriptedServer server([](SocketHandle socket, std::string& failure) {
+        if (!completeScriptedHandshake(socket, failure)) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        return true; // 关闭连接，与 EOF 竞争
+    });
+    ASSERT_TRUE(server.start()) << "scripted server must bind 127.0.0.1";
+
+    ClientRun client("127.0.0.1", server.port());
+    client.start();
+    if (!waitForClientPrompt(client)) {
+        stdinBuffer().interrupt();
+        FAIL() << "client did not display 'TPE>' within 5 s; stdout=[" << client.out()
+               << "] stderr=[" << client.err() << "]";
+    }
+
+    // 同时触发断线（Server 在 50 ms 后关闭）与 EOF。
+    stdinBuffer().releaseWith(std::string{});
+
+    ASSERT_TRUE(client.waitDone(kWaitLimit)) << "client did not return within 5 s";
+    ASSERT_TRUE(client.join());
+    EXPECT_EQ(client.exitCode(), 1)
+        << "a simultaneous disconnect and EOF must exit 1 (disconnect wins); stdout=["
+        << client.out() << "] stderr=[" << client.err() << "]";
+    EXPECT_FALSE(client.err().empty())
+        << "the disconnect must be reported instead of a normal exit";
+
+    ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
+    EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
 }
