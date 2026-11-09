@@ -28,6 +28,10 @@
  *   - T026 增加固定进程快照注入（SnapshotPlatformOS；LocalServer 增加引擎重载
  *     构造函数）与 US2 成功查询用例：远程 `--all-processes`/`--search-process`
  *     的输出（统一 CRLF/LF 后）与同一引擎的本地结果逐字一致。
+ *   - T027 增加 US2 失败查询与发送前校验用例：查询失败（PID 不存在、名称不可读、
+ *     枚举失败、未知命令、结果超限、不可编码、不可编码优先于超限）均保留 `TPE>`
+ *     并可用 `help` 继续接收命令；发送前校验（65,537 字节、非法 UTF-8、裸 `CR`）
+ *     由脚本化 Server 断言被拒命令未以 COMMAND 发出，且不产生未知命令响应。
  *
  * 约束：仅 GoogleTest + 标准库 + 平台 socket API；不启动子进程；除 127.0.0.1
  * 回环外不访问网络。骨架期预期 RED：RemoteServer::start() 恒 false、
@@ -101,6 +105,16 @@ constexpr std::uint16_t kPeerClosePort = 18086;
 constexpr std::uint16_t kQueryAllProcessesPort = 18087;
 constexpr std::uint16_t kQuerySearchProcessPort = 18088;
 constexpr std::uint16_t kQueryUtf8NamePort = 18089;
+
+/// T027 失败查询用例的独立端口（18090–18097，与既有用例互不重叠）。
+constexpr std::uint16_t kQueryFailurePidNotFoundPort = 18090;
+constexpr std::uint16_t kQueryFailureUnreadableNamePort = 18091;
+constexpr std::uint16_t kQueryFailureEnumerationPort = 18092;
+constexpr std::uint16_t kQueryFailureUnknownCommandPort = 18093;
+constexpr std::uint16_t kQueryFailureOversizePort = 18094;
+constexpr std::uint16_t kQueryFailureUnencodablePort = 18095;
+constexpr std::uint16_t kQueryFailureEnumerationUnencodablePort = 18096;
+constexpr std::uint16_t kQueryFailureDoubleFailurePort = 18097;
 
 /// 有界轮询：predicate 就绪返回 true；超时返回最后一次判定结果。
 bool waitUntil(const std::function<bool()>& predicate, std::chrono::milliseconds timeout)
@@ -1099,6 +1113,54 @@ public:
     void getAllProcesses(std::vector<tpe::platform::Pid_t>) override {}
 };
 
+/// T027：可配置的失败查询平台实现。
+/// 与 SnapshotPlatformOS 共用 SnapshotProcess 数据面（PID + 名称），额外支持：
+///   - 任意名称（空名称 = 名称不可读；可含非法 UTF-8 字节）；
+///   - 任意数量进程（用于构造超过单条 RESPONSE 上限的列表）；
+///   - 枚举失败（enumerationError 与 getAllProcessesPid() 的错误返回保持一致，
+///     对应缺陷⑧契约：不得以空列表伪装成功）。
+class ConfigurablePlatformOS : public tpe::platform::PlatformOS {
+public:
+    void addProcess(tpe::platform::Pid_t pid, std::string name)
+    {
+        ProcessList.push_back(std::make_shared<SnapshotProcess>(pid, std::move(name)));
+    }
+
+    void setEnumerationFailure(std::string message)
+    {
+        m_enumerationError =
+            tpe::PlatformError{"ConfigurablePlatformOS", 0, 0, std::move(message)};
+    }
+
+    std::shared_ptr<tpe::platform::PlatformProcess> open(tpe::platform::Pid_t pid) override
+    {
+        for (const std::shared_ptr<tpe::platform::PlatformProcess>& process : ProcessList) {
+            if (process->getPid() == pid) {
+                return process;
+            }
+        }
+        return nullptr;
+    }
+
+    tpe::Result<std::vector<tpe::platform::Pid_t>, tpe::PlatformError> getAllProcessesPid()
+        override
+    {
+        if (m_enumerationError.has_value()) {
+            return tpe::Result<std::vector<tpe::platform::Pid_t>, tpe::PlatformError>::error(
+                *m_enumerationError);
+        }
+        std::vector<tpe::platform::Pid_t> pids;
+        pids.reserve(ProcessList.size());
+        for (const std::shared_ptr<tpe::platform::PlatformProcess>& process : ProcessList) {
+            pids.push_back(process->getPid());
+        }
+        return tpe::Result<std::vector<tpe::platform::Pid_t>, tpe::PlatformError>::success(
+            std::move(pids));
+    }
+
+    void getAllProcesses(std::vector<tpe::platform::Pid_t>) override {}
+};
+
 // ---------------------------------------------------------------------------
 // Server / Client 封装
 // ---------------------------------------------------------------------------
@@ -1418,6 +1480,302 @@ void expectVerbatimQueryBlock(const SnapshotSessionResult& result,
         << "the prompt must follow the result directly (no extra blank line and no merged "
            "line; FR-017); stdout=["
         << clientOut << "]";
+}
+
+// ---------------------------------------------------------------------------
+// T027 失败查询与发送前校验共用辅助
+//
+// 固定文本按契约逐字复制（tests 不跨 TU 引用实现内部常量，实现漂移时由断言暴露）：
+//   - contracts/cli.md §4：帮助文本；
+//   - contracts/cli.md §3/§6：未知命令与查询失败文本；
+//   - contracts/cli.md §3.1：发送前校验文本。
+// ---------------------------------------------------------------------------
+
+constexpr const char* kHelpText =
+    "--all-processes        List processes on the server.\n"
+    "--search-process <PID> Show the name of a process on the server.\n"
+    "help                   Show this help.\n"
+    "exit                   End this client session.";
+
+constexpr const char* kUnknownCommandText =
+    "Unknown command. Type 'help' for available commands.";
+constexpr const char* kOversizeResultText =
+    "Response exceeds the maximum message size.";
+constexpr const char* kUnencodableNameText = "Process name cannot be encoded as UTF-8.";
+constexpr const char* kUnencodableListText =
+    "Process list contains a name that cannot be encoded as UTF-8.";
+constexpr const char* kOversizeCommandText =
+    "Command exceeds the maximum message size.";
+constexpr const char* kUnencodableCommandText =
+    "Command cannot be encoded as UTF-8.";
+constexpr const char* kLineBreakCommandText =
+    "Command must not contain line breaks.";
+
+/// 非法 UTF-8 字节（0xFF 永不出现于合法 UTF-8 序列）的进程名。
+std::string invalidUtf8ProcessName()
+{
+    std::string name = "bad";
+    name.push_back(static_cast<char>(0xFF));
+    name += "-name.exe";
+    return name;
+}
+
+/// 超限夹具的进程名；kOversizeProcessCount 条合计超过 1 MiB。
+constexpr int kOversizeProcessCount = 20000;
+
+std::string oversizeProcessName(int index)
+{
+    return "bulk-process-" + std::to_string(index) + std::string(32, 'x');
+}
+
+/// 一次失败查询会话的结果。
+struct QueryFailureSessionResult {
+    int exitCode = -1;
+    std::string out;
+    std::string err;
+};
+
+/// 在固定快照 Server 上完成一次「失败命令 + help」会话：
+/// 先等待 Client 进入 TPE>，再送入 commands（失败命令在前、help 在后），随后标准输入
+/// EOF（US2 不实现 exit；EOF 走 T023 已有正常结束路径）。所有等待 ≤5 秒。
+void runQueryFailureSession(std::uint16_t port,
+                            std::unique_ptr<tpe::platform::PlatformOS> os,
+                            const std::string& commands,
+                            QueryFailureSessionResult& result)
+{
+    ScopedRemoteStreams streams;
+    LocalServer server(port, std::move(os));
+
+    // 先启动；仅当启动失败时才诊断端口（与既有用例同一策略）。
+    if (!server.start()) {
+        if (isPortUnavailable(port)) {
+            GTEST_SKIP() << "TCP port " << port
+                         << " is unavailable (bound by another process or reserved by the "
+                            "system); skipping instead of misreporting a genuine port "
+                            "conflict as a failure.";
+        }
+        FAIL() << "RemoteServer::start() must succeed on free port " << port;
+    }
+    ASSERT_TRUE(waitUntil([&server] { return server.instance().isRunning(); }, kWaitLimit))
+        << "isRunning() must become true within 5 s after start() returned true";
+
+    ClientRun client("127.0.0.1", port);
+    client.start();
+
+    if (!waitUntil([&client] { return client.out().find("TPE>") != std::string::npos; },
+                   kWaitLimit)) {
+        stdinBuffer().interrupt();
+        server.stop();
+        client.waitDone(std::chrono::milliseconds{1000});
+        FAIL() << "client did not display 'TPE>' within 5 s; client stdout=[" << client.out()
+               << "] client stderr=[" << client.err() << "] server stdout=["
+               << capturedServerOut() << "]";
+    }
+
+    stdinBuffer().releaseWith(commands);
+
+    if (!client.waitDone(kWaitLimit)) {
+        server.stop();
+        stdinBuffer().interrupt();
+        client.waitDone(std::chrono::milliseconds{1000});
+        FAIL() << "client did not finish within 5 s after the failing query; client stdout=["
+               << client.out() << "] client stderr=[" << client.err() << "]";
+    }
+    ASSERT_TRUE(client.join());
+
+    result.exitCode = client.exitCode();
+    result.out = client.out();
+    result.err = client.err();
+
+    server.stop();
+}
+
+/// 断言：失败文本恰出现 1 次 → 回到 TPE> → help 的 4 行帮助逐字出现 1 次 → 再次出现
+/// 提示符（会话仍可用）。cli.md §6：查询失败保留 TPE>、Client 退出码 0。
+void expectFailureThenHelp(const QueryFailureSessionResult& result,
+                           const std::string& expectedFailure)
+{
+    EXPECT_EQ(result.exitCode, 0)
+        << "a failed query must keep the session alive (exit code 0 after EOF); stderr=["
+        << result.err << "]";
+
+    const std::string clientOut = normalizedLineEndings(result.out);
+
+    ASSERT_EQ(countOccurrences(clientOut, expectedFailure), std::size_t{1})
+        << "expected the failure text exactly once; expected=[" << expectedFailure
+        << "] client stdout=[" << clientOut << "] client stderr=[" << result.err << "]";
+
+    const std::size_t failurePosition = clientOut.find(expectedFailure);
+    const std::size_t promptAfterFailure =
+        clientOut.find("TPE>", failurePosition + expectedFailure.size());
+    ASSERT_NE(promptAfterFailure, std::string::npos)
+        << "the client must return to 'TPE>' after a failed query; stdout=[" << clientOut
+        << "]";
+
+    const std::string helpBlock(kHelpText);
+    ASSERT_EQ(countOccurrences(clientOut, helpBlock), std::size_t{1})
+        << "the subsequent 'help' must render the four-line help text exactly once; stdout=["
+        << clientOut << "]";
+    const std::size_t helpPosition = clientOut.find(helpBlock);
+    EXPECT_LT(promptAfterFailure, helpPosition)
+        << "the help output must follow the failure and the returned prompt; stdout=["
+        << clientOut << "]";
+    EXPECT_NE(clientOut.find("TPE>", helpPosition + helpBlock.size()), std::string::npos)
+        << "the prompt must follow the help output, proving the session is still usable; "
+           "stdout=["
+        << clientOut << "]";
+}
+
+/// 一次发送前校验会话的结果（含脚本化 Server 对「未发送」的观察）。
+struct PreSendSessionResult {
+    int exitCode = -1;
+    std::string out;
+    std::string err;
+    bool scriptSucceeded = false;
+    std::string scriptFailure;
+};
+
+/// 脚本化 Server：完成握手后要求 Client 发出的第一条（也是唯一一条）COMMAND 是 help。
+/// 若本地拒绝的命令被错误发送，脚本会看到不同的首帧并以明确原因失败；这同时证明
+/// 被拒命令未发送、也不会产生任何 Server 响应（不依赖 T041 的查询日志）。
+/// 随后回 help 的 RESPONSE，并在 Client 因标准输入 EOF 发送 BYE 后回空 BYE。
+void runPreSendRejectionSession(const std::string& rejectedLine,
+                                PreSendSessionResult& result)
+{
+    ScopedRemoteStreams streams;
+    ScriptedServer server([](SocketHandle socket, std::string& failure) {
+        if (!consumeClientHello(socket, failure)) {
+            return false;
+        }
+        if (!sendFrameBytes(socket, tpe::remote::MessageType::Welcome, {})) {
+            failure = "failed to send WELCOME";
+            return false;
+        }
+
+        tpe::remote::Frame frame;
+        if (!receiveFrameBefore(socket, kWaitLimit, frame, failure)) {
+            return false;
+        }
+        if (frame.header.type != tpe::remote::MessageType::Command) {
+            failure = "locally rejected input must not be sent; expected COMMAND(help) as the "
+                      "first frame after WELCOME, got type " +
+                      std::to_string(static_cast<int>(frame.header.type));
+            return false;
+        }
+        const std::string commandLine(frame.payload.begin(), frame.payload.end());
+        if (commandLine != "help") {
+            const std::string preview = commandLine.substr(0, 32);
+            failure = "locally rejected input must not be sent; expected COMMAND(help) "
+                      "first, got [" +
+                      preview + "] (" + std::to_string(commandLine.size()) + " byte(s))";
+            return false;
+        }
+
+        const tpe::Result<std::vector<std::uint8_t>, tpe::remote::ProtocolError> payload =
+            tpe::remote::encodeResponse(tpe::remote::ResponseStatus::Continue, "TPE>",
+                                        kHelpText);
+        if (!payload.has_value()) {
+            failure = "failed to encode the help RESPONSE";
+            return false;
+        }
+        if (!sendFrameBytes(socket, tpe::remote::MessageType::Response, payload.value())) {
+            failure = "failed to send the help RESPONSE";
+            return false;
+        }
+
+        // 标准输入 EOF → BYE；回 BYE 确认（T023 正常结束路径）。
+        if (!receiveFrameBefore(socket, kWaitLimit, frame, failure)) {
+            return false;
+        }
+        if (frame.header.type != tpe::remote::MessageType::Bye) {
+            failure = "after the help response the client must end with BYE; got type " +
+                      std::to_string(static_cast<int>(frame.header.type));
+            return false;
+        }
+        if (!sendFrameBytes(socket, tpe::remote::MessageType::Bye, {})) {
+            failure = "failed to acknowledge BYE";
+            return false;
+        }
+        waitForPeerEvent(socket, std::chrono::milliseconds{1000});
+        return true;
+    });
+    ASSERT_TRUE(server.start()) << "scripted server must bind 127.0.0.1";
+
+    ClientRun client("127.0.0.1", server.port());
+    client.start();
+
+    if (!waitUntil([&client] { return client.out().find("TPE>") != std::string::npos; },
+                   kWaitLimit)) {
+        stdinBuffer().interrupt();
+        client.waitDone(std::chrono::milliseconds{1000});
+        FAIL() << "client did not display 'TPE>' within 5 s; client stdout=[" << client.out()
+               << "] client stderr=[" << client.err() << "]";
+    }
+
+    stdinBuffer().releaseWith(rejectedLine + "help\n");
+
+    if (!client.waitDone(kWaitLimit)) {
+        stdinBuffer().interrupt();
+        client.waitDone(std::chrono::milliseconds{1000});
+        FAIL() << "client did not finish within 5 s after the rejected command; client "
+                  "stdout=["
+               << client.out() << "] client stderr=[" << client.err() << "]";
+    }
+    ASSERT_TRUE(client.join());
+
+    result.exitCode = client.exitCode();
+    result.out = client.out();
+    result.err = client.err();
+
+    EXPECT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
+    result.scriptSucceeded = server.scriptSucceeded();
+    result.scriptFailure = server.scriptFailure();
+}
+
+/// 断言：本地拒绝文本恰出现 1 次且写标准输出 → 不出现未知命令响应 → 回到 TPE> →
+/// help 的 4 行帮助逐字出现 1 次 → 再次出现提示符。
+/// 「未发送」由 runPreSendRejectionSession 的脚本化 Server 单独证明：
+/// 握手后第一条 COMMAND 必须是 help。Client 退出码留到 US3 验证。
+void expectLocalRejectionThenHelp(const PreSendSessionResult& result,
+                                  const std::string& expectedError)
+{
+    EXPECT_TRUE(result.scriptSucceeded)
+        << "the scripted server must observe COMMAND(help) as the first frame after "
+           "WELCOME; "
+        << result.scriptFailure;
+
+    const std::string clientOut = normalizedLineEndings(result.out);
+
+    ASSERT_EQ(countOccurrences(clientOut, expectedError), std::size_t{1})
+        << "expected the local rejection text exactly once; expected=[" << expectedError
+        << "] client stdout=[" << clientOut << "] client stderr=[" << result.err << "]";
+    EXPECT_EQ(result.err.find(expectedError), std::string::npos)
+        << "cli.md §3.1: the local rejection text must be written to standard output; "
+           "stderr=["
+        << result.err << "]";
+
+    EXPECT_EQ(clientOut.find(kUnknownCommandText), std::string::npos)
+        << "a locally rejected command must not be sent, so the server must not produce an "
+           "unknown-command response; stdout=["
+        << clientOut << "]";
+
+    const std::size_t rejectionPosition = clientOut.find(expectedError);
+    const std::size_t promptAfterRejection =
+        clientOut.find("TPE>", rejectionPosition + expectedError.size());
+    ASSERT_NE(promptAfterRejection, std::string::npos)
+        << "the client must keep 'TPE>' after a local rejection; stdout=[" << clientOut
+        << "]";
+
+    const std::string helpBlock(kHelpText);
+    ASSERT_EQ(countOccurrences(clientOut, helpBlock), std::size_t{1})
+        << "the subsequent 'help' must render the four-line help text exactly once; stdout=["
+        << clientOut << "]";
+    const std::size_t helpPosition = clientOut.find(helpBlock);
+    EXPECT_LT(promptAfterRejection, helpPosition)
+        << "the help output must follow the rejection and the returned prompt; stdout=["
+        << clientOut << "]";
+    EXPECT_NE(clientOut.find("TPE>", helpPosition + helpBlock.size()), std::string::npos)
+        << "the prompt must follow the help output; stdout=[" << clientOut << "]";
 }
 
 } // namespace
@@ -2104,4 +2462,201 @@ TEST(RemoteSessionQuerySuccess, NonAsciiProcessNameIsDisplayedVerbatim)
         << result.err << "]";
 
     expectVerbatimQueryBlock(result, result.localSearchName + "\n");
+}
+
+// ---------------------------------------------------------------------------
+// 套件 RemoteSessionQueryFailure — US2 失败查询（T027）
+//
+// 每个用例先执行失败查询，再执行 help；断言失败文本出现且会话仍可用。
+// 固定快照通过 ConfigurablePlatformOS 注入，Server 与 Client 走真实回环 TCP。
+// RED（T027 阶段）：T028/T029/T030 未实现——Client 不发送 COMMAND，失败文本不会
+// 出现；用例在 5 秒上限内以断言失败结束，不挂起。
+// ---------------------------------------------------------------------------
+
+/// `--search-process <不存在的 PID>` → `Process with PID <n> not found.`（cli.md §6）。
+TEST(RemoteSessionQueryFailure, SearchProcessPidNotFoundKeepsPrompt)
+{
+    auto os = std::make_unique<ConfigurablePlatformOS>();
+    os->addProcess(4321, "alpha.exe");
+
+    constexpr tpe::platform::Pid_t kMissingPid = 999999;
+    QueryFailureSessionResult result;
+    runQueryFailureSession(kQueryFailurePidNotFoundPort, std::move(os),
+                           "--search-process " + std::to_string(kMissingPid) + "\nhelp\n",
+                           result);
+
+    expectFailureThenHelp(result,
+                          "Process with PID " + std::to_string(kMissingPid) + " not found.");
+}
+
+/// 进程名不可读（空名称）→ `Failed to read the process name for PID <n>.`（cli.md §6）。
+TEST(RemoteSessionQueryFailure, SearchProcessUnreadableNameKeepsPrompt)
+{
+    auto os = std::make_unique<ConfigurablePlatformOS>();
+    os->addProcess(4324, std::string()); // 空名称 = 不可读
+
+    QueryFailureSessionResult result;
+    runQueryFailureSession(kQueryFailureUnreadableNamePort, std::move(os),
+                           "--search-process 4324\nhelp\n", result);
+
+    expectFailureThenHelp(result, "Failed to read the process name for PID 4324.");
+}
+
+/// 枚举失败 → `Failed to enumerate processes: <原因>`（cli.md §6；缺陷⑧透传）。
+TEST(RemoteSessionQueryFailure, AllProcessesEnumerationFailureKeepsPrompt)
+{
+    auto os = std::make_unique<ConfigurablePlatformOS>();
+    os->setEnumerationFailure("simulated enumeration failure");
+
+    QueryFailureSessionResult result;
+    runQueryFailureSession(kQueryFailureEnumerationPort, std::move(os),
+                           "--all-processes\nhelp\n", result);
+
+    expectFailureThenHelp(result,
+                          "Failed to enumerate processes: simulated enumeration failure");
+}
+
+/// 未知命令（`list` 属契约 §3 未交付命令）→ 固定未知命令文本（protocol §5）。
+TEST(RemoteSessionQueryFailure, UnknownCommandKeepsPrompt)
+{
+    auto os = std::make_unique<ConfigurablePlatformOS>();
+    os->addProcess(4321, "alpha.exe");
+
+    QueryFailureSessionResult result;
+    runQueryFailureSession(kQueryFailureUnknownCommandPort, std::move(os),
+                           "list\nhelp\n", result);
+
+    expectFailureThenHelp(result, kUnknownCommandText);
+}
+
+/// 查询结果超过单条 RESPONSE 上限 → `Response exceeds the maximum message size.`，
+/// 不截断、不分片（cli.md §6；protocol §5）。
+TEST(RemoteSessionQueryFailure, OversizeResultKeepsPrompt)
+{
+    auto os = std::make_unique<ConfigurablePlatformOS>();
+    std::size_t outputBytes = 0;
+    for (int index = 0; index < kOversizeProcessCount; ++index) {
+        const tpe::platform::Pid_t pid =
+            static_cast<tpe::platform::Pid_t>(20000 + index);
+        const std::string name = oversizeProcessName(index);
+        os->addProcess(pid, name);
+        // 与 processListText() 的行格式一致：`PID: <pid> ProcessName: <name>\n`。
+        outputBytes += std::string("PID: ").size() + std::to_string(pid).size() +
+                       std::string(" ProcessName: ").size() + name.size() + 1;
+    }
+    // RESPONSE payload = 1(status) + 2(promptLen) + 4("TPE>") + 4(outputLen) + output。
+    ASSERT_GT(outputBytes + 11, static_cast<std::size_t>(tpe::remote::kMaxPayloadBytes))
+        << "fixture sanity: the process list must exceed one RESPONSE payload";
+
+    QueryFailureSessionResult result;
+    runQueryFailureSession(kQueryFailureOversizePort, std::move(os),
+                           "--all-processes\nhelp\n", result);
+
+    expectFailureThenHelp(result, kOversizeResultText);
+}
+
+/// 进程名含非法 UTF-8 字节 → `Process name cannot be encoded as UTF-8.`（cli.md §6）。
+TEST(RemoteSessionQueryFailure, UnencodableProcessNameKeepsPrompt)
+{
+    auto os = std::make_unique<ConfigurablePlatformOS>();
+    os->addProcess(4325, invalidUtf8ProcessName());
+
+    QueryFailureSessionResult result;
+    runQueryFailureSession(kQueryFailureUnencodablePort, std::move(os),
+                           "--search-process 4325\nhelp\n", result);
+
+    expectFailureThenHelp(result, kUnencodableNameText);
+}
+
+/// 枚举结果中任一名称含非法 UTF-8 字节 →
+/// `Process list contains a name that cannot be encoded as UTF-8.`（cli.md §6）。
+TEST(RemoteSessionQueryFailure, UnencodableProcessListKeepsPrompt)
+{
+    auto os = std::make_unique<ConfigurablePlatformOS>();
+    os->addProcess(4321, "alpha.exe");
+    os->addProcess(4325, invalidUtf8ProcessName());
+
+    QueryFailureSessionResult result;
+    runQueryFailureSession(kQueryFailureEnumerationUnencodablePort, std::move(os),
+                           "--all-processes\nhelp\n", result);
+
+    expectFailureThenHelp(result, kUnencodableListText);
+}
+
+/// 同一结果同时不可编码且超限 → 先报告不可编码（cli.md §6 末段；
+/// protocol §5“先校验文本编码并报告不可编码，编码成功后才检查长度”）。
+TEST(RemoteSessionQueryFailure, UnencodableTakesPriorityOverOversize)
+{
+    auto os = std::make_unique<ConfigurablePlatformOS>();
+    std::string hugeInvalidName(
+        static_cast<std::size_t>(tpe::remote::kMaxPayloadBytes) + 64, 'x');
+    hugeInvalidName[1000] = static_cast<char>(0xFF);
+    os->addProcess(4326, hugeInvalidName);
+
+    QueryFailureSessionResult result;
+    runQueryFailureSession(kQueryFailureDoubleFailurePort, std::move(os),
+                           "--search-process 4326\nhelp\n", result);
+
+    expectFailureThenHelp(result, kUnencodableNameText);
+
+    const std::string clientOut = normalizedLineEndings(result.out);
+    EXPECT_EQ(clientOut.find(kOversizeResultText), std::string::npos)
+        << "cli.md §6: a result that is both unencodable and oversized must report the "
+           "encoding failure first; stdout=["
+        << clientOut << "]";
+}
+
+// ---------------------------------------------------------------------------
+// 套件 RemoteSessionPreSendValidation — US2 发送前校验（T027）
+//
+// 三条本地拒绝都必须写标准输出、保留 TPE>、不发送命令；「未发送」由脚本化 Server
+// 断言：握手后收到的第一条（也是唯一一条）COMMAND 必须是随后输入的 help；
+// 不使用 T041 尚未实现的查询日志。Client 退出码留到 US3 验证。
+// ---------------------------------------------------------------------------
+
+/// 65,537 字节命令（> 64 KiB）→ `Command exceeds the maximum message size.`（§3.1）。
+TEST(RemoteSessionPreSendValidation, OversizeCommandIsRejectedLocally)
+{
+    const std::string rejectedLine(tpe::remote::kMaxCommandBytes + 1, 'a');
+
+    PreSendSessionResult result;
+    runPreSendRejectionSession(rejectedLine + "\n", result);
+
+    expectLocalRejectionThenHelp(result, kOversizeCommandText);
+}
+
+/// 含非法 UTF-8 字节的命令 → `Command cannot be encoded as UTF-8.`（§3.1 第 1 条）。
+TEST(RemoteSessionPreSendValidation, InvalidUtf8CommandIsRejectedLocally)
+{
+    std::string rejectedLine = "--all-processes";
+    rejectedLine.push_back(static_cast<char>(0xFF));
+
+    PreSendSessionResult result;
+    runPreSendRejectionSession(rejectedLine + "\n", result);
+
+    expectLocalRejectionThenHelp(result, kUnencodableCommandText);
+}
+
+/// 去除行尾换行后仍含裸 CR → `Command must not contain line breaks.`（§3.1 第 2 条）。
+TEST(RemoteSessionPreSendValidation, EmbeddedCarriageReturnIsRejectedLocally)
+{
+    PreSendSessionResult result;
+    runPreSendRejectionSession("--all-processes\rlist\n", result);
+
+    expectLocalRejectionThenHelp(result, kLineBreakCommandText);
+}
+
+/// 超长未知命令（`list` 前缀）只走本地长度拒绝，不发送、不产生未知命令响应（§3.1）。
+TEST(RemoteSessionPreSendValidation, OversizeUnknownCommandOnlyHitsLocalLengthCheck)
+{
+    std::string rejectedLine = "list ";
+    rejectedLine.append(tpe::remote::kMaxCommandBytes + 1 - rejectedLine.size(), 'u');
+    ASSERT_EQ(rejectedLine.size(), tpe::remote::kMaxCommandBytes + 1);
+
+    PreSendSessionResult result;
+    runPreSendRejectionSession(rejectedLine + "\n", result);
+
+    // 若该命令被发送，Server 会回 unknown 文本；脚本化 Server 要求首条 COMMAND 为
+    // help，配合 expectLocalRejectionThenHelp 的“无未知命令响应”断言共同证明未发送。
+    expectLocalRejectionThenHelp(result, kOversizeCommandText);
 }
