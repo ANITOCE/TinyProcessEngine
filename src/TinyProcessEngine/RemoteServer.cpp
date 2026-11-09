@@ -4,6 +4,7 @@
 #include "RemoteProtocol.hpp"
 
 #include <hv/TcpServer.h>
+#include <hv/hlog.h>
 
 #include <atomic>
 #include <chrono>
@@ -62,6 +63,17 @@ void writeFrame(const hv::SocketChannelPtr& channel, MessageType type,
     channel->write(bytes.data(), static_cast<int>(bytes.size()));
 }
 
+/// 静默 libhv 的默认日志器（每进程恰好一次）。
+/// libhv 默认 logger 未设 handler 时会回落到文件输出，在进程工作目录生成
+/// `libhv.YYYYMMDD.log`；这与 contracts/logging.md §4（只写 Server 的标准控制台
+/// 输出、不单独落盘）冲突。`LOG_LEVEL_SILENT` 使 `logger_print` 在写文件之前即返回
+/// （libhv base/hlog.c：`if (level < logger->level) return -10;`）。
+void silenceLibhvFileLogger()
+{
+    static std::once_flag once;
+    std::call_once(once, [] { hlog_set_level(LOG_LEVEL_SILENT); });
+}
+
 } // namespace
 
 // ============================================================
@@ -111,6 +123,9 @@ struct RemoteServer::Impl {
     /// 绑定并开始监听；绑定失败或端口占用返回 false（contracts/cli.md §8）。
     bool startListening()
     {
+        // 首次启动监听之前静默 libhv 内部文件日志（contracts/logging.md §4）。
+        silenceLibhvFileLogger();
+
         const std::lock_guard<std::mutex> guard(controlMutex);
         if (running.load(std::memory_order_acquire)) {
             return true;
