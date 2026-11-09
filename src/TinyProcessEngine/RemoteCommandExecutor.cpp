@@ -3,6 +3,8 @@
 #include "ProcessEngine.hpp"
 
 #include <charconv>
+#include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <optional>
 #include <string>
@@ -35,6 +37,12 @@ constexpr std::string_view kSearchProcessPrefix = "--search-process ";
 /// 参数错误以用法开头（契约 §6“用法与原因”），保证输出非空且点明命令名。
 constexpr std::string_view kSearchProcessUsage = "Usage: --search-process <PID>.";
 
+/// 结果文本不可编码为 UTF-8 的固定失败文本（契约 §6；protocol.md §5）。
+constexpr std::string_view kUnencodableNameText =
+    "Process name cannot be encoded as UTF-8.";
+constexpr std::string_view kUnencodableListText =
+    "Process list contains a name that cannot be encoded as UTF-8.";
+
 // ============================================================
 // 结果构造
 // ============================================================
@@ -55,6 +63,73 @@ RemoteCommandResult makeCommandError(std::string text)
 RemoteCommandResult makeContinue(std::string text)
 {
     return makeResult(ResponseStatus::Continue, std::move(text));
+}
+
+// ============================================================
+// 结果文本的严格 UTF-8 校验（契约 §6；protocol.md §5）
+// ============================================================
+
+bool isContinuationByte(std::uint8_t byte)
+{
+    return (byte & 0xC0u) == 0x80u;
+}
+
+/// 严格 UTF-8 校验（不依赖 locale）：拒绝过长编码、UTF-16 代理区码点与超出
+/// U+10FFFF 的序列。语义与 `RemoteProtocol.cpp` 的载荷校验一致。
+/// 本文件内私有副本：T045 收敛为共享工具时替换这里与协议侧的两处实现。
+bool isValidUtf8(std::string_view text)
+{
+    const std::size_t size = text.size();
+    std::size_t index = 0;
+    while (index < size) {
+        const std::uint8_t lead = static_cast<std::uint8_t>(text[index]);
+        if (lead <= 0x7Fu) { // ASCII
+            ++index;
+            continue;
+        }
+
+        std::size_t trailing = 0;      // 后续字节数
+        std::uint8_t secondMin = 0x80; // 第 2 字节允许范围
+        std::uint8_t secondMax = 0xBF;
+        if (lead >= 0xC2u && lead <= 0xDFu) {
+            trailing = 1;
+        } else if (lead == 0xE0u) {
+            trailing = 2;
+            secondMin = 0xA0; // 拒绝过长编码
+        } else if (lead >= 0xE1u && lead <= 0xECu) {
+            trailing = 2;
+        } else if (lead == 0xEDu) {
+            trailing = 2;
+            secondMax = 0x9F; // 拒绝 UTF-16 代理区 U+D800..U+DFFF
+        } else if (lead >= 0xEEu && lead <= 0xEFu) {
+            trailing = 2;
+        } else if (lead == 0xF0u) {
+            trailing = 3;
+            secondMin = 0x90; // 拒绝过长编码
+        } else if (lead >= 0xF1u && lead <= 0xF3u) {
+            trailing = 3;
+        } else if (lead == 0xF4u) {
+            trailing = 3;
+            secondMax = 0x8F; // 拒绝超过 U+10FFFF
+        } else {
+            return false; // 非法首字节（含 0x80..0xC1、0xF5..0xFF）
+        }
+
+        if (trailing > size - index - 1) {
+            return false; // 序列被截断
+        }
+        const std::uint8_t second = static_cast<std::uint8_t>(text[index + 1]);
+        if (second < secondMin || second > secondMax) {
+            return false;
+        }
+        for (std::size_t offset = 2; offset <= trailing; ++offset) {
+            if (!isContinuationByte(static_cast<std::uint8_t>(text[index + offset]))) {
+                return false;
+            }
+        }
+        index += trailing + 1;
+    }
+    return true;
 }
 
 // ============================================================
@@ -146,6 +221,11 @@ RemoteCommandResult executeAllProcesses(tpe::ProcessEngine& engine)
     if (!text.has_value()) {
         return makeCommandError("Failed to enumerate processes: " + text.error().message);
     }
+    // 先编码、后长度（契约 §6 末段）：这里只做编码校验，长度由 Server 编码响应时判定，
+    // 因而同时不可编码且超限的结果必定先报告不可编码（T030）。
+    if (!isValidUtf8(text.value())) {
+        return makeCommandError(std::string(kUnencodableListText));
+    }
     return makeContinue(text.value());
 }
 
@@ -170,6 +250,10 @@ RemoteCommandResult executeSearchProcess(std::string_view line, tpe::ProcessEngi
     }
     if (name->empty()) {
         return makeCommandError("Failed to read the process name for PID " + pidText + ".");
+    }
+    // 名称原样保留、不替换不丢弃；无法编码时按契约 §6 报告固定文本（先编码后长度）。
+    if (!isValidUtf8(*name)) {
+        return makeCommandError(std::string(kUnencodableNameText));
     }
     return makeContinue(*name);
 }
