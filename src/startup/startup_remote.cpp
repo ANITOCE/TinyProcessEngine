@@ -1,11 +1,18 @@
 #include "startup_remote.hpp"
 
+#include "ProcessEngine.hpp"
+#include "RemoteClient.hpp"
+#include "RemoteServer.hpp"
+
 #include <charconv>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <iostream>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 
 namespace tpe::app {
 
@@ -18,12 +25,42 @@ constexpr std::uint16_t kDefaultServerPort = 8008;
 constexpr unsigned int kMinimumPort = 1;
 constexpr unsigned int kMaximumPort = 65535;
 
-/// 默认远程入口:骨架阶段直接失败。
-/// T018 补参数解析,T022/T023 补 Server/Client 网络逻辑。
+/// 远程用法文本(contracts/cli.md §1;参数错误时写标准输出)。
+constexpr std::string_view kRemoteUsageText =
+    "Usage:\n"
+    "  TinyProcessEngine.exe --server [-port <PORT>]\n"
+    "  TinyProcessEngine.exe --connect <IP> -port <PORT>\n";
+
+/// 默认远程入口:解析参数后启动 Server 或 Client(contracts/cli.md §1/§2/§8)。
+/// 返回 0 正常结束、1 绑定/连接失败、2 参数用法错误。
 int defaultRemoteEntry(const std::vector<std::string>& args)
 {
-    (void)args;
-    return 1;
+    const auto parsed = parseRemoteStartupArgs(args);
+    if (!parsed.has_value()) {
+        std::cerr << parsed.error() << std::endl; // 一行原因(标准错误)
+        std::cout << kRemoteUsageText;            // 用法(标准输出)
+        return 2;
+    }
+
+    const RemoteStartupOptions& options = parsed.value();
+    if (options.mode == RemoteMode::Server) {
+        tpe::ProcessEngine engine;
+        tpe::remote::RemoteServer server(options.port, engine);
+        if (!server.start()) {
+            // RemoteServer::start() 只返回 bool,无法取到系统错误码;
+            // 先给出非空原因,T040/T042 需要更具体诊断时再扩展接口。
+            std::cerr << "Failed to listen on port " << options.port << "." << std::endl;
+            return 1;
+        }
+        // Phase 01 无内部停止入口:主线程持续运行,由外部终止进程。
+        while (server.isRunning()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        return 0;
+    }
+
+    tpe::remote::RemoteClient client(options.host, options.port);
+    return client.run();
 }
 
 /// 当前生效的远程入口;测试构建可经 setRemoteEntryForTesting 替换。
