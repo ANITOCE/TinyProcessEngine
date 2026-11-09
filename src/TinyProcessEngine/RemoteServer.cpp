@@ -1,5 +1,6 @@
 #include "RemoteServer.hpp"
 
+#include "RemoteCommandExecutor.hpp"
 #include "RemoteLog.hpp"
 #include "RemoteProtocol.hpp"
 
@@ -40,6 +41,12 @@ constexpr std::string_view kWaitingText = "Waiting for connection ...";
 
 /// Server 接纳 Client 时写入标准输出的固定文本。
 constexpr std::string_view kAcceptedText = "Connection successful.";
+
+/// RESPONSE 的线上提示符；不含尾随空格（尾随空格由 Client 渲染层添加，cli.md §5）。
+constexpr std::string_view kPromptText = "TPE>";
+
+/// 结果超过单条 RESPONSE 上限时的固定错误文本（protocol.md §5；cli.md §6）。
+constexpr std::string_view kOversizeResponseText = "Response exceeds the maximum message size.";
 
 /// 文本 → 载荷字节序列。
 std::vector<std::uint8_t> toPayload(std::string_view text)
@@ -110,7 +117,8 @@ struct RemoteServer::Impl {
 
     // ---- 配置（启动前设置） ----
     std::uint16_t port;
-    tpe::ProcessEngine& engine; // T029 命令执行使用；T022 仅保存引用
+    /// 活动期 COMMAND 的执行目标；只在事件循环线程访问（contracts/logging.md §4）。
+    tpe::ProcessEngine& engine;
     std::chrono::milliseconds handshakeTimeout{5000};
 
     // ---- 控制面：start()/stop() 调用线程访问，与事件循环线程通过原子量同步 ----
@@ -345,7 +353,7 @@ struct RemoteServer::Impl {
         }
     }
 
-    /// 活动期帧（contracts/protocol.md §7）：BYE 正常结束；COMMAND 留待 T029。
+    /// 活动期帧（contracts/protocol.md §5/§7）：BYE 正常结束；COMMAND 执行并回 RESPONSE。
     void handleActiveFrame(const std::shared_ptr<Session>& current, const Frame& frame)
     {
         switch (frame.header.type) {
@@ -360,9 +368,7 @@ struct RemoteServer::Impl {
             return;
 
         case MessageType::Command:
-            // T029 之前不执行命令：以 ERROR(5) 结束会话，不崩溃、不下发响应。
-            abortSession(current, ErrorCode::Internal, "command handling is not available",
-                         SessionEvent::Disconnect);
+            handleCommandFrame(current, frame);
             return;
 
         default:
@@ -371,6 +377,66 @@ struct RemoteServer::Impl {
                          SessionEvent::Disconnect);
             return;
         }
+    }
+
+    /// 活动期 COMMAND（contracts/protocol.md §5/§7）：载荷非法 → ERROR(6) 并关闭；
+    /// 合法 → 交给 RemoteCommandExecutor 执行并回 RESPONSE，会话保持 Active。
+    void handleCommandFrame(const std::shared_ptr<Session>& current, const Frame& frame)
+    {
+        if (const std::optional<ProtocolError> invalid =
+                validatePayload(MessageType::Command, frame.payload);
+            invalid.has_value()) {
+            abortSession(current, invalid->code, invalid->reason, SessionEvent::Disconnect);
+            return;
+        }
+
+        const std::string line(frame.payload.begin(), frame.payload.end());
+        const RemoteCommandResult result = executeRemoteCommand(line, engine);
+        sendResponse(current, result.status, result.output);
+    }
+
+    /// 编码并发送 RESPONSE（contracts/protocol.md §5）：
+    /// 结果超过单条响应上限时改发固定的 status=2 响应；不截断、不分片，会话保留。
+    void sendResponse(const std::shared_ptr<Session>& current, ResponseStatus status,
+                      const std::string& output)
+    {
+        const Result<std::vector<std::uint8_t>, ProtocolError> encoded =
+            encodeResponse(status, std::string(kPromptText), output);
+        if (encoded.has_value()) {
+            writeFrame(current->channel, MessageType::Response, encoded.value());
+            return;
+        }
+        if (encoded.error().code == ErrorCode::FrameTooLarge) {
+            sendOversizeFallback(current);
+            return;
+        }
+        failResponseEncoding(current, encoded.error());
+    }
+
+    /// 超限回退（protocol.md §5；cli.md §6）：status=2 + 固定文本，结果不截断、不分片。
+    void sendOversizeFallback(const std::shared_ptr<Session>& current)
+    {
+        const Result<std::vector<std::uint8_t>, ProtocolError> encoded =
+            encodeResponse(ResponseStatus::CommandError, std::string(kPromptText),
+                           std::string(kOversizeResponseText));
+        if (encoded.has_value()) {
+            writeFrame(current->channel, MessageType::Response, encoded.value());
+            return;
+        }
+        failResponseEncoding(current, encoded.error());
+    }
+
+    /// 其余编码错误（如 prompt 超限）理论上不会发生：写一条标准错误诊断并按内部错误
+    /// 关闭会话（ERROR(5) + 1 条 disconnect/error），不崩溃、不下发残缺响应。
+    void failResponseEncoding(const std::shared_ptr<Session>& current,
+                              const ProtocolError& error)
+    {
+        if (!stopping.load(std::memory_order_acquire)) {
+            std::cerr << "RemoteServer: failed to encode response: " << error.reason
+                      << std::endl;
+        }
+        abortSession(current, ErrorCode::Internal, "response encoding failed",
+                     SessionEvent::Disconnect);
     }
 
     // --------------------------------------------------------
