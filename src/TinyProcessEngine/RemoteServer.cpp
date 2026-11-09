@@ -546,10 +546,12 @@ struct RemoteServer::Impl {
             logSessionEvent(current->channel, event, LogResult::Error);
             writeFrame(current->channel, MessageType::Error, encodeErrorPayload(code, reason));
         }
-        current->channel->close();
         if (!handshake) {
+            // 先进入 Draining 再 close：libhv 可能同步触发 onclose，
+            // 若状态仍为 Active 会被误记为 disconnect/disconnected（重复日志）。
             beginDraining(current);
         }
+        current->channel->close();
     }
 
     /// 正常结束（契约 §7）：回 BYE 确认、记 1 条 disconnect/ok、关闭连接并进入 Draining。
@@ -561,8 +563,9 @@ struct RemoteServer::Impl {
             writeFrame(current->channel, MessageType::Bye, {});
             logSessionEvent(current->channel, SessionEvent::Disconnect, LogResult::Ok);
         }
-        current->channel->close();
+        // 先进入 Draining 再 close：同步 onclose 不得再记 disconnect/disconnected。
         beginDraining(current);
+        current->channel->close();
     }
 
     // --------------------------------------------------------
