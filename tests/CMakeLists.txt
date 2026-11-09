@@ -39,6 +39,8 @@ set(TPE_TEST_SOURCES
   ${CMAKE_SOURCE_DIR}/src/startup/startup_cli.cpp
   # T012:远程启动参数与入口分流契约用例(骨架期 RED,T018/T024 实现后转绿)
   test_startup_remote.cpp
+  # T020:远程会话回环握手用例(真实回环 TCP;骨架期 RED,T022/T023 实现后转绿)
+  test_remote_session.cpp
   # T012:启动装配层以源文件形式编入测试目标(同样为 exe 目标源文件,两目标互不冲突;
   # startup.cpp 依赖 runCli(startup_cli.cpp)与 CliParser(TinyProcessEngineLib),
   # startup_remote.cpp 提供 parseRemoteStartupArgs/runRemote/setRemoteEntryForTesting)
