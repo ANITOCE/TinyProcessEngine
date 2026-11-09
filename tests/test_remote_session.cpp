@@ -35,6 +35,9 @@
  *   - T032 增加 US3 单连接用例：Active/长查询期间第二连接收到 BUSY、首会话不受
  *     影响；清理完成后被处理的连接被接纳；首字节/完整帧的 A/B/C 时点边界。
  *     长查询由 BlockingPlatformOS 注入（目标进程名称读取在 release() 前阻塞）。
+ *   - T033 增加 Draining 与 FR-012 命令处置用例：长查询后处理 BYE，已排队的新连接
+ *     在 Draining 被处理时收到 BUSY，清理完成后被接纳；未开始命令（已在接收缓冲区
+ *     的完整帧/不完整帧）在断开后不执行；已开始命令自然结束且写回失败被忽略。
  *
  * 约束：仅 GoogleTest + 标准库 + 平台 socket API；不启动子进程；除 127.0.0.1
  * 回环外不访问网络。
@@ -121,6 +124,12 @@ constexpr std::uint16_t kQueryUtf8NamePort = 18089;
 constexpr std::uint16_t kActiveBusyPort = 18099;
 constexpr std::uint16_t kLongQueryPort = 18100;
 constexpr std::uint16_t kCleanupAcceptPort = 18101;
+
+/// T033 清理与命令处置用例的独立端口（18102–18105，与既有用例互不重叠）。
+constexpr std::uint16_t kDrainingBusyPort = 18102;
+constexpr std::uint16_t kBufferedCommandPort = 18103;
+constexpr std::uint16_t kIncompleteCommandPort = 18104;
+constexpr std::uint16_t kStartedCommandPort = 18105;
 
 /// T027 失败查询用例的独立端口（18090–18098，与既有用例互不重叠）。
 constexpr std::uint16_t kQueryFailurePidNotFoundPort = 18090;
@@ -3453,4 +3462,258 @@ TEST(RemoteSessionSingleConnection, TimingBoundaryCIncompleteWhenFrameExceedsDea
 
     ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
     EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
+}
+
+// ---------------------------------------------------------------------------
+// 套件 RemoteSessionDraining — US3 清理与命令处置（T033）
+//
+// Draining 构造（不新增生产接口）：首 Client 在长查询执行的同一 TCP 缓冲中追加
+// BYE。Server 在同一消息回调内先执行命令、再处理 BYE，之后才回到事件循环；
+// 期间连接的新 Client 事件已排队。T035 应在处理 BYE 后保持 Draining（清理完成
+// 前不回到 Listening），使该排队连接在处理时收到 BUSY；清理完成后连接被接纳。
+// 当前实现处理 BYE 时立即释放会话，排队连接会被当作新会话接纳 → BUSY 断言 RED。
+//
+// FR-012：未开始（完整帧仍在接收缓冲区/不完整帧）在断开后不得执行；已开始
+// （已进入执行函数）允许自然结束，写回失败忽略。计数由 BlockingPlatformOS
+// 的名称读取次数提供。所有等待有界。
+// ---------------------------------------------------------------------------
+
+/// 长查询执行期间排队的新连接：Draining 处理时收到 BUSY；清理完成后被接纳。
+/// 当前实现的 RED 点：BYE 处理会立即释放会话，排队连接被直接接纳（收不到 BUSY）。
+TEST(RemoteSessionDraining, NewConnectionDuringDrainingGetsBusyThenAcceptedAfterCleanup)
+{
+    ScopedRemoteStreams streams;
+    auto os = std::make_unique<BlockingPlatformOS>();
+    BlockingPlatformOS* const platform = os.get();
+    LocalServer server(kDrainingBusyPort, std::move(os));
+    ScopedPlatformRelease releaseOnExit(*platform);
+
+    if (!server.start()) {
+        if (isPortUnavailable(kDrainingBusyPort)) {
+            GTEST_SKIP() << "TCP port " << kDrainingBusyPort
+                         << " is unavailable (bound by another process or reserved by the "
+                            "system); skipping instead of misreporting a genuine port "
+                            "conflict as a failure.";
+        }
+        FAIL() << "RemoteServer::start() must succeed on free port " << kDrainingBusyPort;
+    }
+    ASSERT_TRUE(waitUntil([&server] { return server.instance().isRunning(); }, kWaitLimit))
+        << "isRunning() must become true within 5 s after start() returned true";
+
+    std::string failure;
+    RawSocket first;
+    ASSERT_TRUE(openRawSession(first, kDrainingBusyPort, failure)) << failure;
+
+    // 同一 TCP 缓冲：COMMAND 后紧跟 BYE。事件循环在命令执行完之前无法处理其它事件；
+    // 之后处理 BYE，T035 的 Draining 应覆盖已排队的连接事件。
+    std::vector<std::uint8_t> frames =
+        tpe::remote::encodeFrame(tpe::remote::MessageType::Command,
+                                 toBytes("--all-processes"));
+    const std::vector<std::uint8_t> bye =
+        tpe::remote::encodeFrame(tpe::remote::MessageType::Bye, {});
+    frames.insert(frames.end(), bye.begin(), bye.end());
+    ASSERT_TRUE(first.sendBytes(frames)) << "failed to send COMMAND+BYE";
+
+    ASSERT_TRUE(platform->waitForNameReads(1, kLongWaitLimit))
+        << "the long query must start within 10 s";
+    ASSERT_TRUE(platform->waitForBlocked(kWaitLimit))
+        << "the long query must be executing while the second connection arrives";
+
+    // 在命令执行期间建连：TCP 握手由内核完成，Server 事件循环恢复后才处理该事件。
+    RawSocket second;
+    ASSERT_TRUE(second.connectTo(kDrainingBusyPort, failure)) << failure;
+
+    platform->release();
+
+    tpe::remote::Frame reply;
+    const bool gotBusy = second.receiveFrame(std::chrono::milliseconds{3000}, reply, failure);
+    EXPECT_TRUE(gotBusy)
+        << "a connection processed while the server is Draining must receive BUSY; "
+           "failure="
+        << failure;
+    if (gotBusy) {
+        EXPECT_EQ(static_cast<int>(reply.header.type),
+                  static_cast<int>(tpe::remote::MessageType::Busy))
+            << "the Draining reply must be BUSY";
+        EXPECT_EQ(std::string(reply.payload.begin(), reply.payload.end()),
+                  "Server is busy.")
+            << "BUSY payload must be the fixed text";
+    }
+    second.close();
+    first.close();
+
+    EXPECT_EQ(platform->nameReadCount(), 1)
+        << "the started command must execute exactly once (write-back failure ignored)";
+
+    // 清理完成后被处理的新连接必须被接纳（有界重试；期间 BUSY 属预期）。
+    AcceptedClientStart accepted = connectClientAfterCleanup(kDrainingBusyPort, kLongWaitLimit);
+    ASSERT_TRUE(accepted.client != nullptr) << accepted.failure;
+    EXPECT_EQ(platform->nameReadCount(), 1)
+        << "no discarded command may run during cleanup";
+
+    stdinBuffer().pushInput("exit\n");
+    ASSERT_TRUE(accepted.client->waitDone(kWaitLimit));
+    ASSERT_TRUE(accepted.client->join());
+    EXPECT_EQ(accepted.client->exitCode(), 0);
+
+    server.stop();
+}
+
+/// FR-012：断开时仍在接收缓冲区的完整 COMMAND 帧（未取出/未进入执行函数）必须丢弃。
+/// 当前实现 RED：首命令结束后会继续解析缓冲中的第二帧并执行（计数 2）。
+TEST(RemoteSessionDraining, BufferedCommandFrameIsDiscardedAfterDisconnect)
+{
+    ScopedRemoteStreams streams;
+    auto os = std::make_unique<BlockingPlatformOS>();
+    BlockingPlatformOS* const platform = os.get();
+    LocalServer server(kBufferedCommandPort, std::move(os));
+    ScopedPlatformRelease releaseOnExit(*platform);
+
+    if (!server.start()) {
+        if (isPortUnavailable(kBufferedCommandPort)) {
+            GTEST_SKIP() << "TCP port " << kBufferedCommandPort
+                         << " is unavailable (bound by another process or reserved by the "
+                            "system); skipping instead of misreporting a genuine port "
+                            "conflict as a failure.";
+        }
+        FAIL() << "RemoteServer::start() must succeed on free port " << kBufferedCommandPort;
+    }
+    ASSERT_TRUE(waitUntil([&server] { return server.instance().isRunning(); }, kWaitLimit))
+        << "isRunning() must become true within 5 s after start() returned true";
+
+    std::string failure;
+    RawSocket first;
+    ASSERT_TRUE(openRawSession(first, kBufferedCommandPort, failure)) << failure;
+
+    std::vector<std::uint8_t> frames =
+        tpe::remote::encodeFrame(tpe::remote::MessageType::Command,
+                                 toBytes("--all-processes"));
+    const std::vector<std::uint8_t> secondFrame =
+        tpe::remote::encodeFrame(tpe::remote::MessageType::Command,
+                                 toBytes("--all-processes"));
+    frames.insert(frames.end(), secondFrame.begin(), secondFrame.end());
+    ASSERT_TRUE(first.sendBytes(frames)) << "failed to send two COMMAND frames";
+
+    ASSERT_TRUE(platform->waitForNameReads(1, kLongWaitLimit))
+        << "the first command must start within 10 s";
+    ASSERT_TRUE(platform->waitForBlocked(kWaitLimit))
+        << "the first command must still be executing when the client disconnects";
+
+    first.close(); // 首命令执行期间断开：第二帧（完整但未开始）必须丢弃
+    platform->release();
+
+    AcceptedClientStart accepted = connectClientAfterCleanup(kBufferedCommandPort, kLongWaitLimit);
+    ASSERT_TRUE(accepted.client != nullptr) << accepted.failure;
+    EXPECT_EQ(platform->nameReadCount(), 1)
+        << "a complete COMMAND frame still in the receive buffer when the peer disconnects "
+           "was not started and must not be executed";
+
+    stdinBuffer().pushInput("exit\n");
+    ASSERT_TRUE(accepted.client->waitDone(kWaitLimit));
+    ASSERT_TRUE(accepted.client->join());
+    EXPECT_EQ(accepted.client->exitCode(), 0);
+
+    server.stop();
+}
+
+/// FR-012：不完整帧（仍在接收缓冲区、尚未构成完整帧）断开后不执行；计数为 0。
+/// 该路径不依赖 Draining 实现，作为回归基线记录。
+TEST(RemoteSessionDraining, IncompleteCommandFrameIsNotExecuted)
+{
+    ScopedRemoteStreams streams;
+    auto os = std::make_unique<BlockingPlatformOS>();
+    BlockingPlatformOS* const platform = os.get();
+    LocalServer server(kIncompleteCommandPort, std::move(os));
+    ScopedPlatformRelease releaseOnExit(*platform);
+
+    if (!server.start()) {
+        if (isPortUnavailable(kIncompleteCommandPort)) {
+            GTEST_SKIP() << "TCP port " << kIncompleteCommandPort
+                         << " is unavailable (bound by another process or reserved by the "
+                            "system); skipping instead of misreporting a genuine port "
+                            "conflict as a failure.";
+        }
+        FAIL() << "RemoteServer::start() must succeed on free port " << kIncompleteCommandPort;
+    }
+    ASSERT_TRUE(waitUntil([&server] { return server.instance().isRunning(); }, kWaitLimit))
+        << "isRunning() must become true within 5 s after start() returned true";
+
+    std::string failure;
+    RawSocket first;
+    ASSERT_TRUE(openRawSession(first, kIncompleteCommandPort, failure)) << failure;
+
+    const std::vector<std::uint8_t> frame =
+        tpe::remote::encodeFrame(tpe::remote::MessageType::Command,
+                                 toBytes("--all-processes"));
+    const std::size_t partial = tpe::remote::kFrameLengthBytes + 2;
+    ASSERT_TRUE(first.sendBytes(
+        std::vector<std::uint8_t>(frame.begin(), frame.begin() + partial)))
+        << "failed to send the partial COMMAND frame";
+    first.close();
+
+    AcceptedClientStart accepted = connectClientAfterCleanup(kIncompleteCommandPort, kWaitLimit);
+    ASSERT_TRUE(accepted.client != nullptr) << accepted.failure;
+    EXPECT_EQ(platform->nameReadCount(), 0)
+        << "a partial COMMAND frame must never enter the execution function";
+
+    stdinBuffer().pushInput("exit\n");
+    ASSERT_TRUE(accepted.client->waitDone(kWaitLimit));
+    ASSERT_TRUE(accepted.client->join());
+    EXPECT_EQ(accepted.client->exitCode(), 0);
+
+    server.stop();
+}
+
+/// FR-012：已开始命令在断开后允许自然结束（计数 1），写回失败被忽略；
+/// 清理完成后新连接被接纳。该路径不依赖 Draining 实现，作为回归基线记录。
+TEST(RemoteSessionDraining, StartedCommandFinishesAfterDisconnect)
+{
+    ScopedRemoteStreams streams;
+    auto os = std::make_unique<BlockingPlatformOS>();
+    BlockingPlatformOS* const platform = os.get();
+    LocalServer server(kStartedCommandPort, std::move(os));
+    ScopedPlatformRelease releaseOnExit(*platform);
+
+    if (!server.start()) {
+        if (isPortUnavailable(kStartedCommandPort)) {
+            GTEST_SKIP() << "TCP port " << kStartedCommandPort
+                         << " is unavailable (bound by another process or reserved by the "
+                            "system); skipping instead of misreporting a genuine port "
+                            "conflict as a failure.";
+        }
+        FAIL() << "RemoteServer::start() must succeed on free port " << kStartedCommandPort;
+    }
+    ASSERT_TRUE(waitUntil([&server] { return server.instance().isRunning(); }, kWaitLimit))
+        << "isRunning() must become true within 5 s after start() returned true";
+
+    std::string failure;
+    RawSocket first;
+    ASSERT_TRUE(openRawSession(first, kStartedCommandPort, failure)) << failure;
+    ASSERT_TRUE(first.sendFrame(tpe::remote::MessageType::Command,
+                                toBytes("--all-processes")))
+        << "failed to send COMMAND";
+
+    ASSERT_TRUE(platform->waitForNameReads(1, kLongWaitLimit))
+        << "the command must start within 10 s";
+    ASSERT_TRUE(platform->waitForBlocked(kWaitLimit))
+        << "the command must still be executing when the client disconnects";
+
+    first.close(); // 断开发生在命令已进入执行函数之后
+    platform->release();
+
+    ASSERT_TRUE(waitUntil([platform] { return !platform->isBlocked(); }, kLongWaitLimit))
+        << "the started command must finish naturally after the disconnect";
+
+    AcceptedClientStart accepted = connectClientAfterCleanup(kStartedCommandPort, kLongWaitLimit);
+    ASSERT_TRUE(accepted.client != nullptr) << accepted.failure;
+    EXPECT_EQ(platform->nameReadCount(), 1)
+        << "the started command must execute exactly once; write-back failure must be "
+           "ignored";
+
+    stdinBuffer().pushInput("exit\n");
+    ASSERT_TRUE(accepted.client->waitDone(kWaitLimit));
+    ASSERT_TRUE(accepted.client->join());
+    EXPECT_EQ(accepted.client->exitCode(), 0);
+
+    server.stop();
 }
