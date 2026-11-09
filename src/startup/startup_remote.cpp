@@ -47,9 +47,14 @@ int defaultRemoteEntry(const std::vector<std::string>& args)
         tpe::ProcessEngine engine;
         tpe::remote::RemoteServer server(options.port, engine);
         if (!server.start()) {
-            // RemoteServer::start() 只返回 bool,无法取到系统错误码;
-            // 先给出非空原因,T040/T042 需要更具体诊断时再扩展接口。
-            std::cerr << "Failed to listen on port " << options.port << "." << std::endl;
+            // 绑定失败:标准错误写 "Failed to listen on port <PORT>: <系统原因>",
+            // 退出码 1(contracts/cli.md §8);监听提示只由成功路径输出。
+            std::string reason = server.lastStartError();
+            if (reason.empty()) {
+                reason = "the listening socket could not be created";
+            }
+            std::cerr << "Failed to listen on port " << options.port << ": " << reason << "."
+                      << std::endl;
             return 1;
         }
         // Phase 01 无内部停止入口:主线程持续运行,由外部终止进程。

@@ -7,6 +7,16 @@
 #include <hv/TcpServer.h>
 #include <hv/hlog.h>
 
+#if defined(_WIN32)
+#include <winsock2.h>
+#else
+#include <arpa/inet.h>
+#include <cerrno>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+
 // ProcessEngine.hpp 间接包含 Platform.hpp（Windows.h）；必须放在 libhv 的
 // winsock2.h 之后，否则 winsock.h 与 winsock2.h 会重定义（C2375）。
 #include "ProcessEngine.hpp"
@@ -152,6 +162,84 @@ void silenceLibhvFileLogger()
     std::call_once(once, [] { hlog_set_level(LOG_LEVEL_SILENT); });
 }
 
+// ============================================================
+// 绑定失败诊断（contracts/cli.md §8“端口被占用：具体原因” ）
+// ============================================================
+
+/// 去掉系统消息尾部的空白与句点：句点与错误码后缀由 describeSocketError 统一追加，
+/// 避免末尾出现 "permitted.." 之类的重复标点。
+std::string trimSystemMessage(std::string text)
+{
+    while (!text.empty()) {
+        const char last = text.back();
+        if (last == '.' || last == ' ' || last == '\t' || last == '\r' || last == '\n') {
+            text.pop_back();
+            continue;
+        }
+        break;
+    }
+    return text;
+}
+
+/// 把原生套接字错误码渲染为“系统文本 (error <code>)”。
+/// Windows 用 `std::system_category()`：Winsock 错误码（如 10048 WSAEADDRINUSE）
+/// 由系统消息表提供；POSIX 用 `std::generic_category()` 渲染 errno（如 EADDRINUSE）。
+/// 始终附带十进制错误码，系统文本缺失或本地化时仍能识别原因。
+std::string describeSocketError(int code)
+{
+#if defined(_WIN32)
+    std::string text = trimSystemMessage(std::system_category().message(code));
+#else
+    std::string text = trimSystemMessage(std::generic_category().message(code));
+#endif
+    if (text.empty()) {
+        return "socket error " + std::to_string(code);
+    }
+    return text + " (error " + std::to_string(code) + ")";
+}
+
+/// 对监听端口做一次原始 bind 探测，取回系统错误码；不 listen、不改变端口状态。
+/// 仅在 `createsocket()` 已失败后调用，用与 libhv 相同的 0.0.0.0:<port> 绑定复现
+/// 失败原因（端口占用、权限等），不设置 SO_REUSEADDR/SO_REUSEPORT，以保证与
+/// 监听失败条件一致。返回空字符串表示探测成功（失败原因不是绑定错误），由调用方
+/// 使用兜底原因。探测 socket 立即关闭，不引入线程与等待。
+std::string probeBindFailure(std::uint16_t port)
+{
+#if defined(_WIN32)
+    const SOCKET handle = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (handle == INVALID_SOCKET) {
+        return describeSocketError(WSAGetLastError());
+    }
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (::bind(handle, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
+        const int code = WSAGetLastError();
+        ::closesocket(handle);
+        return describeSocketError(code);
+    }
+    ::closesocket(handle);
+    return {};
+#else
+    const int handle = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (handle < 0) {
+        return describeSocketError(errno);
+    }
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    address.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (::bind(handle, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
+        const int code = errno;
+        ::close(handle);
+        return describeSocketError(code);
+    }
+    ::close(handle);
+    return {};
+#endif
+}
+
 } // namespace
 
 // ============================================================
@@ -193,10 +281,12 @@ struct RemoteServer::Impl {
     std::chrono::milliseconds drainingCleanupDelay{kDrainingCleanupDelayMs};
 
     // ---- 控制面：start()/stop() 调用线程访问，与事件循环线程通过原子量同步 ----
-    std::mutex controlMutex; // 串行化 start()/stop()
+    mutable std::mutex controlMutex; // 串行化 start()/stop()/lastStartError()
     std::atomic<bool> running{false};
     std::atomic<bool> stopping{false};
     std::unique_ptr<hv::TcpServer> server; // 事件循环运行期间保持同一对象
+    /// 最近一次 start() 失败的具体原因；空表示尚未失败或最近一次启动成功。
+    std::string lastStartError;
 
     // ---- 数据面：仅事件循环线程访问（stop() 在 join 之后才清理） ----
     std::shared_ptr<Session> session;
@@ -220,6 +310,12 @@ struct RemoteServer::Impl {
         // createsocket() 同步完成 bind+listen，因此这里能立刻发现端口占用/绑定失败；
         // 事件循环线程随后只负责 accept。
         if (created->createsocket(port) < 0) {
+            // 失败诊断：对同一端口做一次原始 bind 取回系统错误码（不 listen、不阻塞）。
+            // 探测意外成功时保留非空兜底原因，保证调用方总能输出具体原因。
+            lastStartError = probeBindFailure(port);
+            if (lastStartError.empty()) {
+                lastStartError = "the listening socket could not be created";
+            }
             return false;
         }
         // libhv 默认按 CPU 核数创建 worker 线程；本实现要求会话状态、握手定时器与
@@ -236,10 +332,18 @@ struct RemoteServer::Impl {
         server = std::move(created);
         stopping.store(false, std::memory_order_release);
         running.store(true, std::memory_order_release);
+        lastStartError.clear();
         server->start(true); // 启动事件循环线程并注册 accept
 
         std::cout << kWaitingText << std::endl;
         return true;
+    }
+
+    /// lastStartError 的线程安全快照；与 start()/stop() 使用同一把锁。
+    std::string startErrorSnapshot() const
+    {
+        const std::lock_guard<std::mutex> guard(controlMutex);
+        return lastStartError;
     }
 
     /// 停止监听并关闭会话；未启动或已停止时无副作用。
@@ -791,6 +895,11 @@ void RemoteServer::stop()
 bool RemoteServer::isRunning() const
 {
     return m_impl->running.load(std::memory_order_acquire);
+}
+
+std::string RemoteServer::lastStartError() const
+{
+    return m_impl->startErrorSnapshot();
 }
 
 void RemoteServer::setHandshakeTimeoutForTesting(std::chrono::milliseconds timeout)

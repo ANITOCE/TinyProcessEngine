@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <string>
 
 namespace tpe {
 
@@ -44,6 +45,12 @@ public:
 
     /// 是否处于监听状态。
     bool isRunning() const;
+
+    /// 最近一次 `start()` 失败的具体原因（系统错误文本 + 原生错误码）。
+    ///
+    /// `start()` 成功或尚未调用时为空字符串。仅用于失败诊断（cli.md §8
+    /// “端口被占用时写具体原因”），不改变启动语义：监听成功时不会额外输出。
+    std::string lastStartError() const;
 
     /// 测试接缝：覆盖握手期限（仅存储，不改变握手语义）。
     /// 默认值保持契约（5000 ms，contracts/protocol.md §4）；T022 从 Impl 读取。
