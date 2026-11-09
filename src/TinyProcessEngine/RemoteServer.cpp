@@ -42,12 +42,6 @@ constexpr int kBusyCloseDelayMs = 1000;
 /// BUSY。定时器与事件循环同线程，不引入额外线程。
 constexpr int kDrainingCleanupDelayMs = 10;
 
-/// 同一接收缓冲中后续帧的续行延迟（毫秒，contracts/protocol.md §6）。
-/// 一条 COMMAND 执行完毕后不在同一回调内继续执行缓冲中的下一条命令：
-/// 先把控制权交回事件循环，使已排队的断开事件先被处理，仍留在接收缓冲区、
-/// 未进入执行函数的命令据此丢弃（FR-012）。
-constexpr int kInputResumeDelayMs = 1;
-
 /// Server 开始监听时写入标准输出的固定文本。
 constexpr std::string_view kWaitingText = "Waiting for connection ...";
 
@@ -123,7 +117,6 @@ struct RemoteServer::Impl {
         std::vector<std::uint8_t> input;         // 未消费的帧字节
         hv::TimerID timer = INVALID_TIMER_ID;    // 握手期限定时器
         hv::TimerID cleanupTimer = INVALID_TIMER_ID; // Draining 清理定时器
-        hv::TimerID resumeTimer = INVALID_TIMER_ID;  // 缓冲后续帧续行定时器
     };
 
     Impl(std::uint16_t listenPort, tpe::ProcessEngine& processEngine)
@@ -316,8 +309,9 @@ struct RemoteServer::Impl {
     }
 
     /// 从接收缓冲中反复解出完整帧；任一步结束会话即停止。
-    /// 一条 COMMAND 返回后先让出事件循环（见 `scheduleInputResume`）：
-    /// 已排队的断开事件先被处理，缓冲中尚未开始的命令据此丢弃（§6）。
+    /// 一条 COMMAND 返回后不再继续解析同一接收事件中的后续帧（§6）：协议规定
+    /// Client 每次只发送一条 COMMAND 并等待 RESPONSE，剩余字节一律视为“未开始”，
+    /// 只由后续新的读取事件（新数据到达）处理；会话在此前结束则随 `input` 清空丢弃。
     void processInput(const std::shared_ptr<Session>& current)
     {
         for (;;) {
@@ -344,7 +338,9 @@ struct RemoteServer::Impl {
                 return; // 帧处理已结束会话
             }
             if (commandFrame) {
-                scheduleInputResume(current);
+                // 不在本回调内续行：若在此继续执行缓冲中的下一条命令，任何事件循环
+                // 延迟都可能让“续行”先于已排队的 close 事件，导致断开后仍执行未开始
+                // 的命令（protocol.md §6 / FR-012）。剩余字节留给后续新的读取事件。
                 return;
             }
         }
@@ -488,7 +484,6 @@ struct RemoteServer::Impl {
             return;
         }
         cancelHandshakeTimer(current);
-        cancelTimer(current->resumeTimer);
         // 会话已结束：接收缓冲区中未构成完整帧 / 未进入执行函数的命令全部丢弃（§6）。
         current->input.clear();
         current->state = State::Draining;
@@ -566,41 +561,6 @@ struct RemoteServer::Impl {
         // 先进入 Draining 再 close：同步 onclose 不得再记 disconnect/disconnected。
         beginDraining(current);
         current->channel->close();
-    }
-
-    // --------------------------------------------------------
-    // 接收缓冲续行（contracts/protocol.md §6）
-    // --------------------------------------------------------
-
-    /// 缓冲中还有后续帧时推迟到下一轮事件循环：断开事件先被处理，
-    /// 尚未进入执行函数的命令随后随会话结束被丢弃。
-    void scheduleInputResume(const std::shared_ptr<Session>& current)
-    {
-        if (current->input.empty() || current->state != State::Active) {
-            return;
-        }
-        const hv::EventLoopPtr loop = server ? server->loop() : hv::EventLoopPtr{};
-        if (!loop) {
-            return;
-        }
-        cancelTimer(current->resumeTimer);
-        const std::weak_ptr<Session> weak = current;
-        current->resumeTimer = loop->setTimeout(
-            kInputResumeDelayMs, [this, weak](hv::TimerID) { onInputResume(weak); });
-    }
-
-    void onInputResume(const std::weak_ptr<Session>& weak)
-    {
-        const auto current = weak.lock();
-        if (!current) {
-            return;
-        }
-        current->resumeTimer = INVALID_TIMER_ID;
-        if (stopping.load(std::memory_order_acquire) || session != current ||
-            current->state != State::Active) {
-            return; // 停止收尾或会话已结束（断开事件已处理）：缓冲中的命令不得执行
-        }
-        processInput(current);
     }
 
     // --------------------------------------------------------
