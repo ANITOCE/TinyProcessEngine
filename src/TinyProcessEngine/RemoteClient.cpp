@@ -6,6 +6,7 @@
 #include <hv/hlog.h>
 
 #include <chrono>
+#include <cerrno>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -190,6 +191,72 @@ void printHandshakeFailure(const std::string& reason)
 {
     std::cerr << kConnectionFailedText << ' '
               << (reason.empty() ? std::string(kRejectedText) : reason) << std::endl;
+}
+
+/// 包装层的“未连接”错误不是实际 connect 失败原因：
+/// Linux 的 `getpeername` 失败会留下 `ENOTCONN`，Windows 对应
+/// `WSAENOTCONN`（并可能经 C 运行库 `ENOTCONN` 暴露）。
+bool isWrapperNotConnectedError(int error)
+{
+#ifdef _WIN32
+    return error == ENOTCONN || error == WSAENOTCONN;
+#else
+    return error == ENOTCONN;
+#endif
+}
+
+/// 在 close 回调内读取 `SO_ERROR`；libhv 在回调之后才 closesocket，
+/// 因此 `Channel::fd()` 仍有效。失败或无待处理错误时返回 0。
+int queryPendingSocketError(int fd)
+{
+    int error = 0;
+#ifdef _WIN32
+    int length = sizeof(error);
+    if (::getsockopt(static_cast<SOCKET>(fd), SOL_SOCKET, SO_ERROR,
+                     reinterpret_cast<char*>(&error), &length) == 0) {
+        return error;
+    }
+#else
+    socklen_t length = sizeof(error);
+    if (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) == 0) {
+        return error;
+    }
+#endif
+    return 0;
+}
+
+/// 连接未建立时的实际原因：`SO_ERROR` 优先；仅在其不可得时回退
+/// `Channel::error()`，并排除包装层 `ENOTCONN`/`WSAENOTCONN`。
+/// Windows 上 libhv 建连计时器写入 C 运行库 `ETIMEDOUT`（MSVC 138），
+/// 不是 Winsock `WSAETIMEDOUT`（10060），需先转换再渲染。
+std::string connectionFailureReason(const hv::SocketChannelPtr& channel)
+{
+    if (!channel) {
+        return {};
+    }
+
+    int error = 0;
+    const int fd = channel->fd();
+    if (fd >= 0) {
+        error = queryPendingSocketError(fd);
+    }
+    if (isWrapperNotConnectedError(error)) {
+        error = 0;
+    }
+    if (error == 0) {
+        error = channel->error();
+#ifdef _WIN32
+        if (error == ETIMEDOUT) {
+            error = WSAETIMEDOUT;
+        }
+#endif
+        if (error <= 0 || isWrapperNotConnectedError(error)) {
+            return {};
+        }
+    }
+
+    const char* text = socket_strerror(error);
+    return text != nullptr ? std::string(text) : std::string{};
 }
 
 } // namespace
@@ -480,7 +547,7 @@ struct RemoteClient::Impl {
         if (channel->isConnected()) {
             onConnected();
         } else {
-            onPeerClosed();
+            onPeerClosed(channel);
         }
     }
 
@@ -762,16 +829,32 @@ struct RemoteClient::Impl {
         cv.notify_all();
     }
 
-    void onPeerClosed()
+    void onPeerClosed(const hv::SocketChannelPtr& channel)
     {
+        std::string connectReason;
+        bool connectionFailed = false;
         {
             const std::lock_guard<std::mutex> guard(mutex);
+            // 只有从未进入握手阶段才属于“连接未建立”；已建立后关闭保留
+            // 既有 closed 文本，避免把对端关闭误报为 connect 失败。
+            if (!handshakeDone && phase == Phase::Connecting) {
+                connectionFailed = true;
+                connectReason = connectionFailureReason(channel);
+            }
             peerClosed = true;
             if (!handshakeDone) {
                 handshakeDone = true;
                 handshakeOk = false;
-                failureText = std::string(kClosedByServerText);
                 phase = Phase::Finished;
+                if (connectionFailed) {
+                    failureText = "Failed to connect to " + host + ":" +
+                                  std::to_string(port);
+                    if (!connectReason.empty()) {
+                        failureText += ": " + connectReason;
+                    }
+                } else {
+                    failureText = std::string(kClosedByServerText);
+                }
             }
         }
         cv.notify_all();
