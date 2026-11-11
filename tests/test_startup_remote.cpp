@@ -28,11 +28,13 @@
 #endif
 
 #include <gtest/gtest.h>
+#include <hv/hsocket.h>
 
 #include "startup.hpp"
 #include "startup_remote.hpp"
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <cstddef>
@@ -653,6 +655,109 @@ private:
     SocketHandle m_handle = kInvalidSocket;
 };
 
+#ifdef _WIN32
+constexpr int kExpectedConnectRefused = WSAECONNREFUSED;
+#else
+constexpr int kExpectedConnectRefused = ECONNREFUSED;
+#endif
+
+/// 对同一受控拒绝端口执行一次独立 connect，最多等待 6 秒，返回平台原生错误码。
+/// 仅用于 T053 的独立探针；受控端口由 BoundClosedPort 持有。
+int probeConnectErrorCode(std::uint16_t port)
+{
+    constexpr int kPending = -999;
+    auto result = std::make_shared<std::atomic<int>>(kPending);
+    std::thread worker([port, result] {
+        SocketHandle handle = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (handle == kInvalidSocket) {
+            result->store(-1);
+            return;
+        }
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_port = htons(port);
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        const int connected =
+            ::connect(handle, reinterpret_cast<const sockaddr*>(&address), sizeof(address));
+        const int error = (connected == 0) ? 0 : socket_errno();
+        closeSocketHandle(handle);
+        result->store(error);
+    });
+    worker.detach();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{6};
+    while (result->load() == kPending && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    const int error = result->load();
+    return error == kPending ? -1 : error;
+}
+
+/// 原因文本归一化：大小写、换行、首尾空白、标点与连续空白差异不计。
+std::string normalizeReasonText(std::string text)
+{
+    for (char& character : text) {
+        if (character == '\r' || character == '\n' || character == '\t') {
+            character = ' ';
+        } else {
+            character = static_cast<char>(
+                std::tolower(static_cast<unsigned char>(character)));
+        }
+    }
+    while (!text.empty() &&
+           (std::isspace(static_cast<unsigned char>(text.back())) || text.back() == '.' ||
+            text.back() == ',' || text.back() == ';')) {
+        text.pop_back();
+    }
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) {
+        text.erase(text.begin());
+    }
+    std::string collapsed;
+    bool previousSpace = false;
+    for (char character : text) {
+        const bool space = std::isspace(static_cast<unsigned char>(character)) != 0;
+        if (space && previousSpace) {
+            continue;
+        }
+        collapsed.push_back(space ? ' ' : character);
+        previousSpace = space;
+    }
+    return collapsed;
+}
+
+/// 只接受唯一一条 `Connection failed. Failed to connect to <ip>:<port>: ` 诊断行的
+/// 非空原因字段；其它行出现 refusing/refused 等文字不影响该判据。
+bool extractFailedConnectReason(const std::string& stderrText, std::uint16_t port,
+                               std::string& reason)
+{
+    const std::string prefix = "Connection failed. Failed to connect to 127.0.0.1:" +
+                               std::to_string(port) + ": ";
+    std::size_t matches = 0;
+    std::string candidate;
+    std::size_t begin = 0;
+    while (begin <= stderrText.size()) {
+        const std::size_t end = stderrText.find('\n', begin);
+        std::string line = stderrText.substr(
+            begin, end == std::string::npos ? std::string::npos : end - begin);
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (line.rfind(prefix, 0) == 0) {
+            ++matches;
+            candidate = line.substr(prefix.size());
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        begin = end + 1;
+    }
+    if (matches != 1 || candidate.empty()) {
+        return false;
+    }
+    reason = candidate;
+    return true;
+}
+
 /// `runApp` 的跨线程结果（shared_ptr 保证超时 detach 后仍有效）。
 struct RunOutcome {
     std::atomic<bool> done{false};
@@ -772,8 +877,28 @@ TEST(RemoteStartupFailureOutput, ConnectionRefusedWritesConnectionFailedToStderr
     const std::string error = capture.err();
     EXPECT_NE(error.find("Connection failed."), std::string::npos)
         << "标准错误必须含固定前缀；stderr=[" << error << "]";
-    EXPECT_GT(error.size(), std::string("Connection failed.").size())
-        << "固定前缀后必须跟随具体原因；stderr=[" << error << "]";
     EXPECT_EQ(capture.out().find("Connection failed."), std::string::npos)
         << "失败文本属于标准错误；stdout=[" << capture.out() << "]";
+    EXPECT_EQ(capture.out().find("TPE>"), std::string::npos)
+        << "连接未建立时不得进入 TPE>；stdout=[" << capture.out() << "]";
+    EXPECT_EQ(error.find("The server closed the connection."), std::string::npos)
+        << "连接未建立不得误报为已建立后关闭；stderr=[" << error << "]";
+
+    // 独立探针必须先确认该受控端口确实返回平台拒绝码（Windows 10061、
+    // POSIX ECONNREFUSED），再核对应用输出同一诊断行的原因字段。
+    const int nativeError = probeConnectErrorCode(port);
+    ASSERT_EQ(nativeError, kExpectedConnectRefused)
+        << "受控拒绝端口必须返回平台拒绝码；port=" << port;
+    const std::string expectedReason = socket_strerror(nativeError);
+    ASSERT_FALSE(expectedReason.empty()) << "平台拒绝码必须有错误文本";
+
+    std::string actualReason;
+    ASSERT_TRUE(extractFailedConnectReason(error, port, actualReason))
+        << "必须有一条 Connection failed. Failed to connect to 127.0.0.1:" << port
+        << ": <reason> 诊断行；stderr=[" << error << "]";
+    const std::string normalizedActual = normalizeReasonText(actualReason);
+    const std::string normalizedExpected = normalizeReasonText(expectedReason);
+    EXPECT_NE(normalizedActual.find(normalizedExpected), std::string::npos)
+        << "同一诊断行的原因必须与独立探针的平台错误文本相符；expected=["
+        << expectedReason << "] actual=[" << actualReason << "] stderr=[" << error << "]";
 }

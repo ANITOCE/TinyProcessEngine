@@ -2488,6 +2488,36 @@ TEST(RemoteSession, ClientReportsSilentServer)
     EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
 }
 
+/// T053 对照用例：Server 接受 TCP、读满 HELLO 后不发握手答复即关闭 →
+/// Client 必须输出已建立后关闭的固定文本，退出码 1，且不进入 TPE>。
+/// 现有实现已满足该行为，本用例是 GREEN→GREEN 回归基线，不制造 RED。
+TEST(RemoteSession, HandshakeCloseBeforeResponseReportsServerClosed)
+{
+    ScopedRemoteStreams streams;
+    ScriptedServer server([](SocketHandle socket, std::string& failure) {
+        return consumeClientHello(socket, failure);
+    });
+    ASSERT_TRUE(server.start()) << "scripted server must bind 127.0.0.1";
+
+    ClientRun client("127.0.0.1", server.port());
+    client.start();
+
+    ASSERT_TRUE(client.waitDone(kWaitLimit)) << "client did not return within 5 s";
+    ASSERT_TRUE(client.join());
+    EXPECT_EQ(client.exitCode(), 1)
+        << "closing after HELLO without a handshake reply must end the client with 1";
+    EXPECT_EQ(client.err(), "Connection failed. The server closed the connection.\n")
+        << "client stderr=[" << client.err() << "]";
+    EXPECT_EQ(client.err().find("Failed to connect"), std::string::npos)
+        << "an established-then-closed session must not be reported as a connect failure";
+    EXPECT_EQ(client.out().find("TPE>"), std::string::npos)
+        << "the client must not enter TPE> without a handshake reply; stdout=["
+        << client.out() << "]";
+
+    ASSERT_TRUE(server.waitScriptDone(kWaitLimit)) << "scripted server did not finish";
+    EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
+}
+
 /// T021 用例 5A：注入 firstByte=200 ms；首字节在 120 ms 发出、完整 BUSY 帧在
 /// 首字节后 100 ms 内到达 → Client 以忙碌结束（退出码 1，显示 "Server is busy."）。
 TEST(RemoteSession, ClientAcceptsBusyWhenFirstByteArrivesBeforeDeadline)
