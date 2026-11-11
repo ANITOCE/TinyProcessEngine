@@ -5,7 +5,7 @@
 ## 文档信息
 
 - 指南标识 `remote-connection`，版本 `0.1.1`，状态 `accepted`（2026-11-08 需求方批准）
-- 负责人 anitoce，创建及最近更新日期 2026-11-08
+- 负责人 anitoce，创建于 2026-11-08，最近更新于 2026-11-12
 - 场景为 TinyProcessEngine 存量迭代，公开仓库见 [TinyProcessEngine](https://github.com/ANITOCE/TinyProcessEngine)
 - 流程规范 4.0，Spec Kit 1.2.5（Copilot、PowerShell），Superpowers 7.0.1
 
@@ -109,7 +109,7 @@ A 上的 `Connection successful.` 在接纳 B 时显示，之后 A 的控制台�
 
 | Phase | 名称 | 目标 | 依赖 | 公开交付物摘要 | 状态 |
 | --- | --- | --- | --- | --- | --- |
-| 01 | 远程连接与进程查询 | G1、G2、G4 | First MVP | 两种启动模式、单连接会话、进程查询、日志 | `planned` |
+| 01 | 远程连接与进程查询 | G1、G2、G4 | First MVP | 两种启动模式、单连接会话、进程查询、日志 | `done` |
 | 02 | 远程扫描与内存读写 | G3、G4 | Phase 01 | 打开进程、扫描 REPL、两层退出、端到端验证 | `planned` |
 
 ### 4.2 Phase 条目
@@ -120,7 +120,7 @@ A 上的 `Connection successful.` 在接纳 B 时显示，之后 A 的控制台�
 - 依赖 — First MVP 已交付基线。
 - 公开交付物 — 两种远程启动模式、远程进程查询和单连接接纳。
 - 验收 — 默认端口和自定义端口均可接入。Server 先显示等待提示，接纳首个 Client 时两端均显示成功提示。首个 Client 可查 Server 进程，第二个 Client 得到忙碌原因和退出码 `1`。当前 Client 退出或断开后可重新接入。缺参、无效端口、端口占用和连接失败有明确输出及退出码。验证连接和查询日志，以及双平台本地回归。
-- 状态 — `planned`。
+- 状态 — `done`。2026-11-12 本地合入 `feat/add-remote-connection`，合入提交 `d7af096`。合入后 Windows 416 项、Linux 423 项全量测试通过，两端均为 0 失败。
 
 #### Phase 02 · 远程扫描与内存读写
 
@@ -169,6 +169,7 @@ Phase 01 先固定连接和查询契约，独立验证后合入。Phase 02 在�
 | --- | --- | --- | --- | --- |
 | 0.1.0 | 2026-11-08 | 记录远程 CLI、单连接、命令转发和 Phase 路线图 | Codex | 已批准（anitoce，2026-11-08） |
 | 0.1.1 | 2026-11-08 | 补充 Server 接纳成功后的提示和日志顺序，同步 CLI 交互规范 | Codex | 已批准（anitoce，2026-11-08） |
+| 0.1.1 | 2026-11-12 | 回写 Phase 01 本地合入与双平台验证结果 | Codex | Phase 01 已收尾 |
 
 ## 9. 双语封存
 

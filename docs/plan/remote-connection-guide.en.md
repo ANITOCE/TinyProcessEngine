@@ -5,7 +5,7 @@
 ## Document information
 
 - Guide ID `remote-connection`, version `0.1.1`, status `accepted` (owner approval, 2026-11-08)
-- Owner anitoce, created and last updated 2026-11-08
+- Owner anitoce, created 2026-11-08 and last updated 2026-11-12
 - Extension of the existing TinyProcessEngine project. See the [public repository](https://github.com/ANITOCE/TinyProcessEngine).
 - Workflow 4.0, Spec Kit 1.2.5 (Copilot, PowerShell), Superpowers 7.0.1
 
@@ -109,7 +109,7 @@ A displays `Connection successful.` when it admits B. A's console then shows the
 
 | Phase | Name | Goals | Dependency | Public deliverables | Status |
 | --- | --- | --- | --- | --- | --- |
-| 01 | Remote connection and process queries | G1, G2, G4 | First MVP | Startup modes, single-client admission, process queries, logging | `planned` |
+| 01 | Remote connection and process queries | G1, G2, G4 | First MVP | Startup modes, single-client admission, process queries, logging | `done` |
 | 02 | Remote scanning and memory access | G3, G4 | Phase 01 | Process opening, scan REPL, two-level exit, end-to-end verification | `planned` |
 
 ### 4.2 Phase entries
@@ -120,7 +120,7 @@ A displays `Connection successful.` when it admits B. A's console then shows the
 - Dependency — The delivered First MVP baseline.
 - Public deliverables — Two remote startup modes, remote process queries, and single-client admission.
 - Acceptance — The default and a custom port accept a Client. The Server displays the waiting message first, and both sides display success when the Server admits the first Client. The first Client can query Server processes. The second Client receives the busy reason and exits with code `1`. A new Client can connect after exit or disconnect. Missing arguments, invalid ports, an occupied port, and connection failure produce the specified outputs and codes. Verify connection and query logs and run local regression tests on both platforms.
-- Status — `planned`.
+- Status — `done`. Merged locally into `feat/add-remote-connection` on 2026-11-12 at `d7af096`. After the merge, all 416 Windows tests and 423 Linux tests passed.
 
 #### Phase 02 · Remote scanning and memory access
 
@@ -169,6 +169,7 @@ Run the full suite with the existing GoogleTest and CTest setup. Add coverage fo
 | --- | --- | --- | --- | --- |
 | 0.1.0 | 2026-11-08 | Record the remote CLI, single-client admission, command forwarding, and Phase roadmap | Codex | Approved (anitoce, 2026-11-08) |
 | 0.1.1 | 2026-11-08 | Specify the Server success message and logging order, and synchronize the CLI specification | Codex | Approved (anitoce, 2026-11-08) |
+| 0.1.1 | 2026-11-12 | Record the Phase 01 local merge and verification on both platforms | Codex | Phase 01 closed |
 
 ## 9. Seal both language editions
 
