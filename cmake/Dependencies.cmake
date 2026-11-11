@@ -89,3 +89,17 @@ FetchContent_Declare(
 
 # MakeAvailable 名称与 Declare 名称一致：libhv -> hv_static，spdlog -> spdlog::spdlog
 FetchContent_MakeAvailable(libhv spdlog)
+
+# ---- libhv 告警抑制（T052 / Constitution VI） ----
+# Linux/GCC 的 hmain.c 会产生 -Wformat-truncation；只在 C 编译器确实支持
+# 对应正向告警时，对 hv_static 的 C 编译局部抑制。使用正向探测，因为 GCC
+# 会静默接受不存在的 -Wno-* 选项，负向探测可能假通过。
+# PRIVATE + COMPILE_LANGUAGE:C 保证选项不扩散到项目目标或 C++ 编译。
+if(UNIX)
+  include(CheckCCompilerFlag)
+  check_c_compiler_flag("-Wformat-truncation" TPE_C_COMPILER_HAS_FORMAT_TRUNCATION)
+  if(TPE_C_COMPILER_HAS_FORMAT_TRUNCATION)
+    target_compile_options(hv_static PRIVATE
+      $<$<COMPILE_LANGUAGE:C>:-Wno-format-truncation>)
+  endif()
+endif()
