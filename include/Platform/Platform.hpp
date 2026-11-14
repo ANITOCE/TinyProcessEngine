@@ -44,6 +44,16 @@ public:
     virtual std::vector<MemoryPage> getCheatablePages() const = 0;
     virtual Result<tpe::Memory, PlatformError> read(MemoryPage page) const = 0;
     virtual Result<void, PlatformError> write(tpe::Address address, const tpe::Memory &value) = 0;
+
+    /// 目标身份与权限检查（Phase 02）：
+    /// - `bindIdentity()` 在打开时把后续读写绑定到当前目标实例（Windows 句柄 /
+    ///   Linux `/proc/<pid>/mem` 描述符）；失败表示无法取得内存读权限。
+    /// - `hasMemoryReadAccess()` 用于远程严格打开；本地兼容入口不强制调用。
+    /// - `isAlive()` 供提交前身份校验；默认实现兼容既有测试替身。
+    virtual bool bindIdentity() { return true; }
+    virtual bool hasMemoryReadAccess() const { return true; }
+    virtual bool isAlive() const { return true; }
+    virtual bool isReadOnly() const { return false; }
 };
 
 class PlatformOS

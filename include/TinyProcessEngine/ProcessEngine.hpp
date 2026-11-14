@@ -10,8 +10,16 @@
 #include <vector>
 #include <memory>
 #include <optional>
+#include <string>
 
 namespace tpe {
+
+/// 打开进程的结果（Phase 02）：进程对象、实时名称与只读标记。
+struct OpenProcessInfo {
+    std::shared_ptr<tpe::platform::PlatformProcess> process;
+    std::string name;
+    bool readOnly = false;
+};
 
 class ProcessEngine
 {
@@ -38,6 +46,16 @@ public:
     Result<std::string, PlatformError> processListText() const;
 
     std::shared_ptr<tpe::platform::PlatformProcess> openProcess(tpe::platform::Pid_t pid);
+
+    /// Phase 02：按严格/兼容模式打开并返回实时名称、只读标记。
+    /// `strict=true` 用于远程入口：要求 PID 存在、名称非空且不是
+    /// `Unknown`/`<unknown>`、取得内存读权限并绑定身份；本地兼容模式只新增
+    /// “PID 不存在必须失败”，不施加远程名称/权限限制。
+    Result<OpenProcessInfo, PlatformError> openProcessResult(tpe::platform::Pid_t pid,
+                                                             bool strict);
+
+    /// 释放当前目标与扫描状态（扫描层 exit / 会话清理）。
+    void closeProcess();
 
     /// 按 PID 查找进程名(单行);未命中时返回 std::nullopt(契约 C-T2)。
     std::optional<std::string> searchProcess(tpe::platform::Pid_t pid) const;
@@ -75,6 +93,9 @@ public:
 
     /// Check if a process is currently opened.
     bool hasProcess() const { return m_currentProcess != nullptr; }
+
+    /// Phase 02：当前目标是否仍对应打开时的进程实例。
+    bool targetAlive() const { return m_currentProcess && m_currentProcess->isAlive(); }
 
     void modifyMemory();
 };

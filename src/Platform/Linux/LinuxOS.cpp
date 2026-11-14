@@ -113,6 +113,10 @@ void LinuxOS::getAllProcesses(std::vector<Pid_t> allPid)
 
 std::shared_ptr<PlatformProcess> LinuxOS::open(Pid_t pid)
 {
+    const std::string procPath = "/proc/" + std::to_string(pid);
+    if (::access(procPath.c_str(), F_OK) != 0) {
+        return nullptr; // 本地兼容规则也只允许“不存在 PID 必须失败”
+    }
     return std::make_shared<LinuxProcess>(pid, readProcessName(pid));
 }
 

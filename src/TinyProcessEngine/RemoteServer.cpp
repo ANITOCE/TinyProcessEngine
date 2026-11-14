@@ -1,12 +1,5 @@
-#include "RemoteServer.hpp"
-
-#include "RemoteCommandExecutor.hpp"
-#include "RemoteLog.hpp"
-#include "RemoteProtocol.hpp"
-
-#include <hv/TcpServer.h>
-#include <hv/hlog.h>
-
+// 平台网络头必须最先包含：Windows 上 winsock2.h 必须先于任何 windows.h
+// （项目 HelpFunction/Platform 头会间接包含 windows.h，否则与 winsock.h 冲突）。
 #if defined(_WIN32)
 #include <winsock2.h>
 #else
@@ -17,6 +10,14 @@
 #include <unistd.h>
 #endif
 
+#include <hv/TcpServer.h>
+#include <hv/hlog.h>
+
+#include "RemoteServer.hpp"
+#include "RemoteCommandExecutor.hpp"
+#include "RemoteLog.hpp"
+#include "RemoteProtocol.hpp"
+
 // ProcessEngine.hpp 间接包含 Platform.hpp（Windows.h）；必须放在 libhv 的
 // winsock2.h 之后，否则 winsock.h 与 winsock2.h 会重定义（C2375）。
 #include "ProcessEngine.hpp"
@@ -24,8 +25,10 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -34,6 +37,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -264,6 +268,17 @@ struct RemoteServer::Impl {
         std::vector<std::uint8_t> input;         // 未消费的帧字节
         hv::TimerID timer = INVALID_TIMER_ID;    // 握手期限定时器
         hv::TimerID cleanupTimer = INVALID_TIMER_ID; // Draining 清理定时器
+        std::unique_ptr<RemoteCommandExecutor> executor; // 会话独占命令执行器
+
+        // 会话工作线程：事件循环只投递命令与接收完成事件；执行器与目标由该线程持有。
+        std::thread worker;
+        std::mutex workerMutex;
+        std::mutex workerLifecycleMutex; // 串行化 stop/join
+        std::condition_variable workerCv;
+        std::deque<std::string> jobs;
+        bool workerStop = false;
+        bool workerBusy = false; // 仅事件循环线程读写
+        std::atomic<bool> workerReleased{true};
     };
 
     Impl(std::uint16_t listenPort, tpe::ProcessEngine& processEngine)
@@ -358,10 +373,17 @@ struct RemoteServer::Impl {
 
         // 停止收尾期间不再写日志/固定文本（契约：stop() 之后不写全局流）。
         stopping.store(true, std::memory_order_release);
-        // stop(true) 停止事件循环并 join：关闭回调（含事件循环销毁时的收尾）在此期间执行完。
+        // 先停止并 join 事件循环，确保没有回调并发访问 session；随后再由
+        // 控制线程 join 会话工作线程（worker 的 postEvent 只会入队、不再执行）。
         server->stop(true);
+        if (session) {
+            stopWorker(session);
+        }
         server.reset();
         // 事件循环线程已退出，残留会话引用可安全清理。
+        if (session && session->executor) {
+            session->executor->release();
+        }
         session.reset();
         stopping.store(false, std::memory_order_release);
     }
@@ -401,10 +423,95 @@ struct RemoteServer::Impl {
 
         auto accepted = std::make_shared<Session>();
         accepted->channel = channel;
+        accepted->executor = std::make_unique<RemoteCommandExecutor>(engine);
         session = accepted;
         // 契约 logging.md §3：失败握手属于“接纳前握手失败”，只记 reject/error；
         // 因此 accept/ok 与 `Connection successful.` 推迟到 HELLO 校验通过后记录。
         startHandshakeTimer(accepted);
+    }
+
+    /// 每会话独占工作线程：执行器与目标只在该线程访问。
+    void startWorker(const std::shared_ptr<Session>& current)
+    {
+        current->workerReleased.store(false, std::memory_order_release);
+        const std::weak_ptr<Session> weak = current;
+        current->worker = std::thread([this, weak]() { workerLoop(weak); });
+    }
+
+    void workerLoop(const std::weak_ptr<Session>& weak)
+    {
+        const auto current = weak.lock();
+        if (!current) {
+            return;
+        }
+
+        for (;;) {
+            std::string line;
+            {
+                std::unique_lock<std::mutex> lock(current->workerMutex);
+                current->workerCv.wait(lock, [&current]() {
+                    return current->workerStop || !current->jobs.empty();
+                });
+                if (current->workerStop) {
+                    current->jobs.clear();
+                    break;
+                }
+                if (current->jobs.empty()) {
+                    continue;
+                }
+                line = std::move(current->jobs.front());
+                current->jobs.pop_front();
+            }
+
+            RemoteCommandResult result = current->executor->execute(line);
+            const hv::EventLoopPtr loop = server ? server->loop() : hv::EventLoopPtr{};
+            if (loop) {
+                loop->postEvent([this, weak, result = std::move(result)](hv::Event*) mutable {
+                    onWorkerResult(weak, std::move(result));
+                });
+            }
+
+            const std::lock_guard<std::mutex> lock(current->workerMutex);
+            if (current->workerStop) {
+                break;
+            }
+        }
+
+        if (current->executor) {
+            current->executor->release();
+        }
+        current->workerReleased.store(true, std::memory_order_release);
+    }
+
+    void onWorkerResult(const std::weak_ptr<Session>& weak, RemoteCommandResult result)
+    {
+        const auto current = weak.lock();
+        if (!current || session != current) {
+            return;
+        }
+        current->workerBusy = false;
+        if (current->state != State::Active || stopping.load(std::memory_order_acquire)) {
+            return;
+        }
+        const ResponseDelivery delivery =
+            sendResponse(current, result.status, result.output, result.prompt);
+        logCommand(current->channel, result, delivery);
+    }
+
+    void stopWorker(const std::shared_ptr<Session>& current)
+    {
+        if (!current) {
+            return;
+        }
+        const std::lock_guard<std::mutex> lifecycle(current->workerLifecycleMutex);
+        {
+            const std::lock_guard<std::mutex> lock(current->workerMutex);
+            current->workerStop = true;
+        }
+        current->workerCv.notify_all();
+        if (current->worker.joinable()) {
+            current->worker.join();
+        }
     }
 
     /// BUSY 写回后的有界延迟关闭（见 `kBusyCloseDelayMs`）。
@@ -438,6 +545,7 @@ struct RemoteServer::Impl {
         }
         if (closed->state == State::Handshaking) {
             // 握手期对端关闭：记 1 条 reject/error 并回到 Listening（契约 §3）。
+            stopWorker(closed);
             session.reset();
             cancelHandshakeTimer(closed);
             logSessionEvent(channel, SessionEvent::Reject, LogResult::Error);
@@ -543,6 +651,7 @@ struct RemoteServer::Impl {
 
         cancelHandshakeTimer(current);
         current->state = State::Active;
+        startWorker(current);
         writeFrame(current->channel, MessageType::Welcome, {});
         // 握手成功即“接纳”：此时才记 accept/ok 并输出固定接纳提示（contracts/logging.md §3）。
         logSessionEvent(current->channel, SessionEvent::Accept, LogResult::Ok);
@@ -589,10 +698,20 @@ struct RemoteServer::Impl {
         }
 
         const std::string line(frame.payload.begin(), frame.payload.end());
-        const RemoteCommandKind kind = classifyRemoteCommand(line);
-        const RemoteCommandResult result = executeRemoteCommand(line, engine);
-        const ResponseDelivery delivery = sendResponse(current, result.status, result.output);
-        logQueryCommand(current->channel, kind, line, result, delivery);
+        if (current->workerBusy) {
+            // 客户端必须等待上一 RESPONSE；防御性忽略重复 COMMAND。
+            return;
+        }
+        current->workerBusy = true;
+        {
+            const std::lock_guard<std::mutex> lock(current->workerMutex);
+            if (current->workerStop) {
+                current->workerBusy = false;
+                return;
+            }
+            current->jobs.push_back(line);
+        }
+        current->workerCv.notify_one();
     }
 
     /// RESPONSE 发送结果；查询日志据此判定 result 字段（contracts/logging.md §3）。
@@ -605,26 +724,27 @@ struct RemoteServer::Impl {
     /// 编码并发送 RESPONSE（contracts/protocol.md §5）：
     /// 结果超过单条响应上限时改发固定的 status=2 响应；不截断、不分片，会话保留。
     ResponseDelivery sendResponse(const std::shared_ptr<Session>& current, ResponseStatus status,
-                                  const std::string& output)
+                                  const std::string& output, const std::string& prompt)
     {
         const Result<std::vector<std::uint8_t>, ProtocolError> encoded =
-            encodeResponse(status, std::string(kPromptText), output);
+            encodeResponse(status, prompt, output);
         if (encoded.has_value()) {
             writeFrame(current->channel, MessageType::Response, encoded.value());
             return ResponseDelivery::Sent;
         }
         if (encoded.error().code == ErrorCode::FrameTooLarge) {
-            return sendOversizeFallback(current);
+            return sendOversizeFallback(current, prompt);
         }
         failResponseEncoding(current, encoded.error());
         return ResponseDelivery::Failed;
     }
 
     /// 超限回退（protocol.md §5；cli.md §6）：status=2 + 固定文本，结果不截断、不分片。
-    ResponseDelivery sendOversizeFallback(const std::shared_ptr<Session>& current)
+    ResponseDelivery sendOversizeFallback(const std::shared_ptr<Session>& current,
+                                          const std::string& prompt)
     {
         const Result<std::vector<std::uint8_t>, ProtocolError> encoded =
-            encodeResponse(ResponseStatus::CommandError, std::string(kPromptText),
+            encodeResponse(ResponseStatus::CommandError, prompt,
                            std::string(kOversizeResponseText));
         if (encoded.has_value()) {
             writeFrame(current->channel, MessageType::Response, encoded.value());
@@ -662,6 +782,8 @@ struct RemoteServer::Impl {
         // 会话已结束：接收缓冲区中未构成完整帧 / 未进入执行函数的命令全部丢弃（§6）。
         current->input.clear();
         current->state = State::Draining;
+        // 工作线程在完成当前命令后释放目标；清理完成前保持 Draining。
+        stopWorker(current);
         if (stopping.load(std::memory_order_acquire)) {
             session.reset(); // 停止收尾期间不再回到监听态
             return;
@@ -702,6 +824,9 @@ struct RemoteServer::Impl {
         if (session != current || current->state != State::Draining) {
             return;
         }
+        if (current->executor) {
+            current->executor->release();
+        }
         session.reset();
     }
 
@@ -714,6 +839,7 @@ struct RemoteServer::Impl {
         const bool handshake = current->state == State::Handshaking;
         cancelHandshakeTimer(current);
         if (handshake && session == current) {
+            stopWorker(current);
             session.reset(); // 握手失败不进入 Draining
         }
         if (!wasStopping) {
@@ -793,6 +919,24 @@ struct RemoteServer::Impl {
     // --------------------------------------------------------
     // 日志（contracts/logging.md §1–§4）：写入 Server 的标准控制台输出
     // --------------------------------------------------------
+
+    /// Phase 02 命令日志：使用执行器提供的元数据；失败响应不再追加第二条终止类记录。
+    void logCommand(const hv::SocketChannelPtr& channel, const RemoteCommandResult& result,
+                    ResponseDelivery delivery)
+    {
+        if (!result.loggable || delivery == ResponseDelivery::Failed ||
+            stopping.load(std::memory_order_acquire)) {
+            return;
+        }
+        LogRecord record;
+        record.utcTime = formatUtcTimestamp(std::chrono::system_clock::now());
+        record.peer = channel ? channel->peeraddr() : std::string{};
+        record.command = result.logCommand;
+        record.pid = result.logPid;
+        record.result = delivery == ResponseDelivery::Oversize ? LogResult::Error
+                                                              : result.logResult;
+        std::cout << formatLogLine(record) << std::endl;
+    }
 
     /// 查询日志（contracts/logging.md §2/§3）：COMMAND 执行并发送响应后记录；
     /// `help`、未知命令与 `exit` 不记录。日志只含元数据，不含原因文本、完整命令行

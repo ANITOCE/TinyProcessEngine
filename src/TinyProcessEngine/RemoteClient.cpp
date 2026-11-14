@@ -35,6 +35,9 @@ constexpr std::string_view kSuccessText = "Connection successful.";
 /// 远程提示符；线上 prompt 不含尾随空格，渲染层添加（cli.md §5）。
 constexpr std::string_view kPromptText = "TPE> ";
 
+/// 扫描层已发送 write、尚未收到完整有效响应时断线的追加提示。
+constexpr std::string_view kWriteUnknownText = "The write result is unknown.";
+
 /// HELLO 的固定 clientId（UTF-8，≤64 字节；契约 §4 示例 "TPE"）。
 constexpr std::string_view kClientId = "TPE";
 
@@ -141,6 +144,14 @@ bool isValidUtf8(std::string_view text)
         index += trailing + 1;
     }
     return true;
+}
+
+/// 是否为扫描层 write 命令（命令名精确匹配，允许后续参数）。
+bool isWriteCommand(std::string_view line)
+{
+    const std::size_t space = line.find(' ');
+    const std::string_view name = space == std::string_view::npos ? line : line.substr(0, space);
+    return name == "write";
 }
 
 /// 发送前校验（cli.md §3.1）：顺序固定为 UTF-8 → 去除行尾后是否仍含 CR/LF
@@ -305,6 +316,9 @@ struct RemoteClient::Impl {
     std::string sessionFailureText;
     bool awaitingResponse = false;                // run() 已发送 COMMAND，等待 RESPONSE
     std::optional<RemoteResponse> pendingResponse; // 已送达、尚未被 run() 消费的 RESPONSE
+    std::string currentPrompt = "TPE>";           // 最近一次 RESPONSE.prompt
+    bool lastCommandWasWrite = false;             // 最近发送的是扫描层 write
+    bool responseCompleted = false;               // 最近 write 已收到完整有效响应
 
     // ---- 事件循环线程私有状态 ----
     bool firstByteSeen = false;
@@ -336,6 +350,9 @@ struct RemoteClient::Impl {
             sessionFailureText.clear();
             awaitingResponse = false;
             pendingResponse.reset();
+            currentPrompt = "TPE>";
+            lastCommandWasWrite = false;
+            responseCompleted = false;
         }
         firstByteSeen = false;
         input.clear();
@@ -402,8 +419,8 @@ struct RemoteClient::Impl {
                 return 1;
             }
 
-            if (line == "exit") {
-                break; // exit 不发送 COMMAND（T023 路径）
+            if (line == "exit" && currentPrompt == "TPE>") {
+                break; // 连接层 exit 不发送 COMMAND（T023 路径）
             }
 
             const std::string_view rejection = validateCommandLine(line);
@@ -461,19 +478,22 @@ struct RemoteClient::Impl {
     /// 渲染本地提示符（线上 prompt 不含尾随空格，渲染层添加；cli.md §5）。
     void showInputPrompt() const
     {
-        std::cout << kPromptText << std::flush;
+        std::cout << currentPrompt << ' ' << std::flush;
     }
 
     /// 渲染 RESPONSE（cli.md §5；protocol.md §5/§8）：
     /// 先原样输出 output；非空且不以 '\n' 结尾时补一个 '\n'；
     /// 随后输出线上 prompt + 一个空格（尾随空格由渲染层添加）。
-    void renderResponse(const RemoteResponse& response) const
+    void renderResponse(const RemoteResponse& response)
     {
         std::cout << response.output;
         if (!response.output.empty() && response.output.back() != '\n') {
             std::cout << '\n';
         }
         std::cout << response.prompt << ' ' << std::flush;
+        currentPrompt = response.prompt;
+        responseCompleted = true;
+        lastCommandWasWrite = false;
     }
 
     /// 发送一条已通过校验的命令并阻塞等待 RESPONSE，随后渲染。
@@ -488,6 +508,8 @@ struct RemoteClient::Impl {
             const std::lock_guard<std::mutex> guard(mutex);
             awaitingResponse = true;
             pendingResponse.reset();
+            lastCommandWasWrite = isWriteCommand(line);
+            responseCompleted = false;
         }
         if (client->send(frame.data(), static_cast<int>(frame.size())) < 0) {
             // 发送失败的同一时点可能已记录会话失败（例如 ERROR 与关闭事件
@@ -499,8 +521,11 @@ struct RemoteClient::Impl {
                 failure = currentSessionFailure();
             }
             stopClient();
-            std::cerr << (failure.empty() ? std::string(kClosedByServerText) : failure)
-                      << std::endl;
+            std::cerr << (failure.empty() ? std::string(kClosedByServerText) : failure);
+            if (lastCommandWasWrite && currentPrompt != "TPE>" && !responseCompleted) {
+                std::cerr << '\n' << kWriteUnknownText;
+            }
+            std::cerr << std::endl;
             return false;
         }
 
@@ -527,7 +552,11 @@ struct RemoteClient::Impl {
         }
         if (!failure.empty()) {
             stopClient();
-            std::cerr << failure << std::endl;
+            std::cerr << failure;
+            if (lastCommandWasWrite && currentPrompt != "TPE>" && !responseCompleted) {
+                std::cerr << '\n' << kWriteUnknownText;
+            }
+            std::cerr << std::endl;
             return false;
         }
 

@@ -40,7 +40,9 @@ PlatformError makeMemAccessError(const char* operation, Pid_t pid, int errorCode
 // ============================================================
 LinuxProcess::LinuxProcess(Pid_t pid, std::string p_name)
     : PlatformProcess(pid, std::move(p_name))
-{}
+{
+    readStatIdentity(m_startTime, m_startCode, m_endCode);
+}
 
 LinuxProcess::~LinuxProcess() {
     ensurePtraceDetached();
@@ -48,6 +50,73 @@ LinuxProcess::~LinuxProcess() {
         close(m_procMemFd);
         m_procMemFd = -1;
     }
+}
+
+bool LinuxProcess::bindIdentity()
+{
+    // 远程会话必须绑定打开时的描述符，不能在每次操作时按数字 PID 重新解析。
+    m_memBackend = MemBackend::ProcMem;
+    return readStatIdentity(m_startTime, m_startCode, m_endCode) &&
+           ensureProcMemFd(false);
+}
+
+bool LinuxProcess::hasMemoryReadAccess() const
+{
+    return ensureProcMemFd(false);
+}
+
+bool LinuxProcess::isAlive() const
+{
+    std::uint64_t startTime = 0;
+    std::uint64_t startCode = 0;
+    std::uint64_t endCode = 0;
+    if (!readStatIdentity(startTime, startCode, endCode)) {
+        return false;
+    }
+    if (m_startTime != 0 && startTime != m_startTime) {
+        return false; // PID 已被复用
+    }
+    if (m_startCode != 0 && m_endCode != 0 &&
+        (startCode != m_startCode || endCode != m_endCode)) {
+        return false; // execve 已替换地址空间
+    }
+    return ::access(("/proc/" + std::to_string(m_pid)).c_str(), F_OK) == 0;
+}
+
+bool LinuxProcess::readStatIdentity(std::uint64_t& startTime, std::uint64_t& startCode,
+                                    std::uint64_t& endCode) const
+{
+    std::ifstream statFile("/proc/" + std::to_string(m_pid) + "/stat");
+    if (!statFile) {
+        return false;
+    }
+    std::string line;
+    if (!std::getline(statFile, line)) {
+        return false;
+    }
+    const std::size_t closeParen = line.rfind(')');
+    if (closeParen == std::string::npos || closeParen + 2 >= line.size()) {
+        return false;
+    }
+    std::istringstream fields(line.substr(closeParen + 2));
+    std::string token;
+    std::uint64_t values[25] = {};
+    std::size_t index = 0;
+    while (index < 25 && fields >> token) {
+        try {
+            values[index] = std::stoull(token);
+        } catch (const std::exception&) {
+            values[index] = 0;
+        }
+        ++index;
+    }
+    if (index <= 24) {
+        return false;
+    }
+    startTime = values[19]; // field 22
+    startCode = values[23]; // field 26
+    endCode = values[24];   // field 27
+    return startTime != 0;
 }
 
 // ============================================================

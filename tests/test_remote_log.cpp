@@ -1463,7 +1463,7 @@ TEST(RemoteLogEvents, HelpAndUnknownCommandsProduceNoQueryLog)
     RawSocket socket;
     ASSERT_TRUE(openRawSession(socket, kLogHelpUnknownPort, failure)) << failure;
 
-    for (const char* command : {"help", "--help", "nonsense-command", "--open-process 1234"}) {
+    for (const char* command : {"help", "--help", "nonsense-command", "--bogus"}) {
         Frame response;
         ASSERT_TRUE(exchangeCommand(socket, command, response, failure)) << failure;
         const auto decoded = tpe::remote::decodeResponse(response.payload);

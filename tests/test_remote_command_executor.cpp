@@ -156,11 +156,12 @@ private:
     std::streambuf* const m_old;
 };
 
-/// contracts/cli.md §4 帮助文本正文：4 行，逐行对齐空格与契约一致；
+/// contracts/cli.md §2.1 帮助文本正文：5 行，逐行对齐空格与契约一致；
 /// 不含 `TPE> help` 回显行，不含尾随空行。
 constexpr const char* kHelpText =
     "--all-processes        List processes on the server.\n"
     "--search-process <PID> Show the name of a process on the server.\n"
+    "--open-process <PID>   Open a process on the server and enter its scan prompt.\n"
     "help                   Show this help.\n"
     "exit                   End this client session.";
 
@@ -219,14 +220,20 @@ TEST(RemoteCommandExecutor, ClassifyExit)
 
 TEST(RemoteCommandExecutor, ClassifyUndeliveredCommandsAreUnknown)
 {
-    // Phase 01 未交付的命令与空输入均按未知命令处理（contracts/cli.md §3）。
+    // Phase 02 尚未接入的有状态命令与空输入按未知命令处理。
     const char* const lines[] = {
-        "--open-process 1", "new-scan", "next-scan", "list", "write", "undo", "",
+        "new-scan", "next-scan", "list", "write", "undo", "",
     };
     for (const char* line : lines) {
         SCOPED_TRACE(std::string("line: '") + line + "'");
         EXPECT_EQ(tpe::remote::classifyRemoteCommand(line), RemoteCommandKind::Unknown);
     }
+}
+
+TEST(RemoteCommandExecutor, ClassifyOpenProcess)
+{
+    EXPECT_EQ(tpe::remote::classifyRemoteCommand("--open-process 123"),
+              RemoteCommandKind::OpenProcess);
 }
 
 TEST(RemoteCommandExecutor, ClassifyPaddedCommandsAreUnknown)
@@ -253,7 +260,7 @@ TEST(RemoteCommandExecutor, HelpReturnsContractHelpText)
 
         EXPECT_EQ(result.status, ResponseStatus::Continue);
         EXPECT_EQ(result.output, kHelpText)
-            << "help output must match contracts/cli.md §4 exactly (4 lines, "
+            << "help output must match contracts/cli.md §2.1 exactly (5 lines, "
                "no prompt echo, no trailing blank line)";
     }
 }
@@ -264,7 +271,7 @@ TEST(RemoteCommandExecutor, HelpReturnsContractHelpText)
 
 TEST(RemoteCommandExecutor, UnknownCommandReportsContractText)
 {
-    for (const char* line : {"--open-process 1", ""}) {
+    for (const char* line : {"--bogus", ""}) {
         FakeEngine fake = makeEngine();
         SCOPED_TRACE(std::string("line: '") + line + "'");
 

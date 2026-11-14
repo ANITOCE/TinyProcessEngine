@@ -1,6 +1,9 @@
 #include "RemoteCommandExecutor.hpp"
 
+#include "CliParser.hpp"
 #include "ProcessEngine.hpp"
+#include "ReplExecutor.hpp"
+#include "ReplState.hpp"
 
 #include <charconv>
 #include <cstddef>
@@ -19,10 +22,11 @@ namespace {
 // 固定文本（contracts/cli.md §3/§4/§6）
 // ============================================================
 
-/// 帮助文本：4 行，逐字符与契约一致；不含 `TPE> help` 回显行，不含尾随空行。
+/// 帮助文本：5 行，逐字符与契约一致；不含 `TPE> help` 回显行，不含尾随空行。
 constexpr std::string_view kHelpText =
     "--all-processes        List processes on the server.\n"
     "--search-process <PID> Show the name of a process on the server.\n"
+    "--open-process <PID>   Open a process on the server and enter its scan prompt.\n"
     "help                   Show this help.\n"
     "exit                   End this client session.";
 
@@ -34,14 +38,22 @@ constexpr std::string_view kUnknownCommandText =
 constexpr std::string_view kSearchProcessCommand = "--search-process";
 constexpr std::string_view kSearchProcessPrefix = "--search-process ";
 
+/// `--open-process` 的命令名与前缀（Phase 02）。
+constexpr std::string_view kOpenProcessCommand = "--open-process";
+constexpr std::string_view kOpenProcessPrefix = "--open-process ";
+
 /// 参数错误以用法开头（契约 §6“用法与原因”），保证输出非空且点明命令名。
 constexpr std::string_view kSearchProcessUsage = "Usage: --search-process <PID>.";
+constexpr std::string_view kOpenProcessUsage = "Usage: --open-process <PID>.";
 
 /// 结果文本不可编码为 UTF-8 的固定失败文本（契约 §6；protocol.md §5）。
 constexpr std::string_view kUnencodableNameText =
     "Process name cannot be encoded as UTF-8.";
 constexpr std::string_view kUnencodableListText =
     "Process list contains a name that cannot be encoded as UTF-8.";
+constexpr std::string_view kPromptOversizeText =
+    "Prompt exceeds the maximum message size.";
+constexpr std::size_t kMaxRemotePromptBytes = 65535;
 
 // ============================================================
 // 结果构造
@@ -210,6 +222,14 @@ std::string searchProcessUsageError(PidParseStatus status)
     return text;
 }
 
+std::string openProcessUsageError(PidParseStatus status)
+{
+    std::string text(kOpenProcessUsage);
+    text += ' ';
+    text += pidParseReason(status);
+    return text;
+}
+
 // ============================================================
 // 单条命令的执行
 // ============================================================
@@ -275,6 +295,9 @@ RemoteCommandKind classifyRemoteCommand(std::string_view line)
         // 参数是否合法交由执行层判定，分类只认命令名。
         return RemoteCommandKind::SearchProcess;
     }
+    if (line == kOpenProcessCommand || startsWith(line, kOpenProcessPrefix)) {
+        return RemoteCommandKind::OpenProcess;
+    }
     if (line == "help" || line == "--help") {
         return RemoteCommandKind::Help;
     }
@@ -291,6 +314,8 @@ RemoteCommandResult executeRemoteCommand(std::string_view line, tpe::ProcessEngi
         return executeAllProcesses(engine);
     case RemoteCommandKind::SearchProcess:
         return executeSearchProcess(line, engine);
+    case RemoteCommandKind::OpenProcess:
+        return makeCommandError("--open-process requires a stateful remote session.");
     case RemoteCommandKind::Help:
         return executeHelp();
     case RemoteCommandKind::Exit:
@@ -301,6 +326,271 @@ RemoteCommandResult executeRemoteCommand(std::string_view line, tpe::ProcessEngi
     default: // RemoteCommandKind::Unknown：未交付命令与空输入
         return makeCommandError(std::string(kUnknownCommandText));
     }
+}
+
+// ============================================================
+// 有状态执行器
+// ============================================================
+
+namespace {
+
+std::string stripTrailingSpaces(std::string text)
+{
+    while (!text.empty() && text.back() == ' ') {
+        text.pop_back();
+    }
+    return text;
+}
+
+std::string logCommandName(RemoteCommandKind kind)
+{
+    switch (kind) {
+    case RemoteCommandKind::AllProcesses:
+        return "--all-processes";
+    case RemoteCommandKind::SearchProcess:
+        return "--search-process";
+    case RemoteCommandKind::OpenProcess:
+        return "--open-process";
+    case RemoteCommandKind::Help:
+        return "help";
+    case RemoteCommandKind::Exit:
+        return "exit";
+    case RemoteCommandKind::Unknown:
+        break;
+    }
+    return {};
+}
+
+} // namespace
+
+RemoteCommandExecutor::RemoteCommandExecutor(tpe::ProcessEngine& engine)
+    : m_engine(engine)
+    , m_executor(engine)
+{
+}
+
+RemoteCommandExecutor::~RemoteCommandExecutor()
+{
+    release();
+}
+
+std::string RemoteCommandExecutor::prompt() const
+{
+    if (m_layer == RemoteLayer::Connection) {
+        return "TPE>";
+    }
+    return stripTrailingSpaces(m_state.prompt());
+}
+
+RemoteCommandResult RemoteCommandExecutor::execute(std::string_view line)
+{
+    if (m_layer == RemoteLayer::Connection) {
+        return executeConnectionCommand(line);
+    }
+    return executeScanCommand(line);
+}
+
+RemoteCommandResult RemoteCommandExecutor::executeConnectionCommand(std::string_view line)
+{
+    const RemoteCommandKind kind = classifyRemoteCommand(line);
+    RemoteCommandResult result;
+    result.prompt = "TPE>";
+
+    switch (kind) {
+    case RemoteCommandKind::AllProcesses:
+    case RemoteCommandKind::SearchProcess: {
+        result = executeRemoteCommand(line, m_engine);
+        result.prompt = "TPE>";
+        result.loggable = true;
+        result.logCommand = logCommandName(kind);
+        if (kind == RemoteCommandKind::SearchProcess) {
+            const PidParseResult parsed = parsePidArgument(
+                line.size() > kSearchProcessPrefix.size()
+                    ? line.substr(kSearchProcessPrefix.size())
+                    : std::string_view{});
+            if (parsed.status == PidParseStatus::Ok) {
+                result.logPid = static_cast<std::uint32_t>(parsed.value);
+            }
+        }
+        result.logResult = result.status == ResponseStatus::Continue ? LogResult::Ok
+                                                                    : LogResult::Error;
+        if (kind == RemoteCommandKind::SearchProcess && result.logPid.has_value() &&
+            result.status == ResponseStatus::CommandError) {
+            const std::string notFound = "Process with PID " +
+                                          std::to_string(*result.logPid) + " not found.";
+            if (result.output == notFound) {
+                result.logResult = LogResult::NotFound;
+            }
+        }
+        return result;
+    }
+    case RemoteCommandKind::OpenProcess:
+        return executeOpenProcess(line);
+    case RemoteCommandKind::Help:
+        result.output = std::string(kHelpText);
+        return result;
+    case RemoteCommandKind::Exit:
+    case RemoteCommandKind::Unknown:
+        result.status = ResponseStatus::CommandError;
+        result.output = std::string(kUnknownCommandText);
+        return result;
+    }
+    return result;
+}
+
+RemoteCommandResult RemoteCommandExecutor::executeOpenProcess(std::string_view line)
+{
+    RemoteCommandResult result;
+    result.prompt = "TPE>";
+    result.loggable = true;
+    result.logCommand = std::string(kOpenProcessCommand);
+
+    const std::string_view argument = line.size() > kOpenProcessPrefix.size()
+                                          ? line.substr(kOpenProcessPrefix.size())
+                                          : std::string_view{};
+    const PidParseResult parsed = parsePidArgument(argument);
+    if (parsed.status != PidParseStatus::Ok) {
+        result.status = ResponseStatus::CommandError;
+        result.output = openProcessUsageError(parsed.status);
+        result.logResult = LogResult::Error;
+        return result;
+    }
+    result.logPid = static_cast<std::uint32_t>(parsed.value);
+
+    const tpe::Result<tpe::OpenProcessInfo, tpe::PlatformError> opened =
+        m_engine.openProcessResult(parsed.value, true);
+    if (!opened.has_value()) {
+        result.status = ResponseStatus::CommandError;
+        result.output = "Failed to open process with PID " + std::to_string(parsed.value) +
+                        ": " + opened.error().message;
+        result.logResult = LogResult::Error;
+        return result;
+    }
+    if (!isValidUtf8(opened.value().name)) {
+        m_engine.closeProcess();
+        result.status = ResponseStatus::CommandError;
+        result.output = std::string(kUnencodableNameText);
+        result.logResult = LogResult::Error;
+        return result;
+    }
+
+    m_pid = static_cast<std::uint32_t>(parsed.value);
+    m_processName = opened.value().name;
+    m_state = tpe::cli::ReplState(m_processName);
+    m_layer = RemoteLayer::Scan;
+    if (prompt().size() > kMaxRemotePromptBytes) {
+        release();
+        result.status = ResponseStatus::CommandError;
+        result.output = std::string(kPromptOversizeText);
+        result.logResult = LogResult::Error;
+        return result;
+    }
+    result.prompt = prompt();
+    result.logResult = LogResult::Ok;
+    return result;
+}
+
+RemoteCommandResult RemoteCommandExecutor::executeScanCommand(std::string_view line)
+{
+    RemoteCommandResult result;
+    const tpe::cli::ReplCommand command = tpe::cli::parseReplCommand(std::string(line));
+    const tpe::cli::ReplOutcome outcome = tpe::cli::planReplOutcome(command);
+
+    if (command.kind == tpe::cli::ReplCommandKind::Help || outcome == tpe::cli::ReplOutcome::ShowHelp) {
+        result.output = std::string(tpe::cli::replHelpText());
+        result.prompt = prompt();
+        return result;
+    }
+    if (outcome == tpe::cli::ReplOutcome::Exit ||
+        command.kind == tpe::cli::ReplCommandKind::Exit) {
+        result.loggable = true;
+        result.logCommand = "exit";
+        result.logPid = m_pid;
+        result.logResult = LogResult::Ok;
+        release();
+        result.prompt = "TPE>";
+        return result;
+    }
+    if (outcome == tpe::cli::ReplOutcome::Noop) {
+        result.prompt = prompt();
+        return result;
+    }
+    if (outcome == tpe::cli::ReplOutcome::UsageError) {
+        result.status = ResponseStatus::CommandError;
+        result.output = command.error;
+        result.prompt = prompt();
+        return result;
+    }
+
+    // 执行前预测新提示符；超长时保留原扫描状态与提示符。
+    if (command.kind == tpe::cli::ReplCommandKind::NewScan ||
+        command.kind == tpe::cli::ReplCommandKind::NextScan) {
+        const tpe::cli::CliValueType& predictedType =
+            command.valueType != nullptr ? *command.valueType : *m_state.valueType;
+        std::string predicted = m_processName + "-" +
+                                std::string(tpe::cli::scanTypeName(command.scanType)) + "-" +
+                                std::string(predictedType.shortName);
+        if (command.hasValue) {
+            predicted += "-" + command.value;
+        }
+        predicted += ">";
+        if (predicted.size() > kMaxRemotePromptBytes) {
+            result.status = ResponseStatus::CommandError;
+            result.output = std::string(kPromptOversizeText);
+            result.prompt = prompt();
+            return result;
+        }
+    }
+
+    const tpe::cli::ReplExecutionResult executed = m_executor.execute(command, m_state);
+    result.output = executed.output;
+    result.status = executed.error ? ResponseStatus::CommandError : ResponseStatus::Continue;
+    if (!isValidUtf8(result.output)) {
+        // UTF-8 校验先于响应容量（contracts/cli.md §6）。
+        result.output = "Scan result cannot be encoded as UTF-8.";
+        result.status = ResponseStatus::CommandError;
+    }
+    result.prompt = prompt();
+
+    switch (command.kind) {
+    case tpe::cli::ReplCommandKind::NewScan:
+        result.loggable = true;
+        result.logCommand = "new-scan";
+        break;
+    case tpe::cli::ReplCommandKind::NextScan:
+        result.loggable = true;
+        result.logCommand = "next-scan";
+        break;
+    case tpe::cli::ReplCommandKind::List:
+        result.loggable = true;
+        result.logCommand = "list";
+        break;
+    case tpe::cli::ReplCommandKind::Write:
+        result.loggable = true;
+        result.logCommand = "write";
+        break;
+    case tpe::cli::ReplCommandKind::Undo:
+        result.loggable = true;
+        result.logCommand = "undo";
+        break;
+    default:
+        break;
+    }
+    if (result.loggable) {
+        result.logPid = m_pid;
+        result.logResult = result.status == ResponseStatus::Continue ? LogResult::Ok
+                                                                    : LogResult::Error;
+    }
+    return result;
+}
+
+void RemoteCommandExecutor::release()
+{
+    m_engine.closeProcess();
+    m_pid.reset();
+    m_processName.clear();
+    m_state = tpe::cli::ReplState();
+    m_layer = RemoteLayer::Connection;
 }
 
 } // namespace tpe::remote

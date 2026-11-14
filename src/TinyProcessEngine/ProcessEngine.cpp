@@ -72,6 +72,45 @@ std::shared_ptr<tpe::platform::PlatformProcess> ProcessEngine::openProcess(tpe::
     return m_currentProcess;
 }
 
+Result<OpenProcessInfo, PlatformError> ProcessEngine::openProcessResult(
+    tpe::platform::Pid_t pid, bool strict)
+{
+    std::shared_ptr<tpe::platform::PlatformProcess> process = m_os->open(pid);
+    if (!process) {
+        PlatformError error{"OpenProcess", static_cast<unsigned long>(pid), 0,
+                            "process does not exist or cannot be opened"};
+        return Result<OpenProcessInfo, PlatformError>::error(std::move(error));
+    }
+
+    const std::string name = process->getProcessName();
+    if (strict) {
+        if (name.empty() || name == "Unknown" || name == "<unknown>") {
+            PlatformError error{"OpenProcess", static_cast<unsigned long>(pid), 0,
+                                "process name is not available"};
+            return Result<OpenProcessInfo, PlatformError>::error(std::move(error));
+        }
+        if (!process->bindIdentity() || !process->hasMemoryReadAccess()) {
+            PlatformError error{"OpenProcess", static_cast<unsigned long>(pid), 0,
+                                "memory read access was denied"};
+            return Result<OpenProcessInfo, PlatformError>::error(std::move(error));
+        }
+    }
+
+    m_session.reset();
+    m_currentProcess = process;
+    OpenProcessInfo info;
+    info.process = std::move(process);
+    info.name = name;
+    info.readOnly = info.process->isReadOnly();
+    return Result<OpenProcessInfo, PlatformError>::success(std::move(info));
+}
+
+void ProcessEngine::closeProcess()
+{
+    m_session.reset();
+    m_currentProcess.reset();
+}
+
 std::optional<std::string> ProcessEngine::searchProcess(tpe::platform::Pid_t pid) const
 {
     for(auto process : m_os->ProcessList)

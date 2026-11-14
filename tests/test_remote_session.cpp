@@ -1730,6 +1730,7 @@ void expectVerbatimQueryBlock(const SnapshotSessionResult& result,
 constexpr const char* kHelpText =
     "--all-processes        List processes on the server.\n"
     "--search-process <PID> Show the name of a process on the server.\n"
+    "--open-process <PID>   Open a process on the server and enter its scan prompt.\n"
     "help                   Show this help.\n"
     "exit                   End this client session.";
 

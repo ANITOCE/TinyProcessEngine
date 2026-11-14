@@ -30,6 +30,8 @@ set(TPE_TEST_SOURCES
   test_remote_log.cpp
   # T011:远程 TPE> 命令分类/执行契约用例(骨架期 RED,T017 实现后转绿)
   test_remote_command_executor.cpp
+  # Phase 02：共享扫描执行器与远程扫描会话
+  test_remote_scan_session.cpp
   # Windows 写路径用例(US2/缺陷③):整文件 _WIN32 门控,其它平台为空翻译单元
   test_windows_memory.cpp
   # US6(缺陷⑧):CLI 枚举失败信号用例(runCliWithEngine 注入接缝)
