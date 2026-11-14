@@ -1,16 +1,18 @@
 # TinyProcessEngine CLI 交互规范
 
+[English](cli-interaction-spec.en.md)
+
 > **来源**: 迁移自旧版《DEVELOPMENT_GUIDE.md》v0.2.0 第 11 章(2026-09-18 迁移);旧文档随 `docs/temp/` 一并删除,本文件为其在公开区的权威副本。章节编号沿用原第 11 章(§11.x),便于与历史记录对照。
-> **地位**: 本文件是 **Phase 04(CLI 交互重构)的规格输入**(Phase 04 已于 2026-09-21 合并);继续作为 **CLI 行为契约**,供 Phase 07(占位补齐)与后续迭代引用。与开发指南(`docs/plan/first-mvp-guide.md`)冲突时,以开发指南为准并先行修订指南(走评审)。
+> **地位**：第 11.1–11.10 节记录 [First MVP](first-mvp-guide.md) 的 CLI 契约。第 11.11 节记录 [远程连接指南](remote-connection-guide.md) 的 CLI 设计草案。变更行为时先修订并评审对应的开发指南，再同步本规范。
 > 核心原则:**终端优先、单行自包含、子模式为主体**。
 
 ---
 
 ## 11.1 设计原则
 
-1. **终端优先**: 程序从终端启动,通过命令行旗标选择操作;查询类命令输出即退出
+1. **终端优先**：程序从终端启动，通过命令行旗标选择操作。本地终端查询类命令输出后退出。
 2. **单行自包含**: 每条命令 = 一次完整操作,绝不交互式追问;缺参数时报用法错误
-3. **子模式为主体**: `--open-process <PID>` 进入 REPL 后即为全部交互,无嵌套模式
+3. **子模式为主体**：打开目标进程后，扫描命令在扫描 REPL 中执行。远程连接通过 `TPE>` 选择目标进程，见第 11.11 节。
 4. **状态可见**: 提示符实时反映当前扫描类型、数值类型与待扫描值
 5. **类型一致**: 扫描会话的数值类型由 `new-scan` 确定(显式旗标或默认 `i32`),后续 `next-scan` 不得修改——传入与当前一致的类型旗标为无操作,不一致报用法错误
 
@@ -27,7 +29,7 @@
 | 参数错误 | 显示帮助 | 2 |
 | 运行期失败(进程不存在、枚举失败等) | 打印错误信息(不进入 REPL) | 1 |
 
-> 规则:无参数或参数错误时默认显示 `help`;**只有 `--open-process` 进入驻留的 REPL**;运行期失败打印错误并以退出码 1 结束,REPL 内命令失败不退出、状态保持不变。
+> 本地启动时，无参数或参数错误会显示帮助。`--open-process` 进入扫描 REPL。启动阶段运行期失败会打印错误并以退出码 1 结束。扫描 REPL 内命令失败后保留当前状态。远程启动见第 11.11 节。
 
 ## 11.3 REPL 交互模式
 
@@ -65,7 +67,7 @@ notepad.exe-greater-i32-100> list 1
 | 命令 | 功能 |
 |------|------|
 | `help` | 显示 REPL 命令帮助;无参数或参数错误时默认调用 |
-| `exit` | 退出 REPL,终止进程返回终端(退出码 0) |
+| `exit` | 本地模式结束程序并以退出码 0 返回终端。远程模式返回 `TPE>`，见第 11.11 节。 |
 | `new-scan <value>` | 新建扫描(默认 equal + 当前 value-type),销毁之前进度 |
 | `new-scan [<scan-type>] [<value-type>] [<value>]` | 新建扫描,可指定扫描类型和数值类型 |
 | `next-scan <value>` | 在上一轮结果上继续扫描(默认 equal;数值类型沿当前会话,不可变更) |
@@ -77,7 +79,7 @@ notepad.exe-greater-i32-100> list 1
 
 ## 11.5 命令参数语法
 
-统一 `--` 前缀风格:`<scan-type>` 与 `<value-type>` 均为旗标,最后一个非 `--` 参数为待扫描值。
+扫描命令的 `<scan-type>` 与 `<value-type>` 旗标统一使用 `--` 前缀。最后一个非 `--` 参数为待扫描值。
 
 **`new-scan` 扫描类型**:
 
@@ -155,7 +157,7 @@ Phase 07(2026-09-26)完成后 CLI 无占位功能:原占位文案与占位机制
 
 ## 11.9 应用启动分层
 
-`main` 只负责启动程序,应用组件创建与装配由 `startup` 系列文件负责:
+以下为 First MVP 的启动分层。`main` 启动程序，`startup` 系列文件创建和装配应用组件。
 
 ```
 src/
@@ -187,6 +189,54 @@ src/
 - 用途:配合 `TinyProcessEngine.exe --open-process <Test.exe 的 PID>` 进行真实扫描/修改流程验证
 - 输入读取需平台非缓冲输入(Windows `_getch()` / Linux `termios`)
 
+## 11.11 远程连接（设计草案）
+
+本节同步远程连接开发指南第 3 节。远程启动模式通过同一个 TPE 可执行文件选择，Client 输入的命令由 Server 解析和执行，结果与下一条提示符由 Client 显示。 [远程连接指南](remote-connection-guide.md)
+
+### 11.11.1 启动与连接结果
+
+```text
+TinyProcessEngine.exe --server [-port <PORT>]
+TinyProcessEngine.exe --connect <IP> -port <PORT>
+```
+
+- `--server` 与 `--connect` 互斥。Linux 使用对应的可执行文件名。Server 省略 `-port` 时使用 `8008`，默认监听全部 IPv4 接口。Client 必须提供 Server 的 IPv4 地址和端口。端口为 `1` 至 `65535` 的十进制整数。
+- Server 成功监听后显示 `Waiting for connection ...` 并持续等待。成功接纳 Client 后，Server 显示 `Connection successful.`，随后在同一控制台输出该 Client 的操作日志。日志记录连接、拒绝、断开及命令结果。操作日志字段限于时间、对端、命令名、可用的目标 PID 和结果摘要。
+- Client 收到 Server 的接纳响应后显示 `Connection successful.`，进入 `TPE>`。Server 同时服务一个 Client。当前会话占用期间，新 Client 显示 `Connection failed.` 和原因 `Server is busy.`，退出码为 `1`。当前会话继续。
+- 启动参数错误显示具体原因和用法，退出码为 `2`。绑定、握手或连接失败显示具体原因，退出码为 `1`。Client 建立会话前的连接失败同时显示 `Connection failed.`。
+- 首版在受控 IPv4 网络中使用，由部署侧限定端口可达范围。Server 无应用层鉴权，以自身的系统权限处理已接纳 Client 的内存操作。
+
+### 11.11.2 连接层与扫描层
+
+- `TPE>` 的 `--all-processes` 和 `--search-process <PID>` 查询 Server 上的进程，显示结果后回到 `TPE>`。`--open-process <PID>` 成功时进入扫描 REPL，初始提示符为 `<process-name>-equal-i32>`。打开失败时显示原因并回到 `TPE>`。
+- 在 `TPE>` 输入 `help` 或 `--help`，显示本层可用命令。Phase 01 提供远程进程枚举和查询，Phase 02 加入打开进程和扫描交互。
+- 扫描 REPL 沿用第 11.3–11.7 节的命令、语法及提示符。扫描、查看结果和写入均针对 Server 上的目标进程。普通命令失败后显示原因并留在当前交互层。
+- 扫描层的 `exit` 关闭当前目标并清空扫描状态，回到 `TPE>`，保留连接。`TPE>` 的 `exit` 或任一层的输入 EOF 结束 Client，退出码为 `0`。Server 释放会话后继续监听。
+- Client 检测到意外断线时显示原因并以 `1` 退出。在终端等待输入时，最迟在下一次输入后报告已检测到的断线。如果正在等待 `write` 的响应，则报告写入结果未知。Server 检测到断线后丢弃尚未开始的命令，允许正在执行的命令结束，清理完成后再接纳新 Client。
+
+### 11.11.3 双机示例
+
+A 的 IPv4 地址为 `192.168.1.20`，其上运行 PID 为 `4321` 的测试进程。
+
+```text
+# A
+TinyProcessEngine.exe --server
+Waiting for connection ...
+Connection successful.
+
+# B
+TinyProcessEngine.exe --connect 192.168.1.20 -port 8008
+Connection successful.
+TPE> --search-process 4321
+Test.exe
+TPE> --open-process 4321
+Test.exe-equal-i32> new-scan 100
+Test.exe-equal-i32-100> exit
+TPE> exit
+```
+
+A 在接纳 B 时输出成功提示，之后继续在 A 的控制台显示 B 的操作日志。
+
 ---
 
 ## 勘误记录
@@ -207,4 +257,4 @@ src/
 
 ---
 
-*本文件已随 Phase 04 落地(2026-09-21 合并);如需求变更,先修订开发指南(`docs/plan/first-mvp-guide.md`,走评审)再修订本文件。*
+*本规范的本地 CLI 契约随 Phase 04 于 2026-09-21 合入。远程 CLI 契约随远程连接指南评审。*

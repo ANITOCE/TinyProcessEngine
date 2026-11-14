@@ -14,16 +14,20 @@ public:
     WindowsProcess() = default;
     WindowsProcess(Pid_t pid);
     WindowsProcess(Pid_t pid, std::string p_name);
-    WindowsProcess(Pid_t pid, std::string p_name, ScopedHandle handle) : PlatformProcess(pid, p_name), m_processHandle(std::move(handle)) {}
+    WindowsProcess(Pid_t pid, std::string p_name, ScopedHandle handle);
     ~WindowsProcess() = default;
 
     std::vector<MemoryPage> getCheatablePages() const override;
     Result<tpe::Memory, PlatformError> read(MemoryPage page) const override;
     Result<void, PlatformError> write(tpe::Address address, const tpe::Memory &value) override;
 
+    bool bindIdentity() override { return m_processHandle.valid(); }
+    bool hasMemoryReadAccess() const override { return m_processHandle.valid(); }
+    bool isAlive() const override;
+
     // 只读会话标记(US2/缺陷③,FR-009):写权限不可得时降级只读打开。
     // 存根阶段仅记录标记;只读写拒绝语义在 T020 实现。
-    bool isReadOnly() const { return m_readOnly; }
+    bool isReadOnly() const override { return m_readOnly; }
     void markReadOnly() { m_readOnly = true; }
 
 protected:

@@ -2,6 +2,7 @@
 
 #include "CliParser.hpp"
 #include "startup_cli.hpp"
+#include "startup_remote.hpp"
 
 #include <cstddef>
 #include <iostream>
@@ -30,6 +31,13 @@ std::vector<std::string> toArgs(int argc, char** argv)
 int run(int argc, char** argv)
 {
     const std::vector<std::string> args = toArgs(argc, argv);
+
+    // 远程模式在本地 CLI 解析之前分流:
+    // 首个参数为 --server 或 --connect 时交给远程入口,其余参数保持本地路径不变(FR-016)。
+    if (!args.empty() && (args.front() == "--server" || args.front() == "--connect")) {
+        return runRemote(args);
+    }
+
     const tpe::cli::TerminalCommand command = tpe::cli::parseTerminalCommand(args);
 
     switch (command.kind) {

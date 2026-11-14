@@ -1,8 +1,22 @@
 #include "ProcessEngine.hpp"
 
 #include <cassert>
+#include <string>
+#include <utility>
 
 namespace tpe {
+
+namespace {
+
+/// 渲染单个进程的列表行(T016):本地 `getProcessList()` 与 `processListText()`
+/// 共用同一渲染器,防止两处格式漂移;行分隔固定 LF,行尾带换行。
+std::string formatProcessListLine(const tpe::platform::PlatformProcess& process)
+{
+    return "PID: " + std::to_string(process.getPid()) +
+           " ProcessName: " + process.getProcessName() + '\n';
+}
+
+} // namespace
 
 ProcessEngine::ProcessEngine()
     : m_os(tpe::platform::createPlatformOS())
@@ -20,16 +34,32 @@ ProcessEngine::~ProcessEngine()
 
 Result<void, PlatformError> ProcessEngine::getProcessList() const
 {
-    // 缺陷⑧(FR-023/C-P5):平台枚举失败优先上报;不得以空列表伪装成功。
+    // T016:成功/失败均复用 processListText(),保证本地 stdout 与远程文本逐字节一致
+    // (FR-016/C-P5);枚举失败不打印任何进程行(缺陷⑧)。
+    const Result<std::string, PlatformError> text = processListText();
+    if (!text.has_value()) {
+        return Result<void, PlatformError>::error(text.error());
+    }
+
+    std::cout << text.value();
+    std::cout.flush(); // 与旧实现逐行 std::endl 的最终可见性一致;不改变输出内容。
+    return Result<void, PlatformError>::success();
+}
+
+Result<std::string, PlatformError> ProcessEngine::processListText() const
+{
+    // 缺陷⑧(FR-023/C-P5):平台枚举失败原样透传;不得以空列表伪装成功。
     const std::optional<PlatformError>& enumerationError = m_os->enumerationError();
     if (enumerationError.has_value()) {
-        return Result<void, PlatformError>::error(*enumerationError);
+        return Result<std::string, PlatformError>::error(*enumerationError);
     }
-    for(auto process : m_os->ProcessList)
-    {
-        std::cout << "PID: " << process->getPid() << " ProcessName: " << process->getProcessName() << std::endl;
+
+    // 按 ProcessList 顺序拼接;空列表返回空字符串;不打印、不做 UTF-8/长度校验
+    std::string text;
+    for (const std::shared_ptr<tpe::platform::PlatformProcess>& process : m_os->ProcessList) {
+        text += formatProcessListLine(*process);
     }
-    return Result<void, PlatformError>::success();
+    return Result<std::string, PlatformError>::success(std::move(text));
 }
 
 std::shared_ptr<tpe::platform::PlatformProcess> ProcessEngine::openProcess(tpe::platform::Pid_t pid)
@@ -39,6 +69,45 @@ std::shared_ptr<tpe::platform::PlatformProcess> ProcessEngine::openProcess(tpe::
         std::cerr << "Failed to open process with PID " << pid << std::endl;
     }
     return m_currentProcess;
+}
+
+Result<OpenProcessInfo, PlatformError> ProcessEngine::openProcessResult(
+    tpe::platform::Pid_t pid, bool strict)
+{
+    std::shared_ptr<tpe::platform::PlatformProcess> process = m_os->open(pid);
+    if (!process) {
+        PlatformError error{"OpenProcess", static_cast<unsigned long>(pid), 0,
+                            "process does not exist or cannot be opened"};
+        return Result<OpenProcessInfo, PlatformError>::error(std::move(error));
+    }
+
+    const std::string name = process->getProcessName();
+    if (strict) {
+        if (name.empty() || name == "Unknown" || name == "<unknown>") {
+            PlatformError error{"OpenProcess", static_cast<unsigned long>(pid), 0,
+                                "process name is not available"};
+            return Result<OpenProcessInfo, PlatformError>::error(std::move(error));
+        }
+        if (!process->bindIdentity() || !process->hasMemoryReadAccess()) {
+            PlatformError error{"OpenProcess", static_cast<unsigned long>(pid), 0,
+                                "memory read access was denied"};
+            return Result<OpenProcessInfo, PlatformError>::error(std::move(error));
+        }
+    }
+
+    m_session.reset();
+    m_currentProcess = process;
+    OpenProcessInfo info;
+    info.process = std::move(process);
+    info.name = name;
+    info.readOnly = info.process->isReadOnly();
+    return Result<OpenProcessInfo, PlatformError>::success(std::move(info));
+}
+
+void ProcessEngine::closeProcess()
+{
+    m_session.reset();
+    m_currentProcess.reset();
 }
 
 std::optional<std::string> ProcessEngine::searchProcess(tpe::platform::Pid_t pid) const

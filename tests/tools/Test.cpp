@@ -39,7 +39,15 @@ void printValue(std::int32_t value)
     std::fflush(stdout);
 }
 
-/// stdin 是否为终端(重定向/管道时自动退化为行模式)。
+/// 输出目标变量地址，供远程写入验收锁定同一地址。
+void printTargetAddress(const volatile std::int32_t& value)
+{
+    const auto address = reinterpret_cast<std::uintptr_t>(&value);
+    std::printf("Target address: 0x%llx\n", static_cast<unsigned long long>(address));
+    std::fflush(stdout);
+}
+
+enum class Key { None, Increase, Reset, Quit };
 bool stdinIsTerminal()
 {
 #ifdef _WIN32
@@ -48,8 +56,6 @@ bool stdinIsTerminal()
     return ::isatty(STDIN_FILENO) != 0;
 #endif
 }
-
-enum class Key { None, Increase, Quit };
 
 #ifdef _WIN32
 
@@ -63,6 +69,9 @@ Key readKey()
     }
     if (ch == 27) { // Esc
         return Key::Quit;
+    }
+    if (ch == 'r' || ch == 'R') {
+        return Key::Reset;
     }
     if (ch == ' ' || ch == '\r' || ch == '\n') {
         return Key::Increase;
@@ -113,6 +122,9 @@ Key readKey()
     if (ch == 27) { // Esc
         return Key::Quit;
     }
+    if (ch == 'r' || ch == 'R') {
+        return Key::Reset;
+    }
     if (ch == ' ' || ch == '\r' || ch == '\n') {
         return Key::Increase;
     }
@@ -133,6 +145,10 @@ int runInteractive(volatile std::int32_t& value)
             return 0;
         case Key::Increase:
             value += kStep;
+            printValue(value);
+            break;
+        case Key::Reset:
+            value = kInitialValue;
             printValue(value);
             break;
         case Key::None:
@@ -157,6 +173,11 @@ int runLineMode(volatile std::int32_t& value)
         if (token == "q") {
             return 0;
         }
+        if (token == "r" || token == "R") {
+            value = kInitialValue;
+            printValue(value);
+            continue;
+        }
         // 其它输入在自动化模式下忽略(等价于无效按键)
     }
     return 0; // EOF
@@ -168,6 +189,7 @@ int main()
 {
     // 数值驻留内存:volatile 保证不被优化进寄存器,便于被扫描/写入(i32 视图)。
     volatile std::int32_t value = kInitialValue;
+    printTargetAddress(value);
     printValue(value);
 
     if (!stdinIsTerminal()) {

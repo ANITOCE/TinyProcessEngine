@@ -10,6 +10,7 @@ add_executable(${PROJECT_NAME}
     startup/startup.cpp
     startup/startup_cli.cpp
     startup/startup_gui.cpp
+    startup/startup_remote.cpp
 )
 
 # 设置输出位置

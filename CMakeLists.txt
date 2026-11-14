@@ -30,6 +30,9 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 # find_package(Boost 1.74 REQUIRED COMPONENTS filesystem)
 # target_link_libraries(${PROJECT_NAME} PRIVATE Boost::filesystem)
 
+# 第三方依赖：libhv（evpp TCP）与 spdlog（操作日志），必须在定义/链接目标前可用
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/Dependencies.cmake)
+
 # 添加子目录
 add_subdirectory(src)
 
