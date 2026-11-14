@@ -5,7 +5,7 @@
 ## 文档信息
 
 - 指南标识 `remote-connection`，版本 `0.1.1`，状态 `accepted`（2026-11-08 需求方批准）
-- 负责人 anitoce，创建于 2026-11-08，最近更新于 2026-11-12
+- 负责人 anitoce，创建于 2026-11-08，最近更新于 2026-11-14
 - 场景为 TinyProcessEngine 存量迭代，公开仓库见 [TinyProcessEngine](https://github.com/ANITOCE/TinyProcessEngine)
 - 流程规范 4.0，Spec Kit 1.2.5（Copilot、PowerShell），Superpowers 7.0.1
 
@@ -110,7 +110,7 @@ A 上的 `Connection successful.` 在接纳 B 时显示，之后 A 的控制台�
 | Phase | 名称 | 目标 | 依赖 | 公开交付物摘要 | 状态 |
 | --- | --- | --- | --- | --- | --- |
 | 01 | 远程连接与进程查询 | G1、G2、G4 | First MVP | 两种启动模式、单连接会话、进程查询、日志 | `done` |
-| 02 | 远程扫描与内存读写 | G3、G4 | Phase 01 | 打开进程、扫描 REPL、两层退出、端到端验证 | `planned` |
+| 02 | 远程扫描与内存读写 | G3、G4 | Phase 01 | 打开进程、扫描 REPL、两层退出、端到端验证 | `done` |
 
 ### 4.2 Phase 条目
 
@@ -128,7 +128,7 @@ A 上的 `Connection successful.` 在接纳 B 时显示，之后 A 的控制台�
 - 依赖 — Phase 01 已合入并通过合入后验证。
 - 公开交付物 — 完整远程扫描 CLI、两层退出和远程内存操作验证。
 - 验收 — B 打开 A 上的受控测试进程，用现有命令扫描已知值并通过 `list` 实时读取，再 `write` 并回读新值。覆盖续扫、撤销、进程打开失败、扫描层 `exit` 后打开另一个进程，以及扫描期间拒绝第二个 Client。覆盖断线期间的命令处理与清理后重连，并验证旧结果不会进入新会话。Windows 和 Linux 分别验证 Server 与 Client。跨平台连接至少完成一次真实写入和回读。
-- 状态 — `planned`。
+- 状态 — `done`。2026-11-14 本地合入 `feat/add-remote-connection`，合入提交 `52d3123`。合入后 Windows 419 项、Linux 426 项全量测试通过，两端均为 0 失败。已验证 Windows Client 向 Linux 上的受控进程写入并回读。
 
 ### 4.3 顺序
 
@@ -170,6 +170,7 @@ Phase 01 先固定连接和查询契约，独立验证后合入。Phase 02 在�
 | 0.1.0 | 2026-11-08 | 记录远程 CLI、单连接、命令转发和 Phase 路线图 | Codex | 已批准（anitoce，2026-11-08） |
 | 0.1.1 | 2026-11-08 | 补充 Server 接纳成功后的提示和日志顺序，同步 CLI 交互规范 | Codex | 已批准（anitoce，2026-11-08） |
 | 0.1.1 | 2026-11-12 | 回写 Phase 01 本地合入与双平台验证结果 | Codex | Phase 01 已收尾 |
+| 0.1.1 | 2026-11-14 | 回写 Phase 02 本地合入、双平台全量复验和跨平台写入回读结果 | Codex | Phase 02 已收尾 |
 
 ## 9. 双语封存
 

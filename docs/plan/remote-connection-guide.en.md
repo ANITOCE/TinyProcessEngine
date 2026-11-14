@@ -5,7 +5,7 @@
 ## Document information
 
 - Guide ID `remote-connection`, version `0.1.1`, status `accepted` (owner approval, 2026-11-08)
-- Owner anitoce, created 2026-11-08 and last updated 2026-11-12
+- Owner anitoce, created 2026-11-08 and last updated 2026-11-14
 - Extension of the existing TinyProcessEngine project. See the [public repository](https://github.com/ANITOCE/TinyProcessEngine).
 - Workflow 4.0, Spec Kit 1.2.5 (Copilot, PowerShell), Superpowers 7.0.1
 
@@ -110,7 +110,7 @@ A displays `Connection successful.` when it admits B. A's console then shows the
 | Phase | Name | Goals | Dependency | Public deliverables | Status |
 | --- | --- | --- | --- | --- | --- |
 | 01 | Remote connection and process queries | G1, G2, G4 | First MVP | Startup modes, single-client admission, process queries, logging | `done` |
-| 02 | Remote scanning and memory access | G3, G4 | Phase 01 | Process opening, scan REPL, two-level exit, end-to-end verification | `planned` |
+| 02 | Remote scanning and memory access | G3, G4 | Phase 01 | Process opening, scan REPL, two-level exit, end-to-end verification | `done` |
 
 ### 4.2 Phase entries
 
@@ -128,7 +128,7 @@ A displays `Connection successful.` when it admits B. A's console then shows the
 - Dependency — Phase 01 merged and verified after merge.
 - Public deliverables — Full remote scan CLI, two-level exit, and remote memory operation verification.
 - Acceptance — B opens a controlled test process on A, scans for a known value with existing commands, reads the live value with `list`, writes a new value with `write`, and reads it back. Cover subsequent scans, undo, open failure, opening a different process after scan-level `exit`, and rejecting a second Client during a scan. Cover command handling on disconnect and reconnecting after cleanup. Verify that old results do not carry into new sessions. Exercise the Server and Client on both Windows and Linux. Complete at least one real write and readback over a cross-platform connection.
-- Status — `planned`.
+- Status — `done`. Merged locally into `feat/add-remote-connection` on 2026-11-14 at `52d3123`. After the merge, all 419 Windows tests and 426 Linux tests passed. A Windows Client wrote to a controlled Linux process and read back the new value.
 
 ### 4.3 Sequence
 
@@ -170,6 +170,7 @@ Run the full suite with the existing GoogleTest and CTest setup. Add coverage fo
 | 0.1.0 | 2026-11-08 | Record the remote CLI, single-client admission, command forwarding, and Phase roadmap | Codex | Approved (anitoce, 2026-11-08) |
 | 0.1.1 | 2026-11-08 | Specify the Server success message and logging order, and synchronize the CLI specification | Codex | Approved (anitoce, 2026-11-08) |
 | 0.1.1 | 2026-11-12 | Record the Phase 01 local merge and verification on both platforms | Codex | Phase 01 closed |
+| 0.1.1 | 2026-11-14 | Record the Phase 02 local merge, full verification on both platforms, and cross-platform write and readback | Codex | Phase 02 closed |
 
 ## 9. Seal both language editions
 
