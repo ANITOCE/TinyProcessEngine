@@ -1,9 +1,9 @@
-# Phase 01 远程连接第三方依赖（research.md R1）
+# Phase 01 远程连接第三方依赖
 #
 # 由顶层 CMakeLists.txt 在 add_subdirectory(src) 之前 include（T002），
 # 使后续 target_link_libraries 能解析 hv_static 与 spdlog::spdlog。
 # 两个依赖在同一文件内完成 FetchContent_MakeAvailable：
-# include 本文件后目标即已创建（tasks.md T001）。
+# include 本文件后目标即已创建。
 #
 # 许可证：libhv BSD-3-Clause、spdlog MIT（内置 fmt 为 MIT）。
 
@@ -90,7 +90,7 @@ FetchContent_Declare(
 # MakeAvailable 名称与 Declare 名称一致：libhv -> hv_static，spdlog -> spdlog::spdlog
 FetchContent_MakeAvailable(libhv spdlog)
 
-# ---- libhv 告警抑制（T052 / Constitution VI） ----
+# ---- libhv 告警抑制 ----
 # Linux/GCC 的 hmain.c 会产生 -Wformat-truncation；只在 C 编译器确实支持
 # 对应正向告警时，对 hv_static 的 C 编译局部抑制。使用正向探测，因为 GCC
 # 会静默接受不存在的 -Wno-* 选项，负向探测可能假通过。

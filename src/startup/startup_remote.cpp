@@ -18,20 +18,20 @@ namespace tpe::app {
 
 namespace {
 
-/// Server 省略 -port 时的默认端口（contracts/cli.md §1）。
+/// Server 省略 -port 时的默认端口。
 constexpr std::uint16_t kDefaultServerPort = 8008;
 
-/// 端口合法区间（contracts/cli.md §1）。
+/// 端口合法区间。
 constexpr unsigned int kMinimumPort = 1;
 constexpr unsigned int kMaximumPort = 65535;
 
-/// 远程用法文本(contracts/cli.md §1;参数错误时写标准输出)。
+/// 远程用法文本。
 constexpr std::string_view kRemoteUsageText =
     "Usage:\n"
     "  TinyProcessEngine.exe --server [-port <PORT>]\n"
     "  TinyProcessEngine.exe --connect <IP> -port <PORT>\n";
 
-/// 默认远程入口:解析参数后启动 Server 或 Client(contracts/cli.md §1/§2/§8)。
+/// 默认远程入口:解析参数后启动 Server 或 Client。
 /// 返回 0 正常结束、1 绑定/连接失败、2 参数用法错误。
 int defaultRemoteEntry(const std::vector<std::string>& args)
 {
@@ -48,7 +48,7 @@ int defaultRemoteEntry(const std::vector<std::string>& args)
         tpe::remote::RemoteServer server(options.port, engine);
         if (!server.start()) {
             // 绑定失败:标准错误写 "Failed to listen on port <PORT>: <系统原因>",
-            // 退出码 1(contracts/cli.md §8);监听提示只由成功路径输出。
+            // 退出码 1;监听提示只由成功路径输出。
             std::string reason = server.lastStartError();
             if (reason.empty()) {
                 reason = "the listening socket could not be created";

@@ -1,8 +1,6 @@
 // T010：远程日志格式化契约测试（TDD RED，T015 实现后转绿）。
 // T039：Server 操作日志事件分类测试（TDD RED，T041 实现后转绿）。
-// 依据：specs/001-remote-connection-phase-01/contracts/logging.md §1–§4、
-//       specs/001-remote-connection-phase-01/data-model.md §5、
-//       include/TinyProcessEngine/RemoteLog.hpp。
+// 相关接口见 include/TinyProcessEngine/RemoteLog.hpp。
 // 约束：只用 GoogleTest；时间点由固定整数秒构造，不读取系统时钟。
 //       T010 段为纯格式化断言（不访问网络/进程/文件系统）；
 //       T039 段使用进程内 RemoteServer + 127.0.0.1 回环原始 socket，
@@ -76,7 +74,7 @@ LogRecord makeContractRecord()
 } // namespace
 
 // ---------------------------------------------------------------------------
-// UTC 时间戳（contracts/logging.md §1；research.md R6）
+// UTC 时间戳
 // ---------------------------------------------------------------------------
 
 TEST(RemoteLog, FormatUtcTimestampRendersUnixEpoch)
@@ -129,7 +127,7 @@ TEST(RemoteLog, FormatUtcTimestampEndsWithZAndHasNoLocalOffset)
 }
 
 // ---------------------------------------------------------------------------
-// result 文本（contracts/logging.md §2：仅 5 个取值）
+// result 文本（仅 5 个取值）
 // ---------------------------------------------------------------------------
 
 TEST(RemoteLog, ToLogResultTextMapsOk)
@@ -158,7 +156,7 @@ TEST(RemoteLog, ToLogResultTextMapsDisconnected)
 }
 
 // ---------------------------------------------------------------------------
-// 事件命令文本（contracts/logging.md §3：事件名写入 command 字段）
+// 事件命令文本（事件名写入 command 字段）
 // ---------------------------------------------------------------------------
 
 TEST(RemoteLog, SessionEventCommandMapsAccept)
@@ -177,7 +175,7 @@ TEST(RemoteLog, SessionEventCommandMapsDisconnect)
 }
 
 // ---------------------------------------------------------------------------
-// 日志行渲染（contracts/logging.md §1 行格式、§4 不变量）
+// 日志行渲染
 // ---------------------------------------------------------------------------
 
 TEST(RemoteLog, FormatLogLineRendersFullRecord)
@@ -240,7 +238,7 @@ TEST(RemoteLog, FormatLogLineIncludesOnlyRecordFields)
 
     const std::string line = tpe::remote::formatLogLine(record);
 
-    // 契约 §4：不拼接内存数据、扫描值、完整命令行参数或进程名。
+    // 不拼接内存数据、扫描值、完整命令行参数或进程名。
     // 渲染器只接收 LogRecord，精确行相等即证明输出仅含五个字段。
     EXPECT_EQ(line,
               "2026-11-08T09:21:44Z peer=192.168.1.20:51234 command=--search-process pid=4321 result=ok");
@@ -249,7 +247,7 @@ TEST(RemoteLog, FormatLogLineIncludesOnlyRecordFields)
 }
 
 // ===========================================================================
-// T039：Server 操作日志事件分类（contracts/logging.md §3/§4）
+// T039：Server 操作日志事件分类
 //
 // 本段使用真实回环 TCP（127.0.0.1）与进程内 RemoteServer：
 //   - Server 日志写入 std::cout，由 ScopedLogStreams 以线程安全文本槽捕获；
@@ -269,7 +267,7 @@ using tpe::remote::Frame;
 using tpe::remote::MessageType;
 using tpe::remote::ResponseStatus;
 
-/// 单次等待上限（brief：所有等待最多 5 秒）。
+/// 单次等待上限为 5 秒。
 constexpr std::chrono::milliseconds kWaitLimit{5000};
 
 /// 事件分类用例各自使用独立端口（18110–18118），与 test_remote_session 的
@@ -964,7 +962,7 @@ std::size_t countQueryLogLines(const std::string& text)
 }
 
 // ---------------------------------------------------------------------------
-// T043：日志行严格断言（contracts/logging.md §1–§4）
+// T043：日志行严格断言
 //
 // 以“恰好 5 个单空格分隔字段”作为结构断言：任何附加原因文本、进程名或
 // 完整命令行都会增加字段数或改变字段内容，从而被拒绝。
@@ -1151,10 +1149,10 @@ bool runLoggedQueries(std::uint16_t port, const std::vector<std::string>& comman
 } // namespace
 
 // ---------------------------------------------------------------------------
-// 事件分类：accept/ok、reject/busy、reject/error（logging.md §3）
+// 事件分类：accept/ok、reject/busy、reject/error
 // ---------------------------------------------------------------------------
 
-/// 接纳 Client → 恰好 1 条 `accept/ok`，pid 为 `-`（契约 §3）。
+/// 接纳 Client → 恰好 1 条 `accept/ok`，pid 为 `-`。
 TEST(RemoteLogEvents, AcceptOkIsLoggedExactlyOnce)
 {
     ScopedLogStreams streams;
@@ -1191,7 +1189,7 @@ TEST(RemoteLogEvents, AcceptOkIsLoggedExactlyOnce)
     EXPECT_EQ(countServerLogLines(capturedLogOut(), "accept", "ok"), std::size_t{1});
 }
 
-/// 已占用时第二连接被拒 → 恰好 1 条 `reject/busy`（契约 §3）。
+/// 已占用时第二连接被拒 → 恰好 1 条 `reject/busy`。
 TEST(RemoteLogEvents, RejectBusyIsLoggedExactlyOnce)
 {
     ScopedLogStreams streams;
@@ -1273,7 +1271,7 @@ TEST(RemoteLogEvents, RejectErrorIsLoggedExactlyOnce)
 // 事件分类：disconnect/ok、disconnect/disconnected、disconnect/error
 // ---------------------------------------------------------------------------
 
-/// 正常结束（BYE）→ 恰好 1 条 `disconnect/ok`（契约 §3/§7）。
+/// 正常结束（BYE）→ 恰好 1 条 `disconnect/ok`。
 TEST(RemoteLogEvents, DisconnectOkOnByeIsLoggedExactlyOnce)
 {
     ScopedLogStreams streams;
@@ -1303,7 +1301,7 @@ TEST(RemoteLogEvents, DisconnectOkOnByeIsLoggedExactlyOnce)
     EXPECT_EQ(countServerLogLines(capturedLogOut(), "disconnect", "error"), std::size_t{0});
 }
 
-/// 未收到 BYE 的意外断线 → 恰好 1 条 `disconnect/disconnected`（契约 §7）。
+/// 未收到 BYE 的意外断线 → 恰好 1 条 `disconnect/disconnected`。
 TEST(RemoteLogEvents, DisconnectDisconnectedOnPeerCloseIsLoggedExactlyOnce)
 {
     ScopedLogStreams streams;
@@ -1340,7 +1338,7 @@ TEST(RemoteLogEvents, DisconnectDisconnectedOnPeerCloseIsLoggedExactlyOnce)
 }
 
 /// 已接纳会话遇到非法载荷帧（非空 BYE）→ 只记 1 条 `disconnect/error`，
-/// 不记 `disconnect/disconnected`，也不额外记 reject（契约 §3/§4/§7）。
+/// 不记 `disconnect/disconnected`，也不额外记 reject。
 TEST(RemoteLogEvents, DisconnectErrorOnInvalidPayloadIsLoggedOnceWithoutDisconnected)
 {
     ScopedLogStreams streams;
@@ -1387,7 +1385,7 @@ TEST(RemoteLogEvents, DisconnectErrorOnInvalidPayloadIsLoggedOnceWithoutDisconne
 
 /// `--search-process <不存在 PID>` → 精确 1 条 `pid=999999 result=not-found`
 /// （T043 收紧原宽松断言）；日志行仅含 5 个字段，不回显响应原因文本
-/// （契约 §2/§3/§4）。进程表由注入快照固定，不依赖宿主真实 PID。
+/// 进程表由注入快照固定，不依赖宿主真实 PID。
 TEST(RemoteLogEvents, SearchProcessFailureKeepsPidAndOmitsReasonText)
 {
     ScopedLogStreams streams;
@@ -1446,7 +1444,7 @@ TEST(RemoteLogEvents, SearchProcessFailureKeepsPidAndOmitsReasonText)
     EXPECT_EQ(line->find("Process with PID"), std::string::npos) << *line;
 }
 
-/// `help`、`--help` 与未知命令不产生查询日志（契约 §3）。
+/// `help`、`--help` 与未知命令不产生查询日志。
 TEST(RemoteLogEvents, HelpAndUnknownCommandsProduceNoQueryLog)
 {
     ScopedLogStreams streams;
@@ -1543,8 +1541,8 @@ TEST(RemoteLogEvents, PreSendRejectedCommandProducesNoQueryLog)
 // ===========================================================================
 // T043（评审 I1）：查询错误日志覆盖
 //
-// contracts/logging.md §3 要求 --all-processes/--search-process 的所有失败路径
-// 各产生恰好 1 条查询日志，且 §4 要求日志行不含原因文本/进程名/完整命令行。
+// 要求 --all-processes/--search-process 的所有失败路径
+// 各产生恰好 1 条查询日志，且日志行不含原因文本/进程名/完整命令行。
 // 本段用注入的固定进程快照覆盖：枚举失败、结果超限、非法 UTF-8 名称、PID 缺失
 // 或非法、名称不可读、名称不可编码；不读取宿主真实进程表（避免 PID 999999
 // 恰好存在的偶然依赖）。所有等待沿用 kWaitLimit（≤5 s）。
@@ -1552,22 +1550,22 @@ TEST(RemoteLogEvents, PreSendRejectedCommandProducesNoQueryLog)
 
 namespace {
 
-/// 超限回退的固定响应文本（protocol.md §5；cli.md §6）。
+/// 超限回退的固定响应文本。
 constexpr const char* kOversizeResponseLogText =
     "Response exceeds the maximum message size.";
 
-/// `--all-processes` 列表含非法 UTF-8 名称时的固定响应文本（cli.md §6）。
+/// `--all-processes` 列表含非法 UTF-8 名称时的固定响应文本。
 constexpr const char* kUnencodableListLogText =
     "Process list contains a name that cannot be encoded as UTF-8.";
 
-/// `--search-process` 名称含非法 UTF-8 时的固定响应文本（cli.md §6）。
+/// `--search-process` 名称含非法 UTF-8 时的固定响应文本。
 constexpr const char* kUnencodableNameLogText =
     "Process name cannot be encoded as UTF-8.";
 
 } // namespace
 
 /// `--all-processes` 枚举失败 → 恰好 1 条 `command=--all-processes pid=- result=error`，
-/// 日志不含平台原因文本（契约 §2/§3/§4）。
+/// 日志不含平台原因文本。
 TEST(RemoteLogEvents, AllProcessesEnumerationFailureIsLoggedAsError)
 {
     ScopedLogStreams streams;
@@ -1609,7 +1607,7 @@ TEST(RemoteLogEvents, AllProcessesEnumerationFailureIsLoggedAsError)
 }
 
 /// `--all-processes` 结果超限（>1 MiB）→ 同 1 条 `pid=- result=error`，
-/// 响应为固定超限文本；日志不回显进程名（契约 §3/§4）。
+/// 响应为固定超限文本；日志不回显进程名。
 TEST(RemoteLogEvents, AllProcessesOversizeIsLoggedAsError)
 {
     ScopedLogStreams streams;
@@ -1647,7 +1645,7 @@ TEST(RemoteLogEvents, AllProcessesOversizeIsLoggedAsError)
 }
 
 /// `--all-processes` 列表含非法 UTF-8 名称 → 同 1 条 `pid=- result=error`，
-/// 日志不含该名称（契约 §3/§4）。
+/// 日志不含该名称。
 TEST(RemoteLogEvents, AllProcessesInvalidUtf8NameIsLoggedAsError)
 {
     ScopedLogStreams streams;
@@ -1688,7 +1686,7 @@ TEST(RemoteLogEvents, AllProcessesInvalidUtf8NameIsLoggedAsError)
 }
 
 /// `--search-process` 参数缺失或非法 → 每次查询各 1 条
-/// `command=--search-process pid=- result=error`（契约 §2/§3）。
+/// `command=--search-process pid=- result=error`。
 TEST(RemoteLogEvents, SearchProcessMissingAndInvalidPidAreLoggedWithDashPid)
 {
     ScopedLogStreams streams;
@@ -1732,7 +1730,7 @@ TEST(RemoteLogEvents, SearchProcessMissingAndInvalidPidAreLoggedWithDashPid)
 }
 
 /// `--search-process` 名称不可读（空名称）→ 恰好 1 条
-/// `pid=4328 result=error`（契约 §3）。
+/// `pid=4328 result=error`。
 TEST(RemoteLogEvents, SearchProcessUnreadableNameIsLoggedAsError)
 {
     constexpr const char* kPidText = "4328";
@@ -1773,7 +1771,7 @@ TEST(RemoteLogEvents, SearchProcessUnreadableNameIsLoggedAsError)
 }
 
 /// `--search-process` 结果超限（>1 MiB）→ 恰好 1 条
-/// `pid=4329 result=error`，响应为固定超限文本（契约 §3）。
+/// `pid=4329 result=error`，响应为固定超限文本。
 TEST(RemoteLogEvents, SearchProcessOversizeIsLoggedAsError)
 {
     constexpr const char* kPidText = "4329";
@@ -1813,7 +1811,7 @@ TEST(RemoteLogEvents, SearchProcessOversizeIsLoggedAsError)
 }
 
 /// `--search-process` 名称不可编码（非法 UTF-8）→ 恰好 1 条
-/// `pid=4330 result=error`，日志不含名称（契约 §3/§4）。
+/// `pid=4330 result=error`，日志不含名称。
 TEST(RemoteLogEvents, SearchProcessUnencodableNameIsLoggedAsError)
 {
     constexpr const char* kPidText = "4330";

@@ -11,7 +11,7 @@
 namespace tpe::remote {
 
 // ============================================================
-// 协议常量（contracts/protocol.md §1）
+// 协议常量
 // ============================================================
 
 /// 当前协议版本；帧版本字节与此不符时返回 ErrorCode::UnsupportedVersion。
@@ -39,7 +39,7 @@ inline constexpr std::size_t kMaxClientIdBytes = 64;
 inline constexpr std::size_t kMaxPromptBytes = 0xFFFFu;
 
 // ============================================================
-// 消息类型与错误码（contracts/protocol.md §2；data-model.md §2）
+// 消息类型与错误码
 // ============================================================
 
 /// 帧 type 字节；未列出的值按 ErrorCode::BadMessageType 处理。
@@ -72,7 +72,7 @@ enum class ResponseStatus : std::uint8_t {
 };
 
 // ============================================================
-// 帧与解码结果（data-model.md §1）
+// 帧与解码结果
 // ============================================================
 
 /// 已解出的帧头；length 不含自身 4 字节，帧总字节数 = 4 + length。
@@ -109,7 +109,7 @@ struct DecodeResult {
     std::size_t consumed = 0; // status == Complete 时有效：本帧占用的输入字节数
 };
 
-/// RESPONSE 载荷的解码结果（data-model.md §4）。
+/// RESPONSE 载荷的解码结果。
 struct RemoteResponse {
     ResponseStatus status = ResponseStatus::Continue;
     std::string prompt; // 线上值不含尾随空格（尾随空格由渲染层添加）

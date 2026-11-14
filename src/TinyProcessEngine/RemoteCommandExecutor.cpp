@@ -19,7 +19,7 @@ namespace tpe::remote {
 namespace {
 
 // ============================================================
-// 固定文本（contracts/cli.md §3/§4/§6）
+// 固定文本
 // ============================================================
 
 /// 帮助文本：5 行，逐字符与契约一致；不含 `TPE> help` 回显行，不含尾随空行。
@@ -30,7 +30,7 @@ constexpr std::string_view kHelpText =
     "help                   Show this help.\n"
     "exit                   End this client session.";
 
-/// 未知命令文本：未交付的命令（如 `--open-process`）与空输入共用（契约 §3）。
+/// 未知命令文本：未交付的命令（如 `--open-process`）与空输入共用。
 constexpr std::string_view kUnknownCommandText =
     "Unknown command. Type 'help' for available commands.";
 
@@ -42,11 +42,11 @@ constexpr std::string_view kSearchProcessPrefix = "--search-process ";
 constexpr std::string_view kOpenProcessCommand = "--open-process";
 constexpr std::string_view kOpenProcessPrefix = "--open-process ";
 
-/// 参数错误以用法开头（契约 §6“用法与原因”），保证输出非空且点明命令名。
+/// 参数错误以用法开头（“用法与原因”），保证输出非空且点明命令名。
 constexpr std::string_view kSearchProcessUsage = "Usage: --search-process <PID>.";
 constexpr std::string_view kOpenProcessUsage = "Usage: --open-process <PID>.";
 
-/// 结果文本不可编码为 UTF-8 的固定失败文本（契约 §6；protocol.md §5）。
+/// 结果文本不可编码为 UTF-8 的固定失败文本。
 constexpr std::string_view kUnencodableNameText =
     "Process name cannot be encoded as UTF-8.";
 constexpr std::string_view kUnencodableListText =
@@ -78,7 +78,7 @@ RemoteCommandResult makeContinue(std::string text)
 }
 
 // ============================================================
-// 结果文本的严格 UTF-8 校验（契约 §6；protocol.md §5）
+// 结果文本的严格 UTF-8 校验
 // ============================================================
 
 bool isContinuationByte(std::uint8_t byte)
@@ -236,12 +236,12 @@ std::string openProcessUsageError(PidParseStatus status)
 
 RemoteCommandResult executeAllProcesses(tpe::ProcessEngine& engine)
 {
-    // 文本与本地 `getProcessList()` 同源（T016）；枚举失败时附带平台原因（契约 §6）。
+    // 文本与本地 `getProcessList()` 同源（T016）；枚举失败时附带平台原因。
     const tpe::Result<std::string, tpe::PlatformError> text = engine.processListText();
     if (!text.has_value()) {
         return makeCommandError("Failed to enumerate processes: " + text.error().message);
     }
-    // 先编码、后长度（契约 §6 末段）：这里只做编码校验，长度由 Server 编码响应时判定，
+    // 先编码、后长度（末段）：这里只做编码校验，长度由 Server 编码响应时判定，
     // 因而同时不可编码且超限的结果必定先报告不可编码（T030）。
     if (!isValidUtf8(text.value())) {
         return makeCommandError(std::string(kUnencodableListText));
@@ -271,7 +271,7 @@ RemoteCommandResult executeSearchProcess(std::string_view line, tpe::ProcessEngi
     if (name->empty()) {
         return makeCommandError("Failed to read the process name for PID " + pidText + ".");
     }
-    // 名称原样保留、不替换不丢弃；无法编码时按契约 §6 报告固定文本（先编码后长度）。
+    // 名称原样保留、不替换不丢弃；无法编码时按报告固定文本（先编码后长度）。
     if (!isValidUtf8(*name)) {
         return makeCommandError(std::string(kUnencodableNameText));
     }
@@ -287,7 +287,7 @@ RemoteCommandResult executeHelp()
 
 RemoteCommandKind classifyRemoteCommand(std::string_view line)
 {
-    // 整行精确匹配：前后带空格的已知命令不属于已交付命令（契约 §3）。
+    // 整行精确匹配：前后带空格的已知命令不属于已交付命令。
     if (line == "--all-processes") {
         return RemoteCommandKind::AllProcesses;
     }
@@ -319,7 +319,7 @@ RemoteCommandResult executeRemoteCommand(std::string_view line, tpe::ProcessEngi
     case RemoteCommandKind::Help:
         return executeHelp();
     case RemoteCommandKind::Exit:
-        // Server 侧不会收到 exit：Client 正常结束走 BYE（契约 §7），
+        // Server 侧不会收到 exit：Client 正常结束走 BYE，
         // Phase 01 也不使用 ResponseStatus::Exit，故防御性地按未知命令返回
         // 命令层错误——会话保留，不会被误当成结束信号。
         return makeCommandError(std::string(kUnknownCommandText));
@@ -546,7 +546,7 @@ RemoteCommandResult RemoteCommandExecutor::executeScanCommand(std::string_view l
     result.output = executed.output;
     result.status = executed.error ? ResponseStatus::CommandError : ResponseStatus::Continue;
     if (!isValidUtf8(result.output)) {
-        // UTF-8 校验先于响应容量（contracts/cli.md §6）。
+        // UTF-8 校验先于响应容量。
         result.output = "Scan result cannot be encoded as UTF-8.";
         result.status = ResponseStatus::CommandError;
     }

@@ -18,14 +18,14 @@ class ProcessEngine;
 
 namespace tpe::remote {
 
-/// 远程执行器当前层（data-model.md §1）。
+/// 远程执行器当前层。
 enum class RemoteLayer {
     Connection,
     Scan,
 };
 
 // ============================================================
-// TPE> 命令分类与执行（contracts/cli.md §3/§6；data-model.md §4）
+// TPE> 命令分类与执行
 // ============================================================
 
 /// TPE> 命令类别；Phase 01 的 4 条命令加 Phase 02 的 `--open-process`。
@@ -35,16 +35,16 @@ enum class RemoteCommandKind {
     OpenProcess,   // --open-process <PID>：打开目标并进入扫描层
     Help,          // help / --help：显示连接层命令
     Exit,          // exit：结束 Client 会话，Server 继续监听
-    Unknown,       // 其他输入：按未知命令处理（contracts/cli.md §3）
+    Unknown,       // 其他输入：按未知命令处理
 };
 
-/// 一条远程命令的执行结果；Server 据此构造 RESPONSE（contracts/protocol.md §5）。
+/// 一条远程命令的执行结果；Server 据此构造 RESPONSE。
 struct RemoteCommandResult {
     ResponseStatus status = ResponseStatus::Continue; // Continue / CommandError
     std::string output; // 可为空；多行以 LF（'\n'）分隔，不含提示符
     std::string prompt = "TPE>"; // 线上提示符，不含尾随空格
 
-    // Phase 02 日志元数据（data-model.md §3/§5）
+    // Phase 02 日志元数据
     bool loggable = false;
     std::string logCommand;
     std::optional<std::uint32_t> logPid;

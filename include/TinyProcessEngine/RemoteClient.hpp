@@ -8,10 +8,10 @@
 namespace tpe::remote {
 
 // ============================================================
-// Client 连接与会话（contracts/protocol.md §3–§7；contracts/cli.md §1–§2/§7）
+// Client 连接与会话
 // ============================================================
 
-/// Client 侧帧接收期限（contracts/protocol.md §4）：
+/// Client 侧帧接收期限：
 /// - `firstByte`：连接建立后等待“任何帧字节”的静默期限；
 /// - `frameComplete`：收到首字节后等待“完整帧”的期限。
 /// 默认值即契约值（30 秒）。测试通过 `setTimeoutsForTesting` 注入毫秒级缩短值，

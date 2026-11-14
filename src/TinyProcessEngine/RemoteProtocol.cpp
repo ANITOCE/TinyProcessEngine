@@ -42,10 +42,10 @@ void appendBigEndian32(std::vector<std::uint8_t>& out, std::uint32_t value)
 // 载荷辅助
 // ------------------------------------------------------------
 
-/// BUSY 的固定文本（contracts/protocol.md §2）。
+/// BUSY 的固定文本。
 constexpr std::string_view kBusyText = "Server is busy.";
 
-/// ERROR 载荷允许的错误码范围 [1, 6]（contracts/protocol.md §2）。
+/// ERROR 载荷允许的错误码范围 [1, 6]。
 constexpr std::uint8_t kMinErrorCode = static_cast<std::uint8_t>(ErrorCode::UnsupportedVersion);
 constexpr std::uint8_t kMaxErrorCode = static_cast<std::uint8_t>(ErrorCode::InvalidPayload);
 
@@ -148,7 +148,7 @@ ProtocolError makeError(ErrorCode code, std::string reason)
 } // namespace
 
 // ============================================================
-// 帧编码 / 解码（contracts/protocol.md §1；data-model.md §1）
+// 帧编码 / 解码
 // ============================================================
 
 std::vector<std::uint8_t> encodeFrame(MessageType type, std::vector<std::uint8_t> payload)
@@ -227,7 +227,7 @@ DecodeResult tryDecodeFrame(const std::vector<std::uint8_t>& buffer)
 }
 
 // ============================================================
-// 载荷校验（contracts/protocol.md §2；data-model.md §2）
+// 载荷校验
 // ============================================================
 
 std::optional<ProtocolError> validatePayload(MessageType type,
@@ -297,7 +297,7 @@ std::optional<ProtocolError> validatePayload(MessageType type,
 }
 
 // ============================================================
-// RESPONSE 编解码（contracts/protocol.md §2/§5/§8；data-model.md §4）
+// RESPONSE 编解码
 // ============================================================
 
 Result<std::vector<std::uint8_t>, ProtocolError> encodeResponse(ResponseStatus status,

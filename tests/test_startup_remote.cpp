@@ -1,7 +1,6 @@
 // T012：远程启动参数与入口分流契约测试（TDD RED，T018/T024 实现后转绿）。
 // T040：远程启动失败输出流与退出码测试（TDD RED，T042 实现后转绿）。
-// 依据：specs/001-remote-connection-phase-01/contracts/cli.md §1/§2/§8、
-//       src/startup/startup_remote.hpp、src/startup/startup.hpp。
+// 远程入口及分流接口见 src/startup/startup_remote.hpp 和 src/startup/startup.hpp。
 // 约束：只用 GoogleTest；除 127.0.0.1 回环外不访问网络；不启动子进程；
 //       Server 成功启动路径不测试（主循环会阻塞，直至外部终止）。
 //
@@ -125,7 +124,7 @@ int runApp(const std::vector<std::string>& args)
     return tpe::app::run(static_cast<int>(argv.size()), argv.data());
 }
 
-/// 断言解析失败且原因非空（契约 §1/§8：参数错误按用法错误处理）。
+/// 断言解析失败且原因非空（参数错误按用法错误处理）。
 void expectParseError(const std::vector<std::string>& args)
 {
     const auto result = tpe::app::parseRemoteStartupArgs(args);
@@ -136,10 +135,10 @@ void expectParseError(const std::vector<std::string>& args)
 } // namespace
 
 // ---------------------------------------------------------------------------
-// 套件 RemoteStartupArgs — 远程启动参数解析（contracts/cli.md §1/§8）
+// 套件 RemoteStartupArgs — 远程启动参数解析
 // ---------------------------------------------------------------------------
 
-/// §1：Server 省略端口时使用 8008。
+/// Server 省略端口时使用 8008。
 TEST(RemoteStartupArgs, ServerOnlyDefaultsToPort8008)
 {
     const auto result = tpe::app::parseRemoteStartupArgs({"--server"});
@@ -150,7 +149,7 @@ TEST(RemoteStartupArgs, ServerOnlyDefaultsToPort8008)
     EXPECT_EQ(options.port, std::uint16_t{8008});
 }
 
-/// §1：Server 显式端口覆盖默认值。
+/// Server 显式端口覆盖默认值。
 TEST(RemoteStartupArgs, ServerWithExplicitPortUsesIt)
 {
     const auto result = tpe::app::parseRemoteStartupArgs({"--server", "-port", "9000"});
@@ -161,7 +160,7 @@ TEST(RemoteStartupArgs, ServerWithExplicitPortUsesIt)
     EXPECT_EQ(options.port, std::uint16_t{9000});
 }
 
-/// §1：端口下边界 1 是合法取值。
+/// 端口下边界 1 是合法取值。
 TEST(RemoteStartupArgs, ServerWithMinimumPortParses)
 {
     const auto result = tpe::app::parseRemoteStartupArgs({"--server", "-port", "1"});
@@ -172,7 +171,7 @@ TEST(RemoteStartupArgs, ServerWithMinimumPortParses)
     EXPECT_EQ(options.port, std::uint16_t{1});
 }
 
-/// §1：端口上边界 65535 是合法取值。
+/// 端口上边界 65535 是合法取值。
 TEST(RemoteStartupArgs, ServerWithMaximumPortParses)
 {
     const auto result = tpe::app::parseRemoteStartupArgs({"--server", "-port", "65535"});
@@ -183,7 +182,7 @@ TEST(RemoteStartupArgs, ServerWithMaximumPortParses)
     EXPECT_EQ(options.port, std::uint16_t{65535});
 }
 
-/// §1：Client 需要 IPv4 字面量地址与端口。
+/// Client 需要 IPv4 字面量地址与端口。
 TEST(RemoteStartupArgs, ClientWithHostAndPortParses)
 {
     const auto result =
@@ -196,32 +195,32 @@ TEST(RemoteStartupArgs, ClientWithHostAndPortParses)
     EXPECT_EQ(options.port, std::uint16_t{9000});
 }
 
-/// §1：--server 与 --connect 互斥，并存为用法错误。
+/// --server 与 --connect 互斥，并存为用法错误。
 TEST(RemoteStartupArgs, ServerAndConnectTogetherAreRejected)
 {
     expectParseError({"--server", "--connect", "127.0.0.1", "-port", "9000"});
 }
 
-/// §1：互斥与次序无关——先 --connect 后 --server 同样是用法错误。
+/// 互斥与次序无关——先 --connect 后 --server 同样是用法错误。
 TEST(RemoteStartupArgs, ServerAfterConnectIsRejected)
 {
     expectParseError({"--connect", "127.0.0.1", "-port", "9000", "--server"});
 }
 
-/// §1：重复 --server 为用法错误。
+/// 重复 --server 为用法错误。
 TEST(RemoteStartupArgs, DuplicateServerIsRejected)
 {
     expectParseError({"--server", "--server"});
 }
 
-/// §1：重复 --connect 为用法错误。
+/// 重复 --connect 为用法错误。
 TEST(RemoteStartupArgs, DuplicateConnectIsRejected)
 {
     expectParseError(
         {"--connect", "127.0.0.1", "-port", "9000", "--connect", "127.0.0.1", "-port", "9000"});
 }
 
-/// §1：端口只能是 1–65535 的十进制整数。
+/// 端口只能是 1–65535 的十进制整数。
 TEST(RemoteStartupArgs, OutOfRangeOrNonNumericPortIsRejected)
 {
     for (const char* port : {"0", "65536", "abc"}) {
@@ -230,43 +229,43 @@ TEST(RemoteStartupArgs, OutOfRangeOrNonNumericPortIsRejected)
     }
 }
 
-/// §1/§8：-port 缺取值（Server 侧悬空）为用法错误。
+/// -port 缺取值（Server 侧悬空）为用法错误。
 TEST(RemoteStartupArgs, DanglingPortValueIsRejected)
 {
     expectParseError({"--server", "-port"});
 }
 
-/// §1/§8：Client 缺地址（-port 前没有 IP）为用法错误。
+/// Client 缺地址（-port 前没有 IP）为用法错误。
 TEST(RemoteStartupArgs, ClientWithoutAddressIsRejected)
 {
     expectParseError({"--connect", "-port", "9000"});
 }
 
-/// §1/§8：Client 缺端口为用法错误。
+/// Client 缺端口为用法错误。
 TEST(RemoteStartupArgs, ClientWithoutPortIsRejected)
 {
     expectParseError({"--connect", "127.0.0.1"});
 }
 
-/// §1：Client 地址必须是 IPv4 字面量，不是任意主机名/非法字面量。
+/// Client 地址必须是 IPv4 字面量，不是任意主机名/非法字面量。
 TEST(RemoteStartupArgs, InvalidIpv4LiteralIsRejected)
 {
     expectParseError({"--connect", "999.1.1.1", "-port", "9000"});
 }
 
-/// §1：主机名不是 IPv4 字面量，--connect localhost 属用法错误。
+/// 主机名不是 IPv4 字面量，--connect localhost 属用法错误。
 TEST(RemoteStartupArgs, HostnameInsteadOfIpv4LiteralIsRejected)
 {
     expectParseError({"--connect", "localhost", "-port", "9000"});
 }
 
-/// §8：未知参数为用法错误。
+/// 未知参数为用法错误。
 TEST(RemoteStartupArgs, UnknownArgumentIsRejected)
 {
     expectParseError({"--bogus"});
 }
 
-/// §1：远程模式必须显式指定角色，空参数列表为用法错误。
+/// 远程模式必须显式指定角色，空参数列表为用法错误。
 TEST(RemoteStartupArgs, EmptyArgumentListIsRejected)
 {
     expectParseError(std::vector<std::string>{});
@@ -276,7 +275,7 @@ TEST(RemoteStartupArgs, EmptyArgumentListIsRejected)
 // 套件 StartupDispatch — 入口分流（有界、不监听；T024 前为 RED）
 // ---------------------------------------------------------------------------
 
-/// brief 第 10 条：--server 触发远程替身 1 次，参数原样，返回值透传。
+/// --server 触发远程替身 1 次，参数原样，返回值透传。
 TEST(StartupDispatch, ServerArgumentInvokesInjectedRemoteEntry)
 {
     g_capture = RemoteEntryCapture{};
@@ -291,7 +290,7 @@ TEST(StartupDispatch, ServerArgumentInvokesInjectedRemoteEntry)
     EXPECT_EQ(rc, 42);
 }
 
-/// brief 第 11 条：--connect 触发远程替身 1 次，参数原样，返回值透传。
+/// --connect 触发远程替身 1 次，参数原样，返回值透传。
 TEST(StartupDispatch, ConnectArgumentInvokesInjectedRemoteEntry)
 {
     g_capture = RemoteEntryCapture{};
@@ -307,7 +306,7 @@ TEST(StartupDispatch, ConnectArgumentInvokesInjectedRemoteEntry)
     EXPECT_EQ(rc, 7);
 }
 
-/// brief 第 12 条：本地 CLI 路径不受影响——--help 不触发远程替身且返回 0。
+/// 本地 CLI 路径不受影响——--help 不触发远程替身且返回 0。
 TEST(StartupDispatch, HelpDoesNotInvokeRemoteEntry)
 {
     g_capture = RemoteEntryCapture{};
@@ -321,7 +320,7 @@ TEST(StartupDispatch, HelpDoesNotInvokeRemoteEntry)
 }
 
 // ===========================================================================
-// T040：远程启动失败输出流与退出码（contracts/cli.md §2/§8；US4）
+// T040：远程启动失败输出流与退出码
 //
 // 覆盖三类失败：
 //   1) 参数错误           → 原因 stderr、用法 stdout、退出码 2（基线）
@@ -340,7 +339,7 @@ namespace {
 
 using namespace std::chrono_literals;
 
-/// 单次等待上限（brief：所有等待最多 5 秒）。
+/// 单次等待上限为 5 秒。
 constexpr std::chrono::milliseconds kWaitLimit{5000};
 
 /// 有界轮询：predicate 就绪返回 true；超时返回最后一次判定结果。
@@ -791,7 +790,7 @@ std::string toLowerAscii(std::string text)
 }
 
 /// 绑定失败原因是否点明“端口已被占用”（而非仅重复端口号）。
-/// 契约 §8 要求“具体原因”；跨平台允许系统错误文本或原生错误码。
+/// 诊断应给出具体原因。跨平台允许系统错误文本或原生错误码。
 bool mentionsAddressInUse(const std::string& text)
 {
     const std::string lower = toLowerAscii(text);
@@ -806,10 +805,10 @@ bool mentionsAddressInUse(const std::string& text)
 } // namespace
 
 // ---------------------------------------------------------------------------
-// 失败输出流与退出码（cli.md §2/§8）
+// 失败输出流与退出码
 // ---------------------------------------------------------------------------
 
-/// 参数错误：具体原因写标准错误、用法写标准输出、退出码 2（契约 §1/§8）。
+/// 参数错误：具体原因写标准错误、用法写标准输出、退出码 2。
 TEST(RemoteStartupFailureOutput, ArgumentErrorWritesReasonToStderrAndUsageToStdout)
 {
     ScopedStreamCapture capture;
@@ -830,7 +829,7 @@ TEST(RemoteStartupFailureOutput, ArgumentErrorWritesReasonToStderrAndUsageToStdo
         << "用法不得写入标准错误；stderr=[" << capture.err() << "]";
 }
 
-/// 端口被占用：具体原因写标准错误、退出码 1，且不得宣告开始监听（契约 §8）。
+/// 端口被占用：具体原因写标准错误、退出码 1，且不得宣告开始监听。
 TEST(RemoteStartupFailureOutput, OccupiedPortWritesSpecificReasonToStderrAndReturnsOne)
 {
     BoundListeningPort listener;
@@ -858,7 +857,7 @@ TEST(RemoteStartupFailureOutput, OccupiedPortWritesSpecificReasonToStderrAndRetu
         << "启动失败不得输出监听提示；stdout=[" << capture.out() << "]";
 }
 
-/// 目标端口无监听进程：`Connection failed.` + 原因写标准错误、退出码 1（契约 §2/§8）。
+/// 目标端口无监听进程：`Connection failed.` + 原因写标准错误、退出码 1。
 TEST(RemoteStartupFailureOutput, ConnectionRefusedWritesConnectionFailedToStderrAndReturnsOne)
 {
     BoundClosedPort closed;

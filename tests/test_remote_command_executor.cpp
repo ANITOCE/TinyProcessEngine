@@ -2,12 +2,8 @@
  * test_remote_command_executor.cpp — 远程 TPE> 命令分类与执行契约测试
  *                                   （T011 RED；T017 实现后转绿）
  *
- * 依据：
- *   - specs/001-remote-connection-phase-01/contracts/cli.md §3 / §4 / §6
- *   - specs/001-remote-connection-phase-01/data-model.md §4
- *   - include/TinyProcessEngine/RemoteCommandExecutor.hpp
- *   - .superpowers/sdd/remote-connection-phase-01/t011-brief.md（lead 范围裁决）
- *
+ * 命令接口见 include/TinyProcessEngine/RemoteCommandExecutor.hpp。
+  *
  * 范围：只覆盖 classifyRemoteCommand 与 executeRemoteCommand 的可测路径。
  *   - `--all-processes` 成功输出与枚举失败依赖 ProcessEngine::processListText()
  *     （T013/T016 才引入）→ 不在本任务覆盖，由 T013/T016 覆盖、T030 集成验证。
@@ -156,7 +152,7 @@ private:
     std::streambuf* const m_old;
 };
 
-/// contracts/cli.md §2.1 帮助文本正文：5 行，逐行对齐空格与契约一致；
+/// 帮助文本正文：5 行，逐行对齐空格与契约一致；
 /// 不含 `TPE> help` 回显行，不含尾随空行。
 constexpr const char* kHelpText =
     "--all-processes        List processes on the server.\n"
@@ -165,11 +161,11 @@ constexpr const char* kHelpText =
     "help                   Show this help.\n"
     "exit                   End this client session.";
 
-/// contracts/cli.md §3 未知命令文本（含 --open-process 等未交付命令）。
+/// 未知命令文本（含 --open-process 等未交付命令）。
 constexpr const char* kUnknownCommandText =
     "Unknown command. Type 'help' for available commands.";
 
-/// 参数错误只锁定契约 §6 要求的“用法与原因”：输出非空且提到命令名；
+/// 参数错误只检查必需的“用法与原因”：输出非空且提到命令名；
 /// 具体措辞由 T017 定稿，测试不锁定，避免过度约束。
 void expectSearchProcessUsageError(const RemoteCommandResult& result)
 {
@@ -192,7 +188,7 @@ std::string searchProcessLine(unsigned long pid)
 } // namespace
 
 // ---------------------------------------------------------------------------
-// 1) 命令分类（contracts/cli.md §3）
+// 1) 命令分类
 // ---------------------------------------------------------------------------
 
 TEST(RemoteCommandExecutor, ClassifyAllProcesses)
@@ -247,7 +243,7 @@ TEST(RemoteCommandExecutor, ClassifyPaddedCommandsAreUnknown)
 }
 
 // ---------------------------------------------------------------------------
-// 2) help / --help（contracts/cli.md §4）
+// 2) help / --help
 // ---------------------------------------------------------------------------
 
 TEST(RemoteCommandExecutor, HelpReturnsContractHelpText)
@@ -260,13 +256,13 @@ TEST(RemoteCommandExecutor, HelpReturnsContractHelpText)
 
         EXPECT_EQ(result.status, ResponseStatus::Continue);
         EXPECT_EQ(result.output, kHelpText)
-            << "help output must match contracts/cli.md §2.1 exactly (5 lines, "
+            << "help output must match the expected text exactly (5 lines, "
                "no prompt echo, no trailing blank line)";
     }
 }
 
 // ---------------------------------------------------------------------------
-// 3) 未知命令（contracts/cli.md §3）
+// 3) 未知命令
 // ---------------------------------------------------------------------------
 
 TEST(RemoteCommandExecutor, UnknownCommandReportsContractText)
@@ -283,7 +279,7 @@ TEST(RemoteCommandExecutor, UnknownCommandReportsContractText)
 }
 
 // ---------------------------------------------------------------------------
-// 4) --search-process 参数错误（contracts/cli.md §6）
+// 4) --search-process 参数错误
 // ---------------------------------------------------------------------------
 
 TEST(RemoteCommandExecutor, SearchProcessWithoutPidReportsUsageAndSkipsEngine)
@@ -320,7 +316,7 @@ TEST(RemoteCommandExecutor, SearchProcessWithNonNumericPidReportsUsage)
 }
 
 // ---------------------------------------------------------------------------
-// 5) --search-process 查询失败（contracts/cli.md §6）
+// 5) --search-process 查询失败
 // ---------------------------------------------------------------------------
 
 TEST(RemoteCommandExecutor, SearchProcessUnknownPidReportsNotFound)
@@ -348,7 +344,7 @@ TEST(RemoteCommandExecutor, SearchProcessEmptyNameReportsUnreadableName)
 }
 
 // ---------------------------------------------------------------------------
-// 6) --search-process 成功（contracts/cli.md §3 / §6）
+// 6) --search-process 成功
 // ---------------------------------------------------------------------------
 
 TEST(RemoteCommandExecutor, SearchProcessReturnsNameOnSingleLine)

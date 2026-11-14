@@ -55,7 +55,6 @@ Result<std::string, PlatformError> ProcessEngine::processListText() const
     }
 
     // 按 ProcessList 顺序拼接;空列表返回空字符串;不打印、不做 UTF-8/长度校验
-    // (校验归 T017 响应层,契约 contracts/cli.md §5)。
     std::string text;
     for (const std::shared_ptr<tpe::platform::PlatformProcess>& process : m_os->ProcessList) {
         text += formatProcessListLine(*process);

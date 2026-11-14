@@ -45,7 +45,7 @@ namespace tpe::remote {
 namespace {
 
 // ============================================================
-// 固定文本与载荷辅助（contracts/protocol.md §2/§3；contracts/cli.md §2）
+// 固定文本与载荷辅助
 // ============================================================
 
 /// BUSY 的固定载荷文本：`Server is busy.`。
@@ -57,7 +57,7 @@ constexpr std::string_view kBusyText = "Server is busy.";
 /// 先收到 BUSY；对端读到 BUSY 后通常会主动关闭，此定时器仅作有界兜底。
 constexpr int kBusyCloseDelayMs = 1000;
 
-/// Draining 清理延迟（毫秒，contracts/protocol.md §3/§6）。
+/// Draining 清理延迟（毫秒）。
 /// 会话结束（BYE、断线或非法帧关闭）后不在此次事件内回到 `Listening`：
 /// 释放占用推迟到下一轮事件循环，让已排队的连接事件先按 `Draining` 判定为
 /// BUSY。定时器与事件循环同线程，不引入额外线程。
@@ -69,14 +69,14 @@ constexpr std::string_view kWaitingText = "Waiting for connection ...";
 /// Server 接纳 Client 时写入标准输出的固定文本。
 constexpr std::string_view kAcceptedText = "Connection successful.";
 
-/// RESPONSE 的线上提示符；不含尾随空格（尾随空格由 Client 渲染层添加，cli.md §5）。
+/// RESPONSE 的线上提示符；不含尾随空格（尾随空格由 Client 渲染层添加）。
 constexpr std::string_view kPromptText = "TPE>";
 
-/// 结果超过单条 RESPONSE 上限时的固定错误文本（protocol.md §5；cli.md §6）。
+/// 结果超过单条 RESPONSE 上限时的固定错误文本。
 constexpr std::string_view kOversizeResponseText = "Response exceeds the maximum message size.";
 
 // ============================================================
-// 查询日志元数据（contracts/logging.md §2–§4）
+// 查询日志元数据
 // ============================================================
 
 /// 查询日志的 command 字段（仅这两条命令产生查询日志）。
@@ -133,7 +133,7 @@ std::vector<std::uint8_t> toPayload(std::string_view text)
     return std::vector<std::uint8_t>(text.begin(), text.end());
 }
 
-/// ERROR 载荷编码：code(uint8) + reason(UTF-8)（contracts/protocol.md §2）。
+/// ERROR 载荷编码：code(uint8) + reason(UTF-8)。
 std::vector<std::uint8_t> encodeErrorPayload(ErrorCode code, std::string_view reason)
 {
     std::vector<std::uint8_t> payload;
@@ -144,7 +144,7 @@ std::vector<std::uint8_t> encodeErrorPayload(ErrorCode code, std::string_view re
 }
 
 /// 写出一帧：length/version/type 由 encodeFrame 编码（T014）。
-/// 写失败（对端已关闭）可忽略：契约 §3 允许 BUSY/ERROR 写回失败。
+/// 对端已关闭时可忽略 BUSY/ERROR 的写回失败。
 void writeFrame(const hv::SocketChannelPtr& channel, MessageType type,
                 std::vector<std::uint8_t> payload)
 {
@@ -157,8 +157,8 @@ void writeFrame(const hv::SocketChannelPtr& channel, MessageType type,
 
 /// 静默 libhv 的默认日志器（每进程恰好一次）。
 /// libhv 默认 logger 未设 handler 时会回落到文件输出，在进程工作目录生成
-/// `libhv.YYYYMMDD.log`；这与 contracts/logging.md §4（只写 Server 的标准控制台
-/// 输出、不单独落盘）冲突。`LOG_LEVEL_SILENT` 使 `logger_print` 在写文件之前即返回
+/// `libhv.YYYYMMDD.log`。Server 日志只写到标准控制台，
+/// 无需额外日志文件。`LOG_LEVEL_SILENT` 使 `logger_print` 在写文件之前即返回
 /// （libhv base/hlog.c：`if (level < logger->level) return -10;`）。
 void silenceLibhvFileLogger()
 {
@@ -167,7 +167,7 @@ void silenceLibhvFileLogger()
 }
 
 // ============================================================
-// 绑定失败诊断（contracts/cli.md §8“端口被占用：具体原因” ）
+// 绑定失败诊断
 // ============================================================
 
 /// 去掉系统消息尾部的空白与句点：句点与错误码后缀由 describeSocketError 统一追加，
@@ -251,7 +251,7 @@ std::string probeBindFailure(std::uint16_t port)
 // ============================================================
 
 struct RemoteServer::Impl {
-    /// 会话状态（contracts/protocol.md §3/§4/§6/§7；data-model.md §3）。
+    /// 会话状态。
     /// 无会话即为 `Listening`；只有 `Listening` 才能进入 `Handshaking`。
     /// `Draining`：会话已结束但清理尚未完成，`session` 仍非空，
     /// 期间被处理的连接事件一律按占用返回 BUSY。
@@ -289,7 +289,7 @@ struct RemoteServer::Impl {
 
     // ---- 配置（启动前设置） ----
     std::uint16_t port;
-    /// 活动期 COMMAND 的执行目标；只在事件循环线程访问（contracts/logging.md §4）。
+    /// 活动期 COMMAND 的执行目标；只在事件循环线程访问。
     tpe::ProcessEngine& engine;
     std::chrono::milliseconds handshakeTimeout{5000};
     /// Draining 清理延迟；仅测试接缝覆盖（默认保持契约行为）。
@@ -310,10 +310,10 @@ struct RemoteServer::Impl {
     // 控制面
     // --------------------------------------------------------
 
-    /// 绑定并开始监听；绑定失败或端口占用返回 false（contracts/cli.md §8）。
+    /// 绑定并开始监听；绑定失败或端口占用返回 false。
     bool startListening()
     {
-        // 首次启动监听之前静默 libhv 内部文件日志（contracts/logging.md §4）。
+        // 首次启动监听之前静默 libhv 内部文件日志。
         silenceLibhvFileLogger();
 
         const std::lock_guard<std::mutex> guard(controlMutex);
@@ -334,7 +334,7 @@ struct RemoteServer::Impl {
             return false;
         }
         // libhv 默认按 CPU 核数创建 worker 线程；本实现要求会话状态、握手定时器与
-        // 日志全部在同一事件循环线程内完成（contracts/logging.md §4），因此固定为
+        // 日志全部在同一事件循环线程内完成，因此固定为
         // 0 个 worker：连接与回调都在 accept 所在的事件循环线程处理。
         created->setThreadNum(0);
         created->onConnection = [this](const hv::SocketChannelPtr& channel) {
@@ -404,7 +404,7 @@ struct RemoteServer::Impl {
         }
     }
 
-    /// 连接事件被处理时的占用判定（contracts/protocol.md §3）：非空闲一律 BUSY。
+    /// 连接事件被处理时的占用判定：非空闲一律 BUSY。
     void acceptChannel(const hv::SocketChannelPtr& channel)
     {
         if (stopping.load(std::memory_order_acquire)) {
@@ -425,7 +425,7 @@ struct RemoteServer::Impl {
         accepted->channel = channel;
         accepted->executor = std::make_unique<RemoteCommandExecutor>(engine);
         session = accepted;
-        // 契约 logging.md §3：失败握手属于“接纳前握手失败”，只记 reject/error；
+        // 契约 失败握手属于“接纳前握手失败”，只记 reject/error；
         // 因此 accept/ok 与 `Connection successful.` 推迟到 HELLO 校验通过后记录。
         startHandshakeTimer(accepted);
     }
@@ -540,18 +540,18 @@ struct RemoteServer::Impl {
         const auto closed = session;
         if (closed->state == State::Draining) {
             // 清理期间自身连接的关闭事件（BYE/ERROR 后主动关闭、或对端先关）：
-            // 不计入其它事件，保证每次会话结束恰好 1 条 disconnect 记录（logging.md §4）。
+            // 不计入其它事件，保证每次会话结束恰好 1 条 disconnect 记录。
             return;
         }
         if (closed->state == State::Handshaking) {
-            // 握手期对端关闭：记 1 条 reject/error 并回到 Listening（契约 §3）。
+            // 握手期对端关闭：记 1 条 reject/error 并回到 Listening。
             stopWorker(closed);
             session.reset();
             cancelHandshakeTimer(closed);
             logSessionEvent(channel, SessionEvent::Reject, LogResult::Error);
             return;
         }
-        // 已接纳会话未收到 BYE 即断开：记 1 条 disconnect/disconnected（契约 §7）。
+        // 已接纳会话未收到 BYE 即断开：记 1 条 disconnect/disconnected。
         logSessionEvent(channel, SessionEvent::Disconnect, LogResult::Disconnected);
         beginDraining(closed);
     }
@@ -569,7 +569,7 @@ struct RemoteServer::Impl {
             return;
         }
         if (session->state == State::Draining) {
-            return; // 会话已结束：清理完成前不再处理任何输入（§6 未开始的命令丢弃）
+            return; // 会话已结束：清理完成前不再处理任何输入
         }
         if (stopping.load(std::memory_order_acquire)) {
             return;
@@ -582,7 +582,7 @@ struct RemoteServer::Impl {
     }
 
     /// 从接收缓冲中反复解出完整帧；任一步结束会话即停止。
-    /// 一条 COMMAND 返回后不再继续解析同一接收事件中的后续帧（§6）：协议规定
+    /// 一条 COMMAND 返回后不再继续解析同一接收事件中的后续帧：协议规定
     /// Client 每次只发送一条 COMMAND 并等待 RESPONSE，剩余字节一律视为“未开始”，
     /// 只由后续新的读取事件（新数据到达）处理；会话在此前结束则随 `input` 清空丢弃。
     void processInput(const std::shared_ptr<Session>& current)
@@ -613,13 +613,13 @@ struct RemoteServer::Impl {
             if (commandFrame) {
                 // 不在本回调内续行：若在此继续执行缓冲中的下一条命令，任何事件循环
                 // 延迟都可能让“续行”先于已排队的 close 事件，导致断开后仍执行未开始
-                // 的命令（protocol.md §6 / FR-012）。剩余字节留给后续新的读取事件。
+                // 的命令。剩余字节留给后续新的读取事件。
                 return;
             }
         }
     }
 
-    /// 失败事件归属：握手期按 reject，活动期按 disconnect（contracts/protocol.md §3/§7）。
+    /// 失败事件归属：握手期按 reject，活动期按 disconnect。
     static SessionEvent eventFor(State state)
     {
         return (state == State::Handshaking) ? SessionEvent::Reject : SessionEvent::Disconnect;
@@ -634,7 +634,7 @@ struct RemoteServer::Impl {
         }
     }
 
-    /// 握手帧（contracts/protocol.md §4）：只接受合法 HELLO，其余按错误码关闭。
+    /// 握手帧：只接受合法 HELLO，其余按错误码关闭。
     void handleHandshakeFrame(const std::shared_ptr<Session>& current, const Frame& frame)
     {
         if (frame.header.type != MessageType::Hello) {
@@ -653,14 +653,14 @@ struct RemoteServer::Impl {
         current->state = State::Active;
         startWorker(current);
         writeFrame(current->channel, MessageType::Welcome, {});
-        // 握手成功即“接纳”：此时才记 accept/ok 并输出固定接纳提示（contracts/logging.md §3）。
+        // 握手成功即“接纳”：此时才记 accept/ok 并输出固定接纳提示。
         logSessionEvent(current->channel, SessionEvent::Accept, LogResult::Ok);
         if (!stopping.load(std::memory_order_acquire)) {
             std::cout << kAcceptedText << std::endl;
         }
     }
 
-    /// 活动期帧（contracts/protocol.md §5/§7）：BYE 正常结束；COMMAND 执行并回 RESPONSE。
+    /// 活动期帧：BYE 正常结束；COMMAND 执行并回 RESPONSE。
     void handleActiveFrame(const std::shared_ptr<Session>& current, const Frame& frame)
     {
         switch (frame.header.type) {
@@ -679,14 +679,14 @@ struct RemoteServer::Impl {
             return;
 
         default:
-            // 客户端不得发送 WELCOME/BUSY/ERROR/RESPONSE（契约 §2）。
+            // 客户端不得发送 WELCOME/BUSY/ERROR/RESPONSE。
             abortSession(current, ErrorCode::BadMessageType, "unexpected message type",
                          SessionEvent::Disconnect);
             return;
         }
     }
 
-    /// 活动期 COMMAND（contracts/protocol.md §5/§7）：载荷非法 → ERROR(6) 并关闭；
+    /// 活动期 COMMAND：载荷非法 → ERROR(6) 并关闭；
     /// 合法 → 交给 RemoteCommandExecutor 执行并回 RESPONSE，会话保持 Active。
     void handleCommandFrame(const std::shared_ptr<Session>& current, const Frame& frame)
     {
@@ -714,14 +714,14 @@ struct RemoteServer::Impl {
         current->workerCv.notify_one();
     }
 
-    /// RESPONSE 发送结果；查询日志据此判定 result 字段（contracts/logging.md §3）。
+    /// RESPONSE 发送结果；查询日志据此判定 result 字段。
     enum class ResponseDelivery {
         Sent,     // 按执行结果原样发送
         Oversize, // 结果超限：已改发固定 status=2 响应
         Failed,   // 编码内部错误：会话已按 ERROR(5) 关闭
     };
 
-    /// 编码并发送 RESPONSE（contracts/protocol.md §5）：
+    /// 编码并发送 RESPONSE：
     /// 结果超过单条响应上限时改发固定的 status=2 响应；不截断、不分片，会话保留。
     ResponseDelivery sendResponse(const std::shared_ptr<Session>& current, ResponseStatus status,
                                   const std::string& output, const std::string& prompt)
@@ -739,7 +739,7 @@ struct RemoteServer::Impl {
         return ResponseDelivery::Failed;
     }
 
-    /// 超限回退（protocol.md §5；cli.md §6）：status=2 + 固定文本，结果不截断、不分片。
+    /// 超限回退：status=2 + 固定文本，结果不截断、不分片。
     ResponseDelivery sendOversizeFallback(const std::shared_ptr<Session>& current,
                                           const std::string& prompt)
     {
@@ -768,18 +768,18 @@ struct RemoteServer::Impl {
     }
 
     // --------------------------------------------------------
-    // 会话收尾：Draining（contracts/protocol.md §3/§6/§7）
+    // 会话收尾：Draining
     // --------------------------------------------------------
 
     /// 进入 Draining：会话对象保留到清理完成，期间连接事件一律按占用处理。
-    /// 握手失败不经过本函数（contracts/protocol.md §7）。
+    /// 握手失败不经过本函数。
     void beginDraining(const std::shared_ptr<Session>& current)
     {
         if (session != current || current->state == State::Draining) {
             return;
         }
         cancelHandshakeTimer(current);
-        // 会话已结束：接收缓冲区中未构成完整帧 / 未进入执行函数的命令全部丢弃（§6）。
+        // 会话已结束：接收缓冲区中未构成完整帧 / 未进入执行函数的命令全部丢弃。
         current->input.clear();
         current->state = State::Draining;
         // 工作线程在完成当前命令后释放目标；清理完成前保持 Draining。
@@ -831,7 +831,7 @@ struct RemoteServer::Impl {
     }
 
     /// 失败路径：记 1 条日志、发送 ERROR 并关闭连接。
-    /// 握手期失败立即回到 Listening（reject/error）；活动期失败进入 Draining（§7）。
+    /// 握手期失败立即回到 Listening（reject/error）；活动期失败进入 Draining。
     void abortSession(const std::shared_ptr<Session>& current, ErrorCode code,
                       std::string_view reason, SessionEvent event)
     {
@@ -854,7 +854,7 @@ struct RemoteServer::Impl {
         current->channel->close();
     }
 
-    /// 正常结束（契约 §7）：回 BYE 确认、记 1 条 disconnect/ok、关闭连接并进入 Draining。
+    /// 正常结束：回 BYE 确认、记 1 条 disconnect/ok、关闭连接并进入 Draining。
     void completeBye(const std::shared_ptr<Session>& current)
     {
         const bool wasStopping = stopping.load(std::memory_order_acquire);
@@ -917,7 +917,7 @@ struct RemoteServer::Impl {
     }
 
     // --------------------------------------------------------
-    // 日志（contracts/logging.md §1–§4）：写入 Server 的标准控制台输出
+    // 日志：写入 Server 的标准控制台输出
     // --------------------------------------------------------
 
     /// Phase 02 命令日志：使用执行器提供的元数据；失败响应不再追加第二条终止类记录。
@@ -938,9 +938,9 @@ struct RemoteServer::Impl {
         std::cout << formatLogLine(record) << std::endl;
     }
 
-    /// 查询日志（contracts/logging.md §2/§3）：COMMAND 执行并发送响应后记录；
+    /// 查询日志：COMMAND 执行并发送响应后记录；
     /// `help`、未知命令与 `exit` 不记录。日志只含元数据，不含原因文本、完整命令行
-    /// 或进程名（§4）。
+    /// 或进程名。
     void logQueryCommand(const hv::SocketChannelPtr& channel, RemoteCommandKind kind,
                          std::string_view line, const RemoteCommandResult& result,
                          ResponseDelivery delivery)
@@ -970,7 +970,7 @@ struct RemoteServer::Impl {
         std::cout << formatLogLine(record) << std::endl;
     }
 
-    /// 查询摘要（contracts/logging.md §3）：
+    /// 查询摘要：
     /// - `--all-processes`：正常响应 → ok；枚举失败/不可编码/超限 → error；
     /// - `--search-process`：参数缺失/非法 → error（pid=-）；命中 → ok；
     ///   固定未命中文本 → not-found；名称不可读/不可编码/超限 → error。
@@ -979,7 +979,7 @@ struct RemoteServer::Impl {
                                     ResponseDelivery delivery)
     {
         if (delivery == ResponseDelivery::Oversize) {
-            return LogResult::Error; // 结果超限（§3：--all-processes 与 --search-process 均为 error）
+            return LogResult::Error; // 结果超限，两种查询均记为 error
         }
         if (kind == RemoteCommandKind::SearchProcess) {
             const std::optional<std::uint32_t> pid = parseSearchProcessPid(line);

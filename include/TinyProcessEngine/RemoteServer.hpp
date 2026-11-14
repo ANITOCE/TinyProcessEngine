@@ -14,7 +14,7 @@ class ProcessEngine;
 namespace tpe::remote {
 
 // ============================================================
-// Server 监听与单会话（contracts/protocol.md §3–§7；data-model.md §3）
+// Server 监听与单会话
 // ============================================================
 
 /// 远程 Server（骨架：监听、状态机与日志由 T022/T029/T035 实现）。
@@ -48,16 +48,16 @@ public:
 
     /// 最近一次 `start()` 失败的具体原因（系统错误文本 + 原生错误码）。
     ///
-    /// `start()` 成功或尚未调用时为空字符串。仅用于失败诊断（cli.md §8
-    /// “端口被占用时写具体原因”），不改变启动语义：监听成功时不会额外输出。
+    /// `start()` 成功或尚未调用时为空字符串。仅用于失败诊断。
+    /// 端口被占用时报告具体原因。监听成功时不会额外输出。
     std::string lastStartError() const;
 
     /// 测试接缝：覆盖握手期限（仅存储，不改变握手语义）。
-    /// 默认值保持契约（5000 ms，contracts/protocol.md §4）；T022 从 Impl 读取。
+    /// 默认值为 5000 ms。
     void setHandshakeTimeoutForTesting(std::chrono::milliseconds timeout);
 
     /// 测试接缝：覆盖 Draining 清理延迟（仅存储，不改变清理语义）。
-    /// 默认值保持契约行为（10 ms，contracts/protocol.md §3/§6），仅用于在测试中
+    /// 默认值为 10 ms，仅用于在测试中
     /// 拉长“会话已结束、清理未完成”的观测窗口；须在 `start()` 之前调用。
     void setDrainingCleanupDelayForTesting(std::chrono::milliseconds delay);
 

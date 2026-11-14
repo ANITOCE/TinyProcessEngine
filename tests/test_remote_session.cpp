@@ -1,14 +1,7 @@
 /**
  * test_remote_session.cpp — 远程会话回环握手测试（T020/T021 RED；T022/T023 实现后转绿）
  *
- * 依据：
- *   - specs/001-remote-connection-phase-01/contracts/protocol.md §2/§3/§4
- *   - specs/001-remote-connection-phase-01/contracts/cli.md §2/§7
- *   - specs/001-remote-connection-phase-01/quickstart.md 场景 1/2/9/10/17
- *   - .superpowers/sdd/remote-connection-phase-01/t020-brief.md
- *   - .superpowers/sdd/remote-connection-phase-01/t021-brief.md
- *
- * 架构（brief “测试架构要求”）：
+  * 架构：
  *   - Server 与 Client 在同一进程的不同线程中通过真实回环 TCP（127.0.0.1）通信；
  *   - std::cin/std::cout/std::cerr 的替换由 ScopedRemoteStreams 以 RAII 恢复；
  *   - 输出按写入线程分流：Client 线程写入自己的捕获区，其余线程（Server 事件线程、
@@ -102,10 +95,10 @@ namespace {
 
 using namespace std::chrono_literals;
 
-/// 单次等待上限（brief：所有等待最多 5 秒）。
+/// 单次等待上限为 5 秒。
 constexpr std::chrono::milliseconds kWaitLimit{5000};
 
-/// 契约 §1：Server 省略端口时使用 8008。
+/// Server 省略端口时使用 8008。
 constexpr std::uint16_t kDefaultPort = 8008;
 
 /// Client 提示符（含其后的单个空格）：结果块分段断言依赖这一完整文本。
@@ -223,7 +216,7 @@ private:
 
 /// 按“写入线程”分流 std::cout/std::cerr：登记过的 Client 线程写入自己的槽，
 /// 其余线程（Server 事件线程、主线程）写入 Server 槽。
-/// 这样同一进程内的两端固定文本可以分别断言（brief 第 2 条）。
+/// 这样同一进程内的两端固定文本可以分别断言。
 class RoutingStreambuf : public std::streambuf {
 public:
     explicit RoutingStreambuf(TextSink& serverSink)
@@ -321,7 +314,7 @@ std::string capturedServerOut()
 // 可释放的阻塞 stdin：让首个 Client 停留在 TPE> 等待输入
 // ---------------------------------------------------------------------------
 
-/// brief 第 5 条：underflow() 在收到释放信号前阻塞（条件变量）。
+/// underflow() 在收到释放信号前阻塞（条件变量）。
 /// releaseWith() 追加文本（如 "exit\n"）并置 EOF 标记；文本消费完后返回 EOF。
 /// wait_for 超时也返回 EOF，保证读取线程在最坏情况下仍能自行退出（不会永久挂起）。
 class BlockingStdinBuffer : public std::streambuf {
@@ -539,7 +532,7 @@ PortState probeTcpPort(std::uint16_t port)
     return PortState::Unknown;
 }
 
-/// brief 第 4 条：仅在 start() 失败后调用。返回 true = 端口确实不可用，调用方必须在
+/// 仅在 start() 失败后调用。返回 true = 端口确实不可用，调用方必须在
 /// 用例体（void 测试函数）中 GTEST_SKIP()；返回 false = 端口空闲或无法判定，
 /// 调用方应以真实错误 FAIL。GTEST_SKIP() 只返回到当前函数：放在任何辅助函数里都只会
 /// 结束辅助函数本身，调用方仍会继续断言（本文件的会话辅助改用 SessionRunReport 规避）。
@@ -912,7 +905,7 @@ bool expectHandshakeAccepted(std::uint16_t port, std::chrono::milliseconds budge
     return false;
 }
 
-/// "Connection failed." 之后必须还有非空白的原因文本（cli.md §2：原因写标准错误）。
+/// "Connection failed." 之后必须还有非空白的原因文本（原因写标准错误）。
 bool hasReasonAfter(const std::string& text, const std::string& prefix)
 {
     const std::size_t position = text.find(prefix);
@@ -1077,7 +1070,7 @@ private:
 // ---------------------------------------------------------------------------
 // T026 固定进程快照（通过 ProcessEngine 注入构造控制）
 //
-// 夹具前提（brief 第 5 条）：进程快照在构造时固定，不读取宿主机真实进程列表；
+// 夹具前提：进程快照在构造时固定，不读取宿主机真实进程列表；
 // “无关进程行的整行增减不影响判定”由快照的不变性保证。断言保持受控行的原始
 // 行序，不重排、不过滤。
 // ---------------------------------------------------------------------------
@@ -1401,7 +1394,7 @@ struct ClientCapture {
 
 /// 在独立线程中运行 RemoteClient::run()（内部读写全局 stdin/stdout）。
 /// 线程启动后先登记自己的输出槽，确保 Client 文本与 Server 文本分离。
-/// 析构兜底：已完成 → join；未完成 → 释放 stdin 后 detach（brief 第 3 条）。
+/// 析构兜底：已完成 → join；未完成 → 释放 stdin 后 detach。
 class ClientRun {
 public:
     /// timeouts：T021 注入的帧接收期限（默认即契约 30 秒）；仅影响该 Client 实例。
@@ -1573,7 +1566,7 @@ struct SnapshotSessionResult {
     std::string localSearchName; // 传入 searchPid 时为同一引擎 searchProcess() 的结果
 };
 
-/// 统一行分隔符（cli.md §5：比较前把 CRLF 统一为 LF；孤立 CR 原样保留）。
+/// 统一行分隔符（比较前把 CRLF 统一为 LF；孤立 CR 原样保留）。
 std::string normalizedLineEndings(const std::string& text)
 {
     std::string normalized;
@@ -1722,9 +1715,9 @@ void expectVerbatimQueryBlock(const SnapshotSessionResult& result,
 // T027 失败查询与发送前校验共用辅助
 //
 // 固定文本按契约逐字复制（tests 不跨 TU 引用实现内部常量，实现漂移时由断言暴露）：
-//   - contracts/cli.md §4：帮助文本；
-//   - contracts/cli.md §3/§6：未知命令与查询失败文本；
-//   - contracts/cli.md §3.1：发送前校验文本。
+//   - 帮助文本；
+//   - 未知命令与查询失败文本；
+//   - 发送前校验文本。
 // ---------------------------------------------------------------------------
 
 constexpr const char* kHelpText =
@@ -1751,7 +1744,7 @@ constexpr const char* kLineBreakCommandText =
 /// 长查询用例的最长等待（单次有界；契约 30 秒语义由默认 ClientTimeouts 保持）。
 constexpr std::chrono::milliseconds kLongWaitLimit{10000};
 
-/// 长查询在第二连接进入等待后继续执行的目标时长（brief：>5 秒）。
+/// 长查询在第二连接进入等待后继续执行的目标时长。
 constexpr std::chrono::milliseconds kLongQueryDuration{5500};
 
 /// 非法 UTF-8 字节（0xFF 永不出现于合法 UTF-8 序列）的进程名。
@@ -1846,7 +1839,7 @@ SessionRunReport runQueryFailureSession(
 }
 
 /// 断言：失败文本恰出现 1 次 → 回到 TPE> → help 的 4 行帮助逐字出现 1 次 → 再次出现
-/// 提示符（会话仍可用）。cli.md §6：查询失败保留 TPE>；US3 已实现 EOF → BYE
+/// 提示符（会话仍可用）。查询失败保留 TPE>；US3 已实现 EOF → BYE
 /// 确认收尾，会话退出码必须为 0（T036 评审修复 I3）。
 void expectFailureThenHelp(const QueryFailureSessionResult& result,
                            const std::string& expectedFailure)
@@ -2060,7 +2053,7 @@ void expectLocalRejectionThenHelp(const PreSendSessionResult& result,
         << "expected the local rejection text exactly once; expected=[" << expectedError
         << "] client stdout=[" << clientOut << "] client stderr=[" << result.err << "]";
     EXPECT_EQ(result.err.find(expectedError), std::string::npos)
-        << "cli.md §3.1: the local rejection text must be written to standard output; "
+        << "the local rejection text must be written to standard output; "
            "stderr=["
         << result.err << "]";
 
@@ -2091,10 +2084,10 @@ void expectLocalRejectionThenHelp(const PreSendSessionResult& result,
 } // namespace
 
 // ---------------------------------------------------------------------------
-// 套件 RemoteSession — 回环握手（brief 用例 1–5）
+// 套件 RemoteSession — 回环握手
 // ---------------------------------------------------------------------------
 
-/// brief 用例 1：自定义端口 start() 成功、isRunning() 为 true；
+/// 自定义端口 start() 成功、isRunning() 为 true；
 /// stop() 后为 false；可重复 stop()。
 TEST(RemoteSession, ServerStartsAndStops)
 {
@@ -2126,20 +2119,20 @@ TEST(RemoteSession, ServerStartsAndStops)
     EXPECT_FALSE(server.instance().isRunning());
 }
 
-/// brief 用例 2：默认端口 8008 的回环握手（quickstart 场景 1）。
+/// 默认端口 8008 的回环握手。
 TEST(RemoteSession, DefaultPortHandshake)
 {
     expectSuccessfulHandshake(kDefaultPort);
 }
 
-/// brief 用例 3：自定义端口 18081 的回环握手（quickstart 场景 2）。
+/// 自定义端口 18081 的回环握手。
 TEST(RemoteSession, CustomPortHandshake)
 {
     expectSuccessfulHandshake(kCustomPort);
 }
 
-/// brief 用例 4：首 Client 停留在 TPE> 时，第二 Client 收到 BUSY；
-/// 首 Client 之后仍能正常退出（quickstart 场景 4；protocol §3）。
+/// 首 Client 停留在 TPE> 时，第二 Client 收到 BUSY；
+/// 首 Client 之后仍能正常退出。
 TEST(RemoteSession, SecondClientDuringHandshakeGetsBusy)
 {
     ScopedRemoteStreams streams;
@@ -2203,8 +2196,8 @@ TEST(RemoteSession, SecondClientDuringHandshakeGetsBusy)
     server.stop();
 }
 
-/// brief 用例 5：Client 先看到 "Connection successful."，之后才出现首个 "TPE>"。
-/// 即 WELCOME 完成握手前不输出提示符（cli.md §2）。
+/// Client 先看到 "Connection successful."，之后才出现首个 "TPE>"。
+/// 即 WELCOME 完成握手前不输出提示符。
 TEST(RemoteSession, WelcomeCompletesHandshake)
 {
     ScopedRemoteStreams streams;
@@ -2260,7 +2253,7 @@ TEST(RemoteSession, WelcomeCompletesHandshake)
 }
 
 // ---------------------------------------------------------------------------
-// T021 握手失败用例（brief 用例 1–8；真实 Server 或脚本化原始 socket Server）
+// T021 握手失败用例
 //
 // 时序策略：用注入的毫秒级期限模拟契约的 30 秒/5 秒规则。Windows 计时粒度约
 // 15.6 ms，sleep 可能晚到，因此边界类用例保留 > 计时粒度的余量：
@@ -2270,7 +2263,7 @@ TEST(RemoteSession, WelcomeCompletesHandshake)
 // ---------------------------------------------------------------------------
 
 /// T021 用例 1（Client 侧）：Server 回 ERROR(UnsupportedVersion) → Client 显示
-/// "Connection failed." 与具体原因、退出码 1（cli.md §8；quickstart 场景 10）。
+/// "Connection failed." 与具体原因、退出码 1。
 TEST(RemoteSession, ClientReportsUnsupportedVersionFromServer)
 {
     ScopedRemoteStreams streams;
@@ -2320,7 +2313,7 @@ TEST(RemoteSession, ClientReportsUnsupportedVersionFromServer)
 }
 
 /// T021 用例 1（Server 侧）：版本 2 的 HELLO → ERROR(1) 并关闭；随后回到 Listening，
-/// 下一连接发送合法 HELLO 可得到 WELCOME（protocol §4；quickstart 场景 10）。
+/// 下一连接发送合法 HELLO 可得到 WELCOME。
 TEST(RemoteSession, ServerRejectsVersionTwoHelloAndAcceptsNextClient)
 {
     ScopedRemoteStreams streams;
@@ -2365,7 +2358,7 @@ TEST(RemoteSession, ServerRejectsVersionTwoHelloAndAcceptsNextClient)
 }
 
 /// T021 用例 2：Client 连接后不发任何字节；Server 注入 100 ms 握手期限 →
-/// 发送 ERROR(4)、关闭并释放占用；下一连接可被接纳（protocol §4；quickstart 场景 10）。
+/// 发送 ERROR(4)、关闭并释放占用；下一连接可被接纳。
 TEST(RemoteSession, ServerHandshakeTimeoutReleasesSlot)
 {
     ScopedRemoteStreams streams;
@@ -2420,7 +2413,6 @@ TEST(RemoteSession, ServerHandshakeTimeoutReleasesSlot)
 }
 
 /// T021 用例 3：Client 在握手中主动关闭 → Server 释放占用，下一连接可被接纳
-/// （protocol §3；quickstart 场景 17）。
 TEST(RemoteSession, ServerReleasesSlotWhenPeerClosesDuringHandshake)
 {
     ScopedRemoteStreams streams;
@@ -2455,7 +2447,6 @@ TEST(RemoteSession, ServerReleasesSlotWhenPeerClosesDuringHandshake)
 
 /// T021 用例 4：注入 firstByte=100 ms，Server 不发任何字节 →
 /// Client 显示 "Connection failed." + "No response from server."、退出码 1
-/// （cli.md §7；quickstart 场景 7/10）。
 TEST(RemoteSession, ClientReportsSilentServer)
 {
     ScopedRemoteStreams streams;
@@ -2605,7 +2596,7 @@ TEST(RemoteSession, ClientReportsSilentTimeoutWhenFirstByteIsLate)
 }
 
 /// T021 用例 6：注入 frameComplete=200 ms；首字节后再无字节 →
-/// Client 显示 "Server sent an incomplete message."、退出码 1（cli.md §7）。
+/// Client 显示 "Server sent an incomplete message."、退出码 1。
 TEST(RemoteSession, ClientReportsIncompleteFrame)
 {
     ScopedRemoteStreams streams;
@@ -2651,7 +2642,7 @@ TEST(RemoteSession, ClientReportsIncompleteFrame)
 }
 
 /// T021 用例 7：握手期收到完整的 RESPONSE 帧 →
-/// Client 显示 "Server sent an unexpected message."、退出码 1（protocol §4）。
+/// Client 显示 "Server sent an unexpected message."、退出码 1。
 TEST(RemoteSession, ClientReportsUnexpectedHandshakeType)
 {
     ScopedRemoteStreams streams;
@@ -2691,7 +2682,7 @@ TEST(RemoteSession, ClientReportsUnexpectedHandshakeType)
 }
 
 /// T021 用例 8：WELCOME 载荷非空 → Client 显示 "Server sent an invalid message."、
-/// 退出码 1，且不回 ERROR（脚本断言未收到任何客户端字节；protocol §4）。
+/// 退出码 1，且不回 ERROR。
 TEST(RemoteSession, ClientReportsInvalidWelcomePayload)
 {
     ScopedRemoteStreams streams;
@@ -2734,7 +2725,7 @@ TEST(RemoteSession, ClientReportsInvalidWelcomePayload)
 // ---------------------------------------------------------------------------
 // 套件 RemoteSessionQuerySuccess — US2 成功查询（T026）
 //
-// 夹具前提（brief 第 5 条）：上面固定的 3 个受控进程构成快照，不读取宿主机真实
+// 夹具前提：上面固定的 3 个受控进程构成快照，不读取宿主机真实
 // 进程列表，因此“无关进程行的整行增减”不在快照内发生、不影响判定；断言对受控
 // 行保留原始行序，不重排、不过滤，也不使用单行对照。
 // 远程 Server 与本地期望文本共用同一个 ProcessEngine（注入构造）。
@@ -2834,7 +2825,7 @@ TEST(RemoteSessionQuerySuccess, NonAsciiProcessNameIsDisplayedVerbatim)
 // 出现；用例在 5 秒上限内以断言失败结束，不挂起。
 // ---------------------------------------------------------------------------
 
-/// `--search-process <不存在的 PID>` → `Process with PID <n> not found.`（cli.md §6）。
+/// `--search-process <不存在的 PID>` → `Process with PID <n> not found.`。
 TEST(RemoteSessionQueryFailure, SearchProcessPidNotFoundKeepsPrompt)
 {
     auto os = std::make_unique<ConfigurablePlatformOS>();
@@ -2854,7 +2845,7 @@ TEST(RemoteSessionQueryFailure, SearchProcessPidNotFoundKeepsPrompt)
                           "Process with PID " + std::to_string(kMissingPid) + " not found.");
 }
 
-/// 进程名不可读（空名称）→ `Failed to read the process name for PID <n>.`（cli.md §6）。
+/// 进程名不可读（空名称）→ `Failed to read the process name for PID <n>.`。
 TEST(RemoteSessionQueryFailure, SearchProcessUnreadableNameKeepsPrompt)
 {
     auto os = std::make_unique<ConfigurablePlatformOS>();
@@ -2872,7 +2863,7 @@ TEST(RemoteSessionQueryFailure, SearchProcessUnreadableNameKeepsPrompt)
     expectFailureThenHelp(result, "Failed to read the process name for PID 4324.");
 }
 
-/// 枚举失败 → `Failed to enumerate processes: <原因>`（cli.md §6；缺陷⑧透传）。
+/// 枚举失败 → `Failed to enumerate processes: <原因>`。
 TEST(RemoteSessionQueryFailure, AllProcessesEnumerationFailureKeepsPrompt)
 {
     auto os = std::make_unique<ConfigurablePlatformOS>();
@@ -2890,7 +2881,7 @@ TEST(RemoteSessionQueryFailure, AllProcessesEnumerationFailureKeepsPrompt)
                           "Failed to enumerate processes: simulated enumeration failure");
 }
 
-/// 未知命令（`list` 属契约 §3 未交付命令）→ 固定未知命令文本（protocol §5）。
+/// 连接层的 `list` 返回固定的未知命令文本。
 TEST(RemoteSessionQueryFailure, UnknownCommandKeepsPrompt)
 {
     auto os = std::make_unique<ConfigurablePlatformOS>();
@@ -2908,7 +2899,7 @@ TEST(RemoteSessionQueryFailure, UnknownCommandKeepsPrompt)
 }
 
 /// 查询结果超过单条 RESPONSE 上限 → `Response exceeds the maximum message size.`，
-/// 不截断、不分片（cli.md §6；protocol §5）。
+/// 不截断、不分片。
 TEST(RemoteSessionQueryFailure, OversizeResultKeepsPrompt)
 {
     auto os = std::make_unique<ConfigurablePlatformOS>();
@@ -2937,7 +2928,7 @@ TEST(RemoteSessionQueryFailure, OversizeResultKeepsPrompt)
     expectFailureThenHelp(result, kOversizeResultText);
 }
 
-/// 进程名含非法 UTF-8 字节 → `Process name cannot be encoded as UTF-8.`（cli.md §6）。
+/// 进程名含非法 UTF-8 字节 → `Process name cannot be encoded as UTF-8.`。
 TEST(RemoteSessionQueryFailure, UnencodableProcessNameKeepsPrompt)
 {
     auto os = std::make_unique<ConfigurablePlatformOS>();
@@ -2956,7 +2947,7 @@ TEST(RemoteSessionQueryFailure, UnencodableProcessNameKeepsPrompt)
 }
 
 /// 枚举结果中任一名称含非法 UTF-8 字节 →
-/// `Process list contains a name that cannot be encoded as UTF-8.`（cli.md §6）。
+/// `Process list contains a name that cannot be encoded as UTF-8.`。
 TEST(RemoteSessionQueryFailure, UnencodableProcessListKeepsPrompt)
 {
     auto os = std::make_unique<ConfigurablePlatformOS>();
@@ -2975,8 +2966,7 @@ TEST(RemoteSessionQueryFailure, UnencodableProcessListKeepsPrompt)
     expectFailureThenHelp(result, kUnencodableListText);
 }
 
-/// 同一结果同时不可编码且超限 → 先报告不可编码（cli.md §6 末段；
-/// protocol §5“先校验文本编码并报告不可编码，编码成功后才检查长度”）。
+/// 结果同时无法编码且超限时，先报告编码错误。
 TEST(RemoteSessionQueryFailure, UnencodableTakesPriorityOverOversize)
 {
     auto os = std::make_unique<ConfigurablePlatformOS>();
@@ -2998,13 +2988,13 @@ TEST(RemoteSessionQueryFailure, UnencodableTakesPriorityOverOversize)
 
     const std::string clientOut = normalizedLineEndings(result.out);
     EXPECT_EQ(clientOut.find(kOversizeResultText), std::string::npos)
-        << "cli.md §6: a result that is both unencodable and oversized must report the "
+        << "a result that is both unencodable and oversized must report the "
            "encoding failure first; stdout=["
         << clientOut << "]";
 }
 
 /// 同一 `--all-processes` 列表同时不可编码且超限 → 先报告列表不可编码
-/// （cli.md §6 末段；protocol §5“先校验文本编码并报告不可编码，编码成功后才检查长度”），
+/// 先校验文本编码，编码成功后才检查长度。
 /// 且不得报告超限（与单名称双失败用例并列覆盖列表路径）。
 TEST(RemoteSessionQueryFailure, UnencodableListTakesPriorityOverOversize)
 {
@@ -3039,7 +3029,7 @@ TEST(RemoteSessionQueryFailure, UnencodableListTakesPriorityOverOversize)
 
     const std::string clientOut = normalizedLineEndings(result.out);
     EXPECT_EQ(clientOut.find(kOversizeResultText), std::string::npos)
-        << "cli.md §6: a list that is both unencodable and oversized must report the "
+        << "a list that is both unencodable and oversized must report the "
            "encoding failure first; stdout=["
         << clientOut << "]";
 }
@@ -3052,7 +3042,7 @@ TEST(RemoteSessionQueryFailure, UnencodableListTakesPriorityOverOversize)
 // 不使用 T041 尚未实现的查询日志。Client 退出码留到 US3 验证。
 // ---------------------------------------------------------------------------
 
-/// 65,537 字节命令（> 64 KiB）→ `Command exceeds the maximum message size.`（§3.1）。
+/// 65,537 字节命令（> 64 KiB）→ `Command exceeds the maximum message size.`。
 TEST(RemoteSessionPreSendValidation, OversizeCommandIsRejectedLocally)
 {
     const std::string rejectedLine(tpe::remote::kMaxCommandBytes + 1, 'a');
@@ -3063,7 +3053,7 @@ TEST(RemoteSessionPreSendValidation, OversizeCommandIsRejectedLocally)
     expectLocalRejectionThenHelp(result, kOversizeCommandText);
 }
 
-/// 含非法 UTF-8 字节的命令 → `Command cannot be encoded as UTF-8.`（§3.1 第 1 条）。
+/// 含非法 UTF-8 字节的命令 → `Command cannot be encoded as UTF-8.`。
 TEST(RemoteSessionPreSendValidation, InvalidUtf8CommandIsRejectedLocally)
 {
     std::string rejectedLine = "--all-processes";
@@ -3075,7 +3065,7 @@ TEST(RemoteSessionPreSendValidation, InvalidUtf8CommandIsRejectedLocally)
     expectLocalRejectionThenHelp(result, kUnencodableCommandText);
 }
 
-/// 去除行尾换行后仍含裸 CR → `Command must not contain line breaks.`（§3.1 第 2 条）。
+/// 去除行尾换行后仍含裸 CR → `Command must not contain line breaks.`。
 TEST(RemoteSessionPreSendValidation, EmbeddedCarriageReturnIsRejectedLocally)
 {
     PreSendSessionResult result;
@@ -3084,7 +3074,7 @@ TEST(RemoteSessionPreSendValidation, EmbeddedCarriageReturnIsRejectedLocally)
     expectLocalRejectionThenHelp(result, kLineBreakCommandText);
 }
 
-/// 超长未知命令（`list` 前缀）只走本地长度拒绝，不发送、不产生未知命令响应（§3.1）。
+/// 超长未知命令（`list` 前缀）只走本地长度拒绝，不发送、不产生未知命令响应。
 TEST(RemoteSessionPreSendValidation, OversizeUnknownCommandOnlyHitsLocalLengthCheck)
 {
     std::string rejectedLine = "list ";
@@ -3167,7 +3157,7 @@ AcceptedClientStart connectClientAfterCleanup(std::uint16_t port,
 // ---------------------------------------------------------------------------
 // 套件 RemoteSessionSingleConnection — US3 单连接（T032）
 //
-// 占用判定以连接事件被处理时的状态为准（protocol §3）：Active/长查询期间的
+// 占用判定以连接事件被处理时的状态为准：Active/长查询期间的
 // 第二连接收到 BUSY 并退出 1，首会话不受影响；清理完成后被处理的连接被接纳。
 // 长查询由 BlockingPlatformOS 注入（目标进程名称读取阻塞）；所有等待有界。
 // ---------------------------------------------------------------------------
@@ -3557,7 +3547,7 @@ TEST(RemoteSessionSingleConnection, TimingBoundaryCIncompleteWhenFrameExceedsDea
 // ---------------------------------------------------------------------------
 
 /// 在 Server 捕获输出中查找 `command=<event>` 且 `result=<result>` 的行起点
-/// （logging.md §1 字段顺序固定）；未找到返回 npos。
+/// 未找到返回 npos。
 std::size_t findServerLogLine(const std::string& text, const std::string& event,
                               const std::string& result, std::size_t from = 0)
 {
@@ -3882,7 +3872,7 @@ TEST(RemoteSessionDraining, StartedCommandFinishesAfterDisconnect)
 // 套件 RemoteSessionExitBye — US3 退出、断线与 BYE（T034）
 //
 // 固定文本按契约逐字复制（tests 不跨 TU 引用实现内部常量）：
-//   - cli.md §7 / protocol.md §7：确认超时、非空 BYE、断线原因文本。
+//   - 确认超时、非空 BYE、断线原因文本。
 // 脚本化 Server 精确控制 Server 侧行为；所有等待有界（≤5 s）。
 // ---------------------------------------------------------------------------
 
@@ -3918,7 +3908,7 @@ bool expectClientBye(SocketHandle socket, std::string& failure)
     return true;
 }
 
-/// 断线固定文本（cli.md §7；与实现逐字一致，tests 不跨 TU 引用内部常量）。
+/// 断线固定文本。
 constexpr const char* kServerClosedText = "The server closed the connection.";
 
 /// 在脚本化 Server 上运行一个 Client 到 TPE>；失败时由调用方清理。
@@ -3928,7 +3918,7 @@ bool waitForClientPrompt(ClientRun& client)
                      kWaitLimit);
 }
 
-/// `exit` → Client 发送 BYE、Server 回 BYE 确认 → 退出码 0（cli.md §7）。
+/// `exit` → Client 发送 BYE、Server 回 BYE 确认 → 退出码 0。
 /// T023 已实现该路径；本用例显式断言 BYE 帧，作为回归基线。
 TEST(RemoteSessionExitBye, ExitSendsByeAndReturnsZero)
 {
@@ -3967,7 +3957,7 @@ TEST(RemoteSessionExitBye, ExitSendsByeAndReturnsZero)
     EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
 }
 
-/// 标准输入 EOF → 与 exit 相同的 BYE 确认 → 退出码 0（cli.md §7；quickstart 场景 11）。
+/// 标准输入 EOF → 与 exit 相同的 BYE 确认 → 退出码 0。
 TEST(RemoteSessionExitBye, EofSendsByeAndReturnsZero)
 {
     ScopedRemoteStreams streams;
@@ -4005,7 +3995,7 @@ TEST(RemoteSessionExitBye, EofSendsByeAndReturnsZero)
     EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
 }
 
-/// 已发送 BYE 但确认前连接断开 → 退出码 1（cli.md §7：未收到确认即断开）。
+/// 已发送 BYE 但确认前连接断开 → 退出码 1。
 TEST(RemoteSessionExitBye, DisconnectBeforeByeConfirmationReturnsOne)
 {
     ScopedRemoteStreams streams;
@@ -4041,7 +4031,7 @@ TEST(RemoteSessionExitBye, DisconnectBeforeByeConfirmationReturnsOne)
     EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
 }
 
-/// 等待响应时断线 → 立即显示原因并以 1 结束（cli.md §7；quickstart 场景 6）。
+/// 等待响应时断线 → 立即显示原因并以 1 结束。
 TEST(RemoteSessionExitBye, DisconnectWhileWaitingForResponseIsReportedImmediately)
 {
     ScopedRemoteStreams streams;
@@ -4092,7 +4082,7 @@ TEST(RemoteSessionExitBye, DisconnectWhileWaitingForResponseIsReportedImmediatel
     EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
 }
 
-/// 等待输入时断线 → 下一次普通命令后报告并以 1 结束（cli.md §7）。
+/// 等待输入时断线 → 下一次普通命令后报告并以 1 结束。
 /// T037 已实现“输入返回后先报告已记录失败”；T036 评审修复 M5 进一步断言报告
 /// 为固定断线文本（而非仅非空）。
 TEST(RemoteSessionExitBye, DisconnectWhileWaitingForInputIsReportedAfterNextCommand)
@@ -4135,7 +4125,7 @@ TEST(RemoteSessionExitBye, DisconnectWhileWaitingForInputIsReportedAfterNextComm
     EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
 }
 
-/// BYE 确认超时且连接仍在 → 显示固定文本、主动关闭、退出 1（cli.md §7；场景 18）。
+/// BYE 确认超时且连接仍在 → 显示固定文本、主动关闭、退出 1。
 TEST(RemoteSessionExitBye, ByeConfirmationTimeoutReturnsOneWhileConnectionStaysOpen)
 {
     ScopedRemoteStreams streams;
@@ -4186,7 +4176,7 @@ TEST(RemoteSessionExitBye, ByeConfirmationTimeoutReturnsOneWhileConnectionStaysO
     EXPECT_TRUE(server.scriptSucceeded()) << server.scriptFailure();
 }
 
-/// 活动期收到 ERROR → 显示 Server 原因并退出 1（protocol.md §7）。
+/// 活动期收到 ERROR → 显示 Server 原因并退出 1。
 /// 断线/错误可能在等待输入时到达；下一次输入后必须报告原因（T037 前可能 RED）。
 TEST(RemoteSessionExitBye, ActiveSessionErrorIsReportedWithReasonAndOne)
 {
@@ -4245,7 +4235,6 @@ TEST(RemoteSessionExitBye, ActiveSessionErrorIsReportedWithReasonAndOne)
 }
 
 /// Server 发送载荷非空的 BYE → Client 显示固定文本、关闭、退出 1，且不回 ERROR
-/// （protocol.md §2/§7；quickstart 场景 20 反向路径）。
 TEST(RemoteSessionExitBye, NonEmptyByeFromServerIsInvalidSessionEnd)
 {
     ScopedRemoteStreams streams;
@@ -4341,7 +4330,7 @@ TEST(RemoteSessionExitBye, RawActiveClientSendingNonEmptyByeGetsErrorSixAndClose
     EXPECT_EQ(client.waitForPeer(kWaitLimit), PeerEvent::Closed)
         << "the server must close the connection after ERROR(6)";
 
-    // T036 评审修复 I5（logging.md §1/§4）：活动期非空 BYE 恰好记 1 条
+    // T036 评审修复 I5：活动期非空 BYE 恰好记 1 条
     // disconnect/error，且不得再记 disconnect/disconnected（Draining 期间自身
     // 关闭事件必须被忽略）。
     const std::string serverOut = capturedServerOut();
@@ -4361,7 +4350,7 @@ TEST(RemoteSessionExitBye, RawActiveClientSendingNonEmptyByeGetsErrorSixAndClose
     server.stop();
 }
 
-/// 断线与 EOF 竞态 → 断线优先，退出码 1（cli.md §7；quickstart 场景 13）。
+/// 断线与 EOF 竞态 → 断线优先，退出码 1。
 /// T036 评审修复 I2：Server 先半关闭发送方向（对端看到断线）并保持接收方向；
 /// 若 Client 误按 EOF 正常结束路径发送 BYE（任何数据），脚本立即判失败。这证明
 /// 1 与非空 stderr 来自断线报告，而不是“EOF → BYE → 确认前断线”的普通收尾。
@@ -4428,7 +4417,7 @@ TEST(RemoteSessionExitBye, DisconnectWinsOverEofRace)
 //   - COMMAND payload 恰好 64 KiB：本地预检用“超过”而非“达到”，命令实际发送并由
 //     Server 按未知命令应答；+1 字节的本地拒绝已由 T027
 //     RemoteSessionPreSendValidation.OversizeCommandIsRejectedLocally 覆盖；
-//   - 发送前校验顺序（cli.md §3.1：UTF-8 → 行内 CR/LF → 64 KiB）：用同时触发两项
+//   - 发送前校验顺序（UTF-8 → 行内 CR/LF → 64 KiB）：用同时触发两项
 //     的输入断言先发生者优先。US2 的双失败用例针对查询结果（不可编码优先于超限），
 //     这里针对命令行预检，路径不同、不重复；
 //   - 行尾 CR：仅剥离 1 个行尾 CR（“help\r”可发送）；双 CR 仍剩内嵌 CR → 本地拒绝；
@@ -4445,7 +4434,7 @@ TEST(RemoteSessionExitBye, DisconnectWinsOverEofRace)
 
 namespace {
 
-/// BYE 确认超时固定文本（cli.md §7；tests 不跨 TU 引用实现内部常量）。
+/// BYE 确认超时固定文本。
 constexpr const char* kEndNotAcknowledgedText = "Server did not acknowledge the session end.";
 
 /// T045：脚本化 Server 要求握手后的第一条（也是唯一一条）COMMAND 恰好为 help，
@@ -4551,7 +4540,7 @@ TEST(RemoteSessionBoundary, CommandAtSizeLimitIsAccepted)
         << clientOut << "]";
 }
 
-/// cli.md §3.1 顺序第 1 条优先于第 2 条：同一行同时含非法 UTF-8 与内嵌 CR → UTF-8 文本。
+/// 第 1 条优先于第 2 条：同一行同时含非法 UTF-8 与内嵌 CR → UTF-8 文本。
 TEST(RemoteSessionBoundary, PreSendUtf8CheckPrecedesLineBreakCheck)
 {
     std::string rejectedLine = "--all-processes\rlist";
@@ -4563,7 +4552,7 @@ TEST(RemoteSessionBoundary, PreSendUtf8CheckPrecedesLineBreakCheck)
     expectLocalRejectionThenHelp(result, kUnencodableCommandText);
 }
 
-/// cli.md §3.1 顺序第 1 条优先于第 3 条：同一行同时超长且含非法 UTF-8 → UTF-8 文本。
+/// 第 1 条优先于第 3 条：同一行同时超长且含非法 UTF-8 → UTF-8 文本。
 TEST(RemoteSessionBoundary, PreSendUtf8CheckPrecedesSizeCheck)
 {
     std::string rejectedLine(tpe::remote::kMaxCommandBytes + 1, 'u');
@@ -4576,7 +4565,7 @@ TEST(RemoteSessionBoundary, PreSendUtf8CheckPrecedesSizeCheck)
     expectLocalRejectionThenHelp(result, kUnencodableCommandText);
 }
 
-/// cli.md §3.1 顺序第 2 条优先于第 3 条：同一行同时超长且含内嵌 CR → 换行文本。
+/// 第 2 条优先于第 3 条：同一行同时超长且含内嵌 CR → 换行文本。
 TEST(RemoteSessionBoundary, PreSendLineBreakCheckPrecedesSizeCheck)
 {
     std::string rejectedLine(tpe::remote::kMaxCommandBytes + 1, 'u');

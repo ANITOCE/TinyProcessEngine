@@ -1,7 +1,5 @@
 // T009：远程协议层契约测试（TDD RED，T014 实现后转绿）。
-// 依据：specs/001-remote-connection-phase-01/contracts/protocol.md §1/§2/§4、
-//       specs/001-remote-connection-phase-01/data-model.md §1/§2/§4、
-//       include/TinyProcessEngine/RemoteProtocol.hpp。
+// 相关接口见 include/TinyProcessEngine/RemoteProtocol.hpp。
 // 约束：只用 GoogleTest；不访问网络、不启动进程、不依赖时钟或文件系统。
 
 #include <gtest/gtest.h>
@@ -41,7 +39,7 @@ std::vector<std::uint8_t> ascii(std::string_view text)
     return std::vector<std::uint8_t>(text.begin(), text.end());
 }
 
-/// 按契约 §1 手工拼帧头：length(4, BE) + version + type（不含 payload）。
+/// 按手工拼帧头：length(4, BE) + version + type（不含 payload）。
 std::vector<std::uint8_t> frameHeader(std::uint32_t length, std::uint8_t version, std::uint8_t type)
 {
     return bytes({static_cast<unsigned>((length >> 24) & 0xFFu),
@@ -60,7 +58,7 @@ std::string toText(const std::vector<std::uint8_t>& data)
 } // namespace
 
 // ---------------------------------------------------------------------------
-// 协议常量（contracts/protocol.md §1/§2；data-model.md §1/§2）
+// 协议常量
 // ---------------------------------------------------------------------------
 
 TEST(RemoteProtocol, ConstantsMatchContract)
@@ -95,7 +93,7 @@ TEST(RemoteProtocol, ConstantsMatchContract)
 }
 
 // ---------------------------------------------------------------------------
-// 帧编码（contracts/protocol.md §1）
+// 帧编码
 // ---------------------------------------------------------------------------
 
 TEST(RemoteProtocol, EncodeFrameWritesLengthVersionTypeAndPayload)
@@ -113,7 +111,7 @@ TEST(RemoteProtocol, EncodeFrameWritesLengthVersionTypeAndPayload)
 }
 
 // ---------------------------------------------------------------------------
-// 帧解码：完整帧与消费长度（contracts/protocol.md §1）
+// 帧解码：完整帧与消费长度
 // ---------------------------------------------------------------------------
 
 TEST(RemoteProtocol, TryDecodeFrameReturnsCompleteFrame)
@@ -233,7 +231,7 @@ TEST(RemoteProtocol, TryDecodeFrameRejectsLengthBelowMinimum)
 
 TEST(RemoteProtocol, TryDecodeFrameRejectsLengthAboveMaximumImmediately)
 {
-    // data-model §1：超过上限立即失败，不等待剩余字节。
+    // 超过上限立即失败，不等待剩余字节。
     const DecodeResult over = tpe::remote::tryDecodeFrame(
         frameHeader(tpe::remote::kMaxFrameLength + 1, 1, static_cast<std::uint8_t>(MessageType::Command)));
     ASSERT_EQ(over.status, DecodeStatus::Failed);
@@ -271,7 +269,7 @@ TEST(RemoteProtocol, TryDecodeFrameRejectsBadMessageType)
 }
 
 // ---------------------------------------------------------------------------
-// 载荷校验（contracts/protocol.md §2/§4；data-model.md §2）
+// 载荷校验
 // ---------------------------------------------------------------------------
 
 TEST(RemoteProtocol, ValidatePayloadAcceptsWellFormedPayloads)
@@ -286,7 +284,7 @@ TEST(RemoteProtocol, ValidatePayloadAcceptsWellFormedPayloads)
 
 TEST(RemoteProtocol, ValidatePayloadRejectsNonEmptyBye)
 {
-    // 契约 §2：BYE 载荷为空；Server 收到非空 BYE → ERROR(6)。
+    // BYE 载荷为空；Server 收到非空 BYE → ERROR(6)。
     const auto error = tpe::remote::validatePayload(MessageType::Bye, bytes({0x00}));
     ASSERT_TRUE(error.has_value());
     EXPECT_EQ(error->code, ErrorCode::InvalidPayload);
@@ -301,7 +299,7 @@ TEST(RemoteProtocol, ValidatePayloadRejectsNonEmptyWelcome)
 
 TEST(RemoteProtocol, ValidatePayloadRejectsBusyTextNotMatchingFixedText)
 {
-    // 契约 §2：BUSY payload 为固定文本 "Server is busy."；其它文本（含空载荷）非法。
+    // BUSY payload 为固定文本 "Server is busy."；其它文本（含空载荷）非法。
     for (const std::string& payload : {std::string("busy"), std::string("Server is busy"), std::string()}) {
         SCOPED_TRACE(payload);
         const auto error = tpe::remote::validatePayload(MessageType::Busy, ascii(payload));
@@ -325,7 +323,7 @@ TEST(RemoteProtocol, ValidatePayloadEnforcesHelloClientIdLimit)
 
 TEST(RemoteProtocol, ValidatePayloadEnforcesCommandSizeLimit)
 {
-    // 契约 §1/§2：COMMAND payload ≤ 64 KiB；超限属于已知类型载荷非法（ERROR 码 6）。
+    // COMMAND payload ≤ 64 KiB；超限属于已知类型载荷非法（ERROR 码 6）。
     const std::size_t limit = tpe::remote::kMaxCommandBytes;
     EXPECT_FALSE(
         tpe::remote::validatePayload(MessageType::Command, std::vector<std::uint8_t>(limit, 'a')).has_value());
@@ -338,7 +336,7 @@ TEST(RemoteProtocol, ValidatePayloadEnforcesCommandSizeLimit)
 
 TEST(RemoteProtocol, ValidatePayloadRejectsCommandLineBreaks)
 {
-    // 契约 §2：COMMAND payload 不得包含 CR/LF；空格等普通字符合法。
+    // COMMAND payload 不得包含 CR/LF；空格等普通字符合法。
     for (const std::string& payload : {std::string("a\nb"), std::string("a\rb")}) {
         SCOPED_TRACE(payload);
         const auto error = tpe::remote::validatePayload(MessageType::Command, ascii(payload));
@@ -350,7 +348,7 @@ TEST(RemoteProtocol, ValidatePayloadRejectsCommandLineBreaks)
 }
 
 // ---------------------------------------------------------------------------
-// RESPONSE 编码（contracts/protocol.md §2/§8；data-model.md §4）
+// RESPONSE 编码
 // ---------------------------------------------------------------------------
 
 TEST(RemoteProtocol, EncodeResponseWritesContractLayout)
@@ -389,7 +387,7 @@ TEST(RemoteProtocol, EncodeResponseWritesMultiByteBigEndianLengths)
     EXPECT_EQ(data[1], std::uint8_t{0x01}); // promptLen 大端
     EXPECT_EQ(data[2], std::uint8_t{0x2C});
 
-    // outputLen 为 uint32（契约 protocol.md §2 / data-model.md §4）：恰好 4 字节大端。
+    // outputLen 为 uint32：恰好 4 字节大端。
     const std::size_t outputLenOffset = 3 + prompt.size();
     EXPECT_EQ(data[outputLenOffset + 0], std::uint8_t{0x00}); // outputLen = 70000 = 0x00011170
     EXPECT_EQ(data[outputLenOffset + 1], std::uint8_t{0x01});
@@ -421,12 +419,12 @@ TEST(RemoteProtocol, EncodeResponseEnforcesPayloadSizeLimit)
 }
 
 // ---------------------------------------------------------------------------
-// RESPONSE 解码（contracts/protocol.md §8；data-model.md §4）
+// RESPONSE 解码
 // ---------------------------------------------------------------------------
 
 TEST(RemoteProtocol, DecodeResponseAcceptsContractExamplePayload)
 {
-    // 契约 §8 示例形状：status=0、promptLen=4 "TPE>"、outputLen=2 "ok"。
+    // 示例形状：status=0、promptLen=4 "TPE>"、outputLen=2 "ok"。
     const std::vector<std::uint8_t> payload =
         bytes({0x00, 0x00, 0x04, 'T', 'P', 'E', '>', 0x00, 0x00, 0x00, 0x02, 'o', 'k'});
 
@@ -487,7 +485,7 @@ TEST(RemoteProtocol, DecodeResponseRejectsMalformedPayloads)
 }
 
 // ---------------------------------------------------------------------------
-// 文本保真：UTF-8 多字节字符与 LF（data-model §1；FR-017）
+// 文本保真：UTF-8 多字节字符与 LF
 // ---------------------------------------------------------------------------
 
 TEST(RemoteProtocol, FrameRoundTripPreservesUtf8AndLfBytes)
@@ -509,7 +507,7 @@ TEST(RemoteProtocol, FrameRoundTripPreservesUtf8AndLfBytes)
 }
 
 // ---------------------------------------------------------------------------
-// T045 边界回归：帧上限、COMMAND 64 KiB 与载荷非空 BYE（契约 §1/§2）
+// T045 边界回归：帧上限、COMMAND 64 KiB 与载荷非空 BYE
 //
 // 既有覆盖（此处不重复）：
 //   - TryDecodeFrameWaitsForMaximumLengthFrameInsteadOfFailing：最大 length 只等待；
@@ -603,7 +601,7 @@ TEST(RemoteProtocol, ValidatePayloadAppliesContentRulesAtCommandSizeLimit)
 
 TEST(RemoteProtocol, ValidatePayloadRejectsNonEmptyByeAtBoundarySizes)
 {
-    // 契约 §2：BYE 载荷必须为空；尺寸不改变判定（1、2、64 字节均 InvalidPayload）。
+    // BYE 载荷必须为空；尺寸不改变判定（1、2、64 字节均 InvalidPayload）。
     EXPECT_FALSE(tpe::remote::validatePayload(MessageType::Bye, {}).has_value());
 
     for (const std::size_t size : {std::size_t{1}, std::size_t{2}, std::size_t{64}}) {

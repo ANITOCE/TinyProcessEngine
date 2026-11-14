@@ -23,43 +23,43 @@ namespace tpe::remote {
 namespace {
 
 // ============================================================
-// 固定文本（contracts/cli.md §2/§7；contracts/protocol.md §4/§7）
+// 固定文本
 // ============================================================
 
-/// 握手/连接失败统一前缀；其后必须跟随具体原因（cli.md §2）。
+/// 握手/连接失败统一前缀；其后必须跟随具体原因。
 constexpr std::string_view kConnectionFailedText = "Connection failed.";
 
-/// Client 被接纳后写入标准输出的固定文本（cli.md §2）。
+/// Client 被接纳后写入标准输出的固定文本。
 constexpr std::string_view kSuccessText = "Connection successful.";
 
-/// 远程提示符；线上 prompt 不含尾随空格，渲染层添加（cli.md §5）。
+/// 远程提示符；线上 prompt 不含尾随空格，渲染层添加。
 constexpr std::string_view kPromptText = "TPE> ";
 
 /// 扫描层已发送 write、尚未收到完整有效响应时断线的追加提示。
 constexpr std::string_view kWriteUnknownText = "The write result is unknown.";
 
-/// HELLO 的固定 clientId（UTF-8，≤64 字节；契约 §4 示例 "TPE"）。
+/// HELLO 的固定 clientId（UTF-8，≤64 字节；示例 "TPE"）。
 constexpr std::string_view kClientId = "TPE";
 
-/// BUSY 的固定载荷文本（protocol.md §2）。
+/// BUSY 的固定载荷文本。
 constexpr std::string_view kBusyText = "Server is busy.";
 
-/// 首字节静默期限到期（protocol.md §4；cli.md §7）。
+/// 首字节静默期限到期。
 constexpr std::string_view kNoResponseText = "No response from server.";
 
-/// 首字节后完整帧期限到期（protocol.md §4；cli.md §7）。
+/// 首字节后完整帧期限到期。
 constexpr std::string_view kIncompleteFrameText = "Server sent an incomplete message.";
 
-/// 握手期收到 WELCOME/BUSY/ERROR 之外的完整帧（protocol.md §4）。
+/// 握手期收到 WELCOME/BUSY/ERROR 之外的完整帧。
 constexpr std::string_view kUnexpectedMessageText = "Server sent an unexpected message.";
 
-/// 三种握手答复的载荷不符合契约（protocol.md §4）。
+/// 三种握手答复的载荷不符合契约。
 constexpr std::string_view kInvalidMessageText = "Server sent an invalid message.";
 
-/// 活动期收到载荷非空的 BYE（protocol.md §7）。
+/// 活动期收到载荷非空的 BYE。
 constexpr std::string_view kInvalidSessionEndText = "Server sent an invalid session end.";
 
-/// BYE 确认期限（1 秒）到期且连接仍在（protocol.md §7）。
+/// BYE 确认期限（1 秒）到期且连接仍在。
 constexpr std::string_view kEndNotAcknowledgedText =
     "Server did not acknowledge the session end.";
 
@@ -72,7 +72,7 @@ constexpr std::string_view kRejectedText = "The server rejected the connection."
 /// HELLO 写回失败（连接建立后立即断开）。
 constexpr std::string_view kSendHandshakeFailedText = "Failed to send the handshake.";
 
-/// 发送前校验失败文本（cli.md §3.1）；一律写标准输出、不发送、保留 TPE>。
+/// 发送前校验失败文本；一律写标准输出、不发送、保留 TPE>。
 constexpr std::string_view kUnencodableCommandText = "Command cannot be encoded as UTF-8.";
 constexpr std::string_view kLineBreakCommandText = "Command must not contain line breaks.";
 constexpr std::string_view kOversizeCommandText =
@@ -154,7 +154,7 @@ bool isWriteCommand(std::string_view line)
     return name == "write";
 }
 
-/// 发送前校验（cli.md §3.1）：顺序固定为 UTF-8 → 去除行尾后是否仍含 CR/LF
+/// 发送前校验：顺序固定为 UTF-8 → 去除行尾后是否仍含 CR/LF
 /// → 编码后字节数 ≤ 64 KiB。通过返回空视图，失败返回应写标准输出的固定文本。
 std::string_view validateCommandLine(const std::string& line)
 {
@@ -174,7 +174,7 @@ std::string_view validateCommandLine(const std::string& line)
 constexpr std::chrono::seconds kSessionEndTimeout{1};
 
 /// 静默 libhv 的默认日志器（每进程恰好一次）。
-/// 与 Server 侧同样的理由（contracts/logging.md §4）：libhv 默认 logger 未设
+/// 与 Server 侧一样，libhv 默认 logger 未设
 /// handler 时会回落到工作目录的 `libhv.YYYYMMDD.log`，并可能向控制台输出。
 /// `LOG_LEVEL_SILENT` 使 `logger_print` 在写文件之前即返回。
 void silenceLibhvFileLogger()
@@ -197,7 +197,7 @@ int toTimerMilliseconds(std::chrono::milliseconds value)
     return static_cast<int>(count);
 }
 
-/// 握手失败输出：`Connection failed.` + 非空原因，写标准错误（cli.md §2）。
+/// 握手失败输出：`Connection failed.` + 非空原因，写标准错误。
 void printHandshakeFailure(const std::string& reason)
 {
     std::cerr << kConnectionFailedText << ' '
@@ -393,7 +393,7 @@ struct RemoteClient::Impl {
 
         std::cout << kSuccessText << std::endl;
 
-        // ---- TPE> 循环（contracts/cli.md §3/§3.1/§5/§6；protocol.md §5） ----
+        // ---- TPE> 循环 ----
         // 提示符在握手完成、每个本地拒绝与每条 RESPONSE 渲染之后各输出一次；
         // 循环内不再重复输出，避免同一输入前出现两个提示符。
         showInputPrompt();
@@ -407,13 +407,13 @@ struct RemoteClient::Impl {
                 break; // 标准输入 EOF → 正常结束（T023 路径）
             }
             // std::getline 已剥离 LF；仅再去掉紧邻的 CR。内嵌 CR/LF 保留，
-            // 由发送前校验按 cli.md §3.1 拒绝。
+            // 由发送前校验拒绝。
             if (!line.empty() && line.back() == '\r') {
                 line.pop_back();
             }
 
             // 等待输入期间到达的 ERROR/断线：下一次输入返回后、处理任何
-            // 命令（含 exit）之前优先报告（cli.md §7）。若等到发送失败再
+            // 命令（含 exit）之前优先报告。若等到发送失败再
             // 报告，只能回落到通用断线文本，丢失 Server 的 ERROR reason。
             if (reportSessionFailureIfAny()) {
                 return 1;
@@ -425,7 +425,7 @@ struct RemoteClient::Impl {
 
             const std::string_view rejection = validateCommandLine(line);
             if (!rejection.empty()) {
-                // 本地拒绝：写标准输出、不发送、保留 TPE>（cli.md §3.1）。
+                // 本地拒绝：写标准输出、不发送、保留 TPE>。
                 std::cout << rejection << std::endl;
                 showInputPrompt();
                 continue;
@@ -457,7 +457,6 @@ struct RemoteClient::Impl {
 
     /// 已记录会话失败（活动期 ERROR/断线）时立即报告到标准错误并停止事件循环。
     /// EOF 与断线同时出现时由本检查与 finishSession() 共同保证断线优先
-    /// （cli.md §7）。
     /// @retval true 已报告原因，调用方必须以退出码 1 结束；
     ///         false 尚无已记录的失败。
     bool reportSessionFailureIfAny()
@@ -475,13 +474,13 @@ struct RemoteClient::Impl {
         return true;
     }
 
-    /// 渲染本地提示符（线上 prompt 不含尾随空格，渲染层添加；cli.md §5）。
+    /// 渲染本地提示符。
     void showInputPrompt() const
     {
         std::cout << currentPrompt << ' ' << std::flush;
     }
 
-    /// 渲染 RESPONSE（cli.md §5；protocol.md §5/§8）：
+    /// 渲染 RESPONSE：
     /// 先原样输出 output；非空且不以 '\n' 结尾时补一个 '\n'；
     /// 随后输出线上 prompt + 一个空格（尾随空格由渲染层添加）。
     void renderResponse(const RemoteResponse& response)
@@ -589,7 +588,7 @@ struct RemoteClient::Impl {
             }
             phase = Phase::Handshaking;
         }
-        // 契约 §4：首字节静默期限从连接建立时起算。
+        // 首字节静默期限从连接建立时起算。
         startFirstByteTimer();
 
         const std::vector<std::uint8_t> hello =
@@ -613,7 +612,7 @@ struct RemoteClient::Impl {
             return; // 已终结：不再解析任何字节
         }
 
-        // 契约 §4：首字节到达后撤销静默期限，改为“完整帧”期限。
+        // 首字节到达后撤销静默期限，改为“完整帧”期限。
         // 期限以首字节的接收时点为准：事件循环繁忙时定时器回调可能晚于数据回调，
         // 因此这里用绝对期限判断迟到，而不是依赖回调先后。
         if (current == Phase::Handshaking && !firstByteSeen) {
@@ -681,7 +680,7 @@ struct RemoteClient::Impl {
         return handleSessionFrame(frame);
     }
 
-    /// 握手帧（契约 §4）：只接受载荷合法的 WELCOME/BUSY/ERROR，其余均失败。
+    /// 握手帧：只接受载荷合法的 WELCOME/BUSY/ERROR，其余均失败。
     bool handleHandshakeFrame(const Frame& frame)
     {
         switch (frame.header.type) {
@@ -716,13 +715,13 @@ struct RemoteClient::Impl {
         }
 
         default:
-            // 握手期收到非 WELCOME/BUSY/ERROR 的完整帧（契约 §4）。
+            // 握手期收到非 WELCOME/BUSY/ERROR 的完整帧。
             failHandshake(std::string(kUnexpectedMessageText));
             return false;
         }
     }
 
-    /// 活动期帧（契约 §7）：BYE 正常结束；ERROR 或意外帧按失败结束。
+    /// 活动期帧：BYE 正常结束；ERROR 或意外帧按失败结束。
     bool handleSessionFrame(const Frame& frame)
     {
         switch (frame.header.type) {
@@ -754,11 +753,11 @@ struct RemoteClient::Impl {
         case MessageType::Response: {
             Result<RemoteResponse, ProtocolError> decoded = decodeResponse(frame.payload);
             if (!decoded.has_value()) {
-                // RESPONSE 结构非法（protocol.md §2/§5）。
+                // RESPONSE 结构非法。
                 failSession(std::string(kInvalidMessageText));
                 return false;
             }
-            // Phase 01 不使用 status=1（protocol.md §2）：按非法消息处理并退出 1。
+            // Phase 01 不使用 status=1：按非法消息处理并退出 1。
             if (decoded.value().status == ResponseStatus::Exit) {
                 failSession(std::string(kInvalidMessageText));
                 return false;
@@ -782,7 +781,7 @@ struct RemoteClient::Impl {
         }
 
         default:
-            // 活动期收到其余服务端消息属意外（契约 §7）。
+            // 活动期收到其余服务端消息属意外。
             failSession(std::string(kUnexpectedMessageText));
             return false;
         }
@@ -804,7 +803,7 @@ struct RemoteClient::Impl {
                 failHandshake(std::string(kUnexpectedMessageText));
                 return;
             case ErrorCode::UnsupportedVersion:
-                // 版本不兼容属于握手失败：显示具体原因（cli.md §7/§8）。
+                // 版本不兼容属于握手失败：显示具体原因。
                 failHandshake(error.reason.empty() ? std::string(kUnexpectedMessageText)
                                                    : error.reason);
                 return;
@@ -903,14 +902,14 @@ struct RemoteClient::Impl {
     }
 
     // --------------------------------------------------------
-    // run() 线程：正常结束（BYE + 确认，期限 1 秒；契约 §7）
+    // run() 线程：正常结束（BYE + 确认，期限 1 秒；）
     // --------------------------------------------------------
 
     int finishSession()
     {
         enum class EndResult { Acknowledged, Disconnected, Failed, Timeout };
 
-        // 断线/协议错误优先于 exit/EOF（cli.md §7）。
+        // 断线/协议错误优先于 exit/EOF。
         EndResult outcome = EndResult::Timeout;
         std::string failure;
         {
@@ -957,7 +956,7 @@ struct RemoteClient::Impl {
             }
         }
         if (outcome == EndResult::Timeout) {
-            // 期限到达且连接仍在：主动关闭（契约 §7）。
+            // 期限到达且连接仍在：主动关闭。
             closeChannel();
         }
         stopClient();
@@ -969,7 +968,7 @@ struct RemoteClient::Impl {
     }
 
     // --------------------------------------------------------
-    // 接收期限（毫秒精度；首字节与完整帧双期限，契约 §4）
+    // 接收期限（毫秒精度；首字节与完整帧双期限，）
     // --------------------------------------------------------
 
     void startFirstByteTimer()
@@ -979,7 +978,7 @@ struct RemoteClient::Impl {
             failHandshake(std::string(kNoResponseText));
             return;
         }
-        // 记录绝对期限：数据回调与定时器回调的先后不改变迟到判定（契约 §4）。
+        // 记录绝对期限：数据回调与定时器回调的先后不改变迟到判定。
         firstByteDeadline = std::chrono::steady_clock::now() + timeouts.firstByte;
         firstByteTimer = loop->setTimer(
             toTimerMilliseconds(timeouts.firstByte),
@@ -993,7 +992,7 @@ struct RemoteClient::Impl {
             failHandshake(std::string(kIncompleteFrameText));
             return;
         }
-        // 记录绝对期限：与首字节期限同一原则（契约 §4）。
+        // 记录绝对期限：与首字节期限同一原则。
         frameDeadline = std::chrono::steady_clock::now() + timeouts.frameComplete;
         frameTimer = loop->setTimer(
             toTimerMilliseconds(timeouts.frameComplete),

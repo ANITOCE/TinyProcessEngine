@@ -724,7 +724,7 @@ TEST(RunCliReplListLive, ZeroWidthSnapshotRecordShowsPlaceholder)
 
 // ---------------------------------------------------------------------------
 // Phase 01(T013 红)— `ProcessEngine::processListText()` 接缝
-//   契约 contracts/cli.md §5:远程 `--all-processes` 载荷与本地输出一致
+//   契约 远程 `--all-processes` 载荷与本地输出一致
 //   (统一 CRLF/LF 后逐字节相同);FR-016:本地输出/行为不变。
 //   占位实现恒返回 `processListText not implemented` → 成功路径用例为红;
 //   真实实现由 T016 落地后应转绿。
