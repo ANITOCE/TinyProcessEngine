@@ -721,3 +721,135 @@ TEST(RunCliReplListLive, ZeroWidthSnapshotRecordShowsPlaceholder)
         << "zero-width snapshot record must show the literal ?? placeholder, got:\n"
         << run.output;
 }
+
+// ---------------------------------------------------------------------------
+// Phase 01(T013 红)— `ProcessEngine::processListText()` 接缝
+//   契约 远程 `--all-processes` 载荷与本地输出一致
+//   (统一 CRLF/LF 后逐字节相同);FR-016:本地输出/行为不变。
+//   占位实现恒返回 `processListText not implemented` → 成功路径用例为红;
+//   真实实现由 T016 落地后应转绿。
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// 捕获既有本地路径 `getProcessList()` 的 stdout(不改动被测行为)。
+struct ProcessListRun {
+    Result<void, PlatformError> result = Result<void, PlatformError>::success();
+    std::string output;
+};
+
+ProcessListRun captureProcessList(const ProcessEngine& engine)
+{
+    std::ostringstream capturedOut;
+    std::streambuf* const oldOut = std::cout.rdbuf(capturedOut.rdbuf());
+    Result<void, PlatformError> result = engine.getProcessList();
+    std::cout.rdbuf(oldOut);
+    return ProcessListRun{std::move(result), capturedOut.str()};
+}
+
+} // namespace
+
+/// 成功:逐行精确文本(进程顺序保留、名称含空格与非 ASCII、仅 LF、无多余内容)。
+TEST(ProcessListText, FormatsProcessesAsExactText)
+{
+    auto os = std::make_unique<FakePlatformOS>();
+    os->addProcess(static_cast<Pid_t>(4242), "fake.exe");
+    os->addProcess(static_cast<Pid_t>(7), "name with spaces.exe");
+    os->addProcess(static_cast<Pid_t>(9001), "进程 名称.exe"); // 非 ASCII 名称
+    ProcessEngine engine(std::move(os));
+
+    const Result<std::string, PlatformError> text = engine.processListText();
+    ASSERT_TRUE(text.has_value())
+        << "processListText must succeed, got: " << text.error().message;
+
+    const std::string expected =
+        "PID: 4242 ProcessName: fake.exe\n"
+        "PID: 7 ProcessName: name with spaces.exe\n"
+        "PID: 9001 ProcessName: 进程 名称.exe\n";
+    EXPECT_EQ(text.value(), expected)
+        << "text must be the exact concatenation `PID: <pid> ProcessName: <name>\\n` "
+           "in process-list order";
+    EXPECT_EQ(text.value().find('\r'), std::string::npos)
+        << "line separators must be LF only";
+}
+
+/// 一致性:同一条目的文本与本地 `getProcessList()` stdout 逐字节相同。
+TEST(ProcessListText, MatchesGetProcessListStdoutByteForByte)
+{
+    auto os = std::make_unique<FakePlatformOS>();
+    os->addProcess(static_cast<Pid_t>(4242), "fake.exe");
+    os->addProcess(static_cast<Pid_t>(7), "name with spaces.exe");
+    ProcessEngine engine(std::move(os));
+
+    const ProcessListRun local = captureProcessList(engine);
+    ASSERT_TRUE(local.result.has_value()) << "getProcessList must succeed for fake list";
+
+    const Result<std::string, PlatformError> text = engine.processListText();
+    ASSERT_TRUE(text.has_value())
+        << "processListText must succeed, got: " << text.error().message;
+    EXPECT_EQ(text.value(), local.output)
+        << "remote text must be byte-identical to local --all-processes stdout";
+}
+
+/// 空列表:成功且返回空字符串(不以错误代替合法空结果)。
+TEST(ProcessListText, EmptyListReturnsEmptyString)
+{
+    auto os = std::make_unique<FakePlatformOS>();
+    ProcessEngine engine(std::move(os));
+
+    const Result<std::string, PlatformError> text = engine.processListText();
+    ASSERT_TRUE(text.has_value())
+        << "empty list must be a successful result, got: " << text.error().message;
+    EXPECT_EQ(text.value(), "");
+}
+
+/// 枚举失败:返回注入的平台错误(code/message 一致),不得被占位错误掩盖。
+TEST(ProcessListText, EnumerationFailureReturnsInjectedError)
+{
+    auto os = std::make_unique<FakePlatformOS>();
+    os->setEnumerationError(
+        PlatformError{"EnumProcesses", 0, 5, "EnumProcesses failed (simulated)"});
+    ProcessEngine engine(std::move(os));
+
+    const Result<std::string, PlatformError> text = engine.processListText();
+    ASSERT_FALSE(text.has_value()) << "enumeration failure must not be masked as success";
+
+    const PlatformError& err = text.error();
+    EXPECT_EQ(err.operation, "EnumProcesses");
+    EXPECT_EQ(err.pid, 0u);
+    EXPECT_EQ(err.native_code, 5);
+    EXPECT_EQ(err.message, "EnumProcesses failed (simulated)");
+    EXPECT_NE(err.message, "processListText not implemented")
+        << "injected platform error must be reported, not the placeholder error";
+}
+
+/// 旧行为保护:调用 `processListText()` 后 `getProcessList()` 的成功/失败结果不变。
+TEST(ProcessListText, GetProcessListStillWorksAfterProcessListText)
+{
+    auto os = std::make_unique<FakePlatformOS>();
+    os->addProcess(static_cast<Pid_t>(4242), "fake.exe");
+    os->addProcess(static_cast<Pid_t>(7), "name with spaces.exe");
+    ProcessEngine engine(std::move(os));
+
+    (void)engine.processListText(); // 占位期返回错误;不得影响既有本地路径
+
+    const ProcessListRun local = captureProcessList(engine);
+    ASSERT_TRUE(local.result.has_value()) << "getProcessList must keep its success result";
+    EXPECT_EQ(local.output,
+              "PID: 4242 ProcessName: fake.exe\n"
+              "PID: 7 ProcessName: name with spaces.exe\n");
+
+    auto failingOs = std::make_unique<FakePlatformOS>();
+    failingOs->setEnumerationError(PlatformError{"EnumProcesses", 0, 5, "simulated"});
+    ProcessEngine failingEngine(std::move(failingOs));
+
+    (void)failingEngine.processListText();
+
+    const ProcessListRun failing = captureProcessList(failingEngine);
+    ASSERT_FALSE(failing.result.has_value())
+        << "getProcessList must keep reporting enumeration failure";
+    EXPECT_EQ(failing.result.error().operation, "EnumProcesses");
+    EXPECT_EQ(failing.result.error().native_code, 5);
+    EXPECT_EQ(failing.result.error().message, "simulated");
+    EXPECT_EQ(failing.output, "") << "failure path must not print any process line";
+}

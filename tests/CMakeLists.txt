@@ -24,6 +24,14 @@ set(TPE_TEST_SOURCES
   test_cli_parser.cpp
   test_value_parser.cpp
   test_repl_state.cpp
+  # T009:远程协议帧编解码契约用例(骨架期 RED,T014 实现后转绿)
+  test_remote_protocol.cpp
+  # T010:远程日志格式化契约用例(骨架期 RED,T015 实现后转绿)
+  test_remote_log.cpp
+  # T011:远程 TPE> 命令分类/执行契约用例(骨架期 RED,T017 实现后转绿)
+  test_remote_command_executor.cpp
+  # Phase 02：共享扫描执行器与远程扫描会话
+  test_remote_scan_session.cpp
   # Windows 写路径用例(US2/缺陷③):整文件 _WIN32 门控,其它平台为空翻译单元
   test_windows_memory.cpp
   # US6(缺陷⑧):CLI 枚举失败信号用例(runCliWithEngine 注入接缝)
@@ -31,6 +39,15 @@ set(TPE_TEST_SOURCES
   # US6(缺陷⑧):CLI 装配层以源文件形式编入测试目标(该文件同时被 exe 目标编译,
   # 两目标互不冲突;注入接缝 runCliWithEngine 的声明见 src/startup/startup_cli.hpp)
   ${CMAKE_SOURCE_DIR}/src/startup/startup_cli.cpp
+  # T012:远程启动参数与入口分流契约用例(骨架期 RED,T018/T024 实现后转绿)
+  test_startup_remote.cpp
+  # T020:远程会话回环握手用例(真实回环 TCP;骨架期 RED,T022/T023 实现后转绿)
+  test_remote_session.cpp
+  # T012:启动装配层以源文件形式编入测试目标(同样为 exe 目标源文件,两目标互不冲突;
+  # startup.cpp 依赖 runCli(startup_cli.cpp)与 CliParser(TinyProcessEngineLib),
+  # startup_remote.cpp 提供 parseRemoteStartupArgs/runRemote/setRemoteEntryForTesting)
+  ${CMAKE_SOURCE_DIR}/src/startup/startup.cpp
+  ${CMAKE_SOURCE_DIR}/src/startup/startup_remote.cpp
 )
 
 # Linux 集成测试（缺陷⑥）：仅 Linux 构建纳入源列表；Windows 下整文件被 __linux__ 包裹

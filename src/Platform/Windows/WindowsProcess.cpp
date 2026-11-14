@@ -4,6 +4,28 @@
 
 namespace tpe::platform {
 
+namespace {
+
+std::string queryProcessName(HANDLE handle)
+{
+    if (handle == nullptr || handle == INVALID_HANDLE_VALUE) {
+        return {};
+    }
+    WCHAR processPath[MAX_PATH] = {0};
+    DWORD bufferSize = MAX_PATH;
+    if (!QueryFullProcessImageNameW(handle, 0, processPath, &bufferSize)) {
+        return {};
+    }
+    std::wstring name(processPath, bufferSize);
+    const std::size_t pos = name.find_last_of(L"\\/");
+    if (pos != std::wstring::npos) {
+        name = name.substr(pos + 1);
+    }
+    return to_byte_string(name);
+}
+
+} // namespace
+
 bool can_cheat_page(const MEMORY_BASIC_INFORMATION &page)
 {
     return page.State == MEM_COMMIT &&
@@ -14,32 +36,36 @@ bool can_cheat_page(const MEMORY_BASIC_INFORMATION &page)
 WindowsProcess::WindowsProcess(Pid_t pid) : PlatformProcess(pid)
 {
     this->m_processHandle = ScopedHandle(OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid));
-    if (this->m_processHandle)
-    {
-        WCHAR processPath[MAX_PATH] = {0};
-        DWORD bufferSize = MAX_PATH;
+    this->m_processName = queryProcessName(this->m_processHandle.get());
+}
 
-        if (QueryFullProcessImageNameW(this->m_processHandle.get(), 0, processPath, &bufferSize))
-        {
-            // 根据路径获取进程名
-            std::wstring name = [&processPath]() -> std::wstring
-            {
-                size_t pos = std::wstring(processPath).find_last_of(L"\\/");
-                if (pos != std::string::npos)
-                {
-                    return std::wstring(processPath).substr(pos + 1);
-                }
-                return std::wstring(processPath);
-            }();
-            const std::string pname = to_byte_string(name);
-            this->m_processName = pname;
-        }
+WindowsProcess::WindowsProcess(Pid_t pid, std::string p_name) : PlatformProcess(pid, std::move(p_name))
+{
+    this->m_processHandle = ScopedHandle(OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid));
+}
+
+WindowsProcess::WindowsProcess(Pid_t pid, std::string p_name, ScopedHandle handle)
+    : PlatformProcess(pid, std::move(p_name))
+    , m_processHandle(std::move(handle))
+{
+    // 远程严格打开使用调用方已取得的句柄；名称必须与该句柄同源，不能沿用
+    // 枚举快照或占位名称。
+    const std::string realName = queryProcessName(this->m_processHandle.get());
+    if (!realName.empty()) {
+        this->m_processName = realName;
     }
 }
 
-WindowsProcess::WindowsProcess(Pid_t pid, std::string p_name) : PlatformProcess(pid, p_name)
+bool WindowsProcess::isAlive() const
 {
-    this->m_processHandle = ScopedHandle(OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid));
+    if (!m_processHandle.valid()) {
+        return false;
+    }
+    DWORD exitCode = 0;
+    if (!GetExitCodeProcess(m_processHandle.get(), &exitCode)) {
+        return false;
+    }
+    return exitCode == STILL_ACTIVE;
 }
 
 std::vector<MemoryPage> WindowsProcess::getCheatablePages() const {

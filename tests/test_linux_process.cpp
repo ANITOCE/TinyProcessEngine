@@ -87,15 +87,13 @@ TEST_F(LinuxProcessNameTest, ProcessNameIsNotUnknown)
 // ============================================================
 // 进程名回退测试 (无需辅助进程，测试 readProcessName 内部逻辑)
 // ============================================================
-TEST(LinuxProcessNameFallbackTest, NonExistentProcessReturnsUnknown)
+TEST(LinuxProcessNameFallbackTest, NonExistentProcessReturnsNull)
 {
-    // PID 99999 大概率不存在
+    // Phase 02 允许的本地行为修正：不存在的 PID 必须打开失败，而不是返回
+    // 名称为 "<unknown>" 的伪进程。
     LinuxOS os;
     auto proc = os.open(99999);
-    ASSERT_NE(proc, nullptr);
-    // 进程名应为 "<unknown>" (而非 "Unknown")
-    std::string name = proc->getProcessName();
-    EXPECT_EQ(name, "<unknown>");
+    EXPECT_EQ(proc, nullptr);
 }
 
 TEST(LinuxProcessNameFallbackTest, KernelThreadHasCommName)

@@ -33,6 +33,11 @@ public:
     Result<tpe::Memory, PlatformError> read(MemoryPage page) const override;
     Result<void, PlatformError> write(tpe::Address address, const tpe::Memory &value) override;
 
+    /// 远程严格打开：把读写绑定到打开时的 /proc/<pid>/mem 描述符。
+    bool bindIdentity() override;
+    bool hasMemoryReadAccess() const override;
+    bool isAlive() const override;
+
     // 测试接缝(US2/缺陷④):强制指定内存读写后端以覆盖 ProcMem 降级路径。
     // 仅赋值 m_memBackend,生产默认(AutoDetect)不变;生产代码不得调用。
     void setMemBackendForTesting(MemBackend backend) { m_memBackend = backend; }
@@ -58,11 +63,19 @@ private:
     Result<void, PlatformError> ensurePtraceAttached() const;
     void ensurePtraceDetached() const;
 
+    /// 读取 /proc/<pid>/stat 的 starttime/startcode/endcode，用于区分
+    /// 退出后的 PID 复用与 execve 替换地址空间。
+    bool readStatIdentity(std::uint64_t& startTime, std::uint64_t& startCode,
+                          std::uint64_t& endCode) const;
+
     // --- 状态成员 ---
     mutable MemBackend m_memBackend     = MemBackend::AutoDetect;
     mutable bool       m_ptraceAttached = false;
     mutable int        m_procMemFd          = -1;    // /proc/PID/mem 文件描述符缓存
     mutable bool       m_procMemFdWritable  = false; // 当前 fd 是否以 O_RDWR 打开
+    std::uint64_t      m_startTime = 0;
+    std::uint64_t      m_startCode = 0;
+    std::uint64_t      m_endCode = 0;
 };
 
 } // namespace tpe::platform

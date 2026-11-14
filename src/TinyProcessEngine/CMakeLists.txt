@@ -10,4 +10,6 @@ target_include_directories(TinyProcessEngineLib PUBLIC
 
 target_link_libraries(TinyProcessEngineLib PUBLIC
     PlatformLib
+    hv_static
+    spdlog::spdlog
 )
